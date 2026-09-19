@@ -46,3 +46,9 @@ class CriticReview(StrictModel):
     approved: bool
     summary: ShortText
     suggestion: str = Field(default="", max_length=400)
+
+
+class CommandChoice(StrictModel):
+    command_id: str
+    message: str = Field(default="", max_length=500)
+    summary: ShortText

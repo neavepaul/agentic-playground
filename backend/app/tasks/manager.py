@@ -140,6 +140,17 @@ class TaskManager:
                                 continue
                         break
                     self.message(context, "explorer", f"Next action: {action.tool}.")
+                    previous = context.action_history[-1] if context.action_history else None
+                    if previous and previous["tool"] == action.tool and previous["arguments"] == action.arguments:
+                        self.message(context, "system", "Repeated identical command; returning to Coordinator for a revised plan.")
+                        await self.review(context, "Explorer is repeating a command that already returned an observation. "
+                                          "Review progress and suggest the next useful task.", "stalled_delegation")
+                        break
+                    if action.tool in {"pick_up", "give"}:
+                        proposal = f"Execute {action.tool} with arguments {action.arguments}."
+                        if not await self.review(context, proposal, "object_transfer"):
+                            self.message(context, "system", "Object action rejected by Critic; revising the plan.")
+                            break
                     self.call_tool(context, action.tool, action.arguments)
                     # Let cancellation, sockets and other API requests run between tools.
                     await asyncio.sleep(0)

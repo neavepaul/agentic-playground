@@ -12,6 +12,13 @@ class ScriptedLLM:
         reply = next(self.replies)
         if callable(reply):
             reply = reply(json.loads(messages[1]["content"]))
+        if isinstance(reply, dict) and "command_id" in response_schema.get("properties", {}) and "action" in reply:
+            if reply["action"] == "report":
+                reply = {"command_id": "report", "summary": reply["summary"]}
+            elif reply["action"] == "tool":
+                args = reply.get("arguments", {})
+                reply = {"command_id": ":".join([reply["tool"], *[v for k, v in args.items() if k != "message"]]),
+                         "message": args.get("message", ""), "summary": reply["summary"]}
         return reply if isinstance(reply, str) else json.dumps(reply)
 
 

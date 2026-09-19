@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     max_coordinator_cycles: int = Field(default=20, ge=1, le=100)
     max_explorer_actions: int = Field(default=8, ge=1, le=50)
     max_tool_calls: int = Field(default=50, ge=1, le=200)
-    max_critic_reviews: int = Field(default=6, ge=1, le=20)
+    max_critic_reviews: int = Field(default=8, ge=1, le=20)
     log_level: str = "INFO"
 
 

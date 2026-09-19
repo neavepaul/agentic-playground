@@ -114,14 +114,24 @@ allowlisted tool command or a report. A delegated task has an action budget,
 after which control returns to Coordinator. Critic reviews plans on request and
 every proposed completion. Reports from a delegation with no tool progress also
 receive a review, allowing Critic feedback to correct unsupported claims. It has
-a separate review budget to prevent debate loops. An immediately repeated read
-is excluded from the next command schema because it cannot add new information.
+a separate review budget to prevent debate loops. Repeated identical commands
+return control early for Critic feedback and a revised Coordinator plan.
 
 Coordinator and Critic receive **no simulator or tool handles**. Explorer's decision
 class receives only the LLM client and tool schemas. The manager dispatches its
 validated command through `WorldTools`; no role can execute Python or dynamically
 resolve a function name. All three roles share the same configured model, with
 distinct prompts and role-specific context. NPCs use deterministic keyword matching.
+
+Explorer chooses a schema-constrained `command_id` such as `move_to:hall` or
+`pick_up:charger`, with a free-text `message` for conversation. `agents/commands.py`
+constructs these tool choices **only from observed rooms, inventory and successful
+actions**. It never reads the simulator or examines the goal. The choice maps to
+an ordinary `{tool, arguments}` call, which is validated again by the tool registry.
+This avoids requiring a small local model to invent valid identifiers and arguments
+on every step. The model still selects the route, questions, object actions and
+when to report. Static rooms are remembered, and known object transfers update
+that remembered view, so unchanged rooms do not require repeated `look` calls.
 
 ### World and evidence
 
