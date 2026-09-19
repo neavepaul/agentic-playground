@@ -10,7 +10,7 @@ Id = Annotated[str, Field(min_length=1, max_length=40, pattern=r"^[a-z][a-z0-9_]
 
 
 class Arguments(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
 
 
 class MoveArguments(Arguments):

@@ -51,3 +51,26 @@ def test_registry_validation_and_conversation(setup):
     assert not tools.execute("talk_to", {"person": "dad", "message": "charger?"})["success"]
     tools.execute("move_to", {"room": "study"})
     assert "Neave" in tools.execute("talk_to", {"person": "dad", "message": "Who needs the charger?"})["observation"]["response"]
+
+
+def test_nonportable_and_failed_actions_leave_world_unchanged(setup):
+    engine, _, tools = setup
+    tools.execute("move_to", {"room": "bedroom"})
+    engine._world.objects["laptop"].portable = False
+    before = engine.snapshot()
+    for tool, args in [("pick_up", {"object": "laptop"}),
+                       ("drop", {"object": "keys"}),
+                       ("give", {"object": "keys", "person": "neave"}),
+                       ("talk_to", {"person": "neave", "message": "   "})]:
+        assert not tools.execute(tool, args)["success"]
+        assert engine.snapshot() == before
+
+
+def test_snapshots_cannot_mutate_authoritative_world(setup):
+    engine, _, tools = setup
+    view = engine.snapshot()
+    view["objects"]["charger"]["location"]["id"] = "hall"
+    obs = tools.execute("look", {})["observation"]
+    obs["connections"].clear()
+    assert engine.snapshot()["objects"]["charger"]["location"]["id"] == "study"
+    assert tools.execute("move_to", {"room": "study"})["success"]

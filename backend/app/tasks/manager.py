@@ -100,7 +100,9 @@ class TaskManager:
             self.bus.emit("task_updated", task=context.public())
             self.bus.emit("agent_active", "coordinator", task_id=context.id)
             decision = await self.coordinator.decide(context)
-            self.message(context, "coordinator", decision.summary)
+            public_summary = ("Checking goal completion against tool evidence."
+                              if decision.action == "complete" else decision.summary)
+            self.message(context, "coordinator", public_summary)
             if decision.action == "fail":
                 self.finish(context, "failed", decision.summary)
                 return
@@ -121,13 +123,19 @@ class TaskManager:
                     return
             elif decision.action == "delegate":
                 context.current_plan = decision.task
+                starting_tool_count = context.tool_count
                 for _ in range(self.settings.max_explorer_actions):
                     self.bus.emit("agent_active", "explorer", task_id=context.id)
                     action = await self.explorer.decide(context, decision.task)
-                    self.message(context, "explorer", action.summary)
                     if action.action == "report":
                         context.explorer_reports.append(action.summary)
+                        self.message(context, "explorer", "Returning observations to Coordinator.")
+                        if context.tool_count == starting_tool_count:
+                            approved = await self.review(context, action.summary, "delegation_report")
+                            if not approved:
+                                continue
                         break
+                    self.message(context, "explorer", f"Next action: {action.tool}.")
                     self.call_tool(context, action.tool, action.arguments)
                     # Let cancellation, sockets and other API requests run between tools.
                     await asyncio.sleep(0)

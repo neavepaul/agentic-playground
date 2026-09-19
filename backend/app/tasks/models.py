@@ -46,8 +46,12 @@ class TaskContext(BaseModel):
         # Bounded task memory: latest room/object facts, recent conversations/actions.
         facts = [v for k, v in self.discoveries.items() if not k.startswith("conversation:")]
         conversations = [v for k, v in self.discoveries.items() if k.startswith("conversation:")]
+        observed_rooms = {v["observation"]["room"] for v in facts if v["tool"] == "look"}
+        known_exits = {room for v in facts if v["tool"] == "look"
+                       for room in v["observation"]["connections"]}
         return {"goal": self.goal, "current_plan": self.current_plan,
                 "robot_status": self.robot_status, "discoveries": facts + conversations[-8:],
+                "known_but_unobserved_rooms": sorted(known_exits - observed_rooms),
                 "recent_actions": self.action_history[-8:],
                 "critic_feedback": self.critic_feedback[-2:],
                 "explorer_reports_unverified": self.explorer_reports[-2:],

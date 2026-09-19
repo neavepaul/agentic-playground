@@ -56,6 +56,7 @@ async def test_delivery_end_to_end_with_mock_model():
     await mgr.runner
     assert task.status == "completed"
     assert task.critic_count == 1
+    assert task.action_history[0]["observation"] == {"room": "hall", "inventory": []}
     assert mission_satisfied(3, task, engine.snapshot())
     assert mgr.active_id is None
     assert any(e["type"] == "object_given" for e in bus.history)
@@ -68,7 +69,8 @@ async def test_delivery_end_to_end_with_mock_model():
 
 @pytest.mark.parametrize("limits,replies,expected", [
     ({"max_coordinator_cycles": 1}, [{"action": "delegate", "summary": "Search.", "task": "Search."},
-                                      {"action": "report", "summary": "Blocked."}], "Coordinator cycles"),
+                                      {"action": "report", "summary": "Blocked."},
+                                      {"approved": True, "summary": "Report acknowledged."}], "Coordinator cycles"),
     ({"max_tool_calls": 1}, [{"action": "delegate", "summary": "Search.", "task": "Search."},
                               tool("look")], "tool calls"),
     ({"max_critic_reviews": 1}, [{"action": "consult_critic", "summary": "Review.", "plan": "Search."},
@@ -140,3 +142,74 @@ async def test_critic_rejection_returns_to_coordinator():
     await mgr.runner
     assert task.status == "failed" and task.cycle_count == 3
     assert task.critic_feedback[0]["approved"] is False
+    assert task.critic_count == 1
+
+
+async def test_impossible_action_is_observed_and_recovered():
+    fake = ScriptedLLM([
+        {"action": "delegate", "summary": "Explore.", "task": "Find charger."},
+        tool("move_to", room="kitchen"), tool("move_to", room="study"),
+        tool("move_to", room="hall"), tool("move_to", room="study"), tool("look"),
+        {"action": "report", "summary": "Charger observed."}, complete,
+        {"approved": True, "summary": "The charger was observed."}])
+    mgr, engine, _ = manager(fake)
+    task = mgr.start("Find charger.")
+    await mgr.runner
+    assert task.status == "completed"
+    assert not task.action_history[2]["success"]
+    assert "not directly connected" in fake.calls[3][0][1]["content"]
+    assert mission_satisfied(1, task, engine.snapshot())
+
+
+@pytest.mark.parametrize("number,actions", [
+    (2, [tool("move_to", room="bedroom"), tool("look"),
+         tool("talk_to", person="neave", message="Dinner is ready.")]),
+    (4, [tool("move_to", room="kitchen"), tool("look")]),
+])
+async def test_other_evaluation_missions(number, actions):
+    from app.evaluate import MISSIONS
+    fake = ScriptedLLM([
+        {"action": "delegate", "summary": "Carry out mission.", "task": MISSIONS[number]},
+        *actions, {"action": "report", "summary": "Mission actions performed."}, complete,
+        {"approved": True, "summary": "Evidence matches the goal."}])
+    mgr, engine, _ = manager(fake)
+    task = mgr.start(MISSIONS[number])
+    await mgr.runner
+    assert task.status == "completed"
+    assert mission_satisfied(number, task, engine.snapshot())
+
+
+@pytest.mark.parametrize("mode", ["offline", "timeout", "missing", "envelope"])
+async def test_ollama_errors_are_safe(mode):
+    def respond(request):
+        if mode == "offline":
+            raise httpx.ConnectError("internal details", request=request)
+        if mode == "timeout":
+            raise httpx.ReadTimeout("internal details", request=request)
+        if mode == "missing":
+            return httpx.Response(404, json={"error": "missing model"})
+        return httpx.Response(200, json={"unexpected": "envelope"})
+    client = OllamaClient(Settings())
+    await client.http.aclose()
+    client.http = httpx.AsyncClient(transport=httpx.MockTransport(respond), base_url="http://test")
+    with pytest.raises(ModelError) as exc:
+        await client.generate([], {})
+    assert "internal details" not in str(exc.value)
+    await client.close()
+
+
+async def test_no_progress_report_is_reviewed_and_recovers():
+    fake = ScriptedLLM([
+        {"action": "delegate", "summary": "Search.", "task": "Find charger."},
+        {"action": "report", "summary": "Charger found."},
+        {"approved": False, "summary": "No observation supports finding it.", "suggestion": "Search the rooms."},
+        tool("move_to", room="study"), tool("look"),
+        {"action": "report", "summary": "Charger observed."}, complete,
+        {"approved": True, "summary": "Observed charger."}])
+    mgr, _, bus = manager(fake)
+    task = mgr.start("Find charger.")
+    await mgr.runner
+    assert task.status == "completed"
+    assert task.critic_count == 2
+    assert not any(e["type"] == "agent_message" and e["data"].get("summary") == "Charger found."
+                   for e in bus.history)
