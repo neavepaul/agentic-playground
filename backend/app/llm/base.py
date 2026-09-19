@@ -15,10 +15,11 @@ class LLMClient(Protocol):
 
 
 async def structured(client: LLMClient, schema: type[T], prompt: str, context: dict) -> T:
-    messages = [{"role": "system", "content": prompt},
+    output_schema = schema.model_json_schema()
+    messages = [{"role": "system", "content": prompt + "\nOutput JSON schema:\n" + json.dumps(output_schema)},
                 {"role": "user", "content": json.dumps(context, ensure_ascii=False)}]
     for attempt in range(2):
-        raw = await client.generate(messages, schema.model_json_schema())
+        raw = await client.generate(messages, output_schema)
         try:
             return schema.model_validate_json(raw)
         except (ValidationError, ValueError, TypeError):

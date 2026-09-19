@@ -33,7 +33,11 @@ document.getElementById('goal-form').addEventListener('submit', async (event) =>
   if (!goal) return showError('Enter a goal first.');
   showError();
   document.getElementById('run').disabled = true;
-  try { setTask(await api('/tasks', { goal })); }
+  try {
+    const created = await api('/tasks', { goal });
+    // A WebSocket update may arrive before this HTTP response. Preserve newer state.
+    if (getTask()?.id !== created.id) setTask(created);
+  }
   catch (error) { showError(error.message); setTask(getTask()); }
 });
 document.getElementById('reset').addEventListener('click', async () => {

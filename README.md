@@ -112,7 +112,10 @@ frontend/src/
 requests a review, proposes completion, or fails. Explorer returns a single
 allowlisted tool command or a report. A delegated task has an action budget,
 after which control returns to Coordinator. Critic reviews plans on request and
-every proposed completion. It has a separate review budget to prevent debate loops.
+every proposed completion. Reports from a delegation with no tool progress also
+receive a review, allowing Critic feedback to correct unsupported claims. It has
+a separate review budget to prevent debate loops. An immediately repeated read
+is excluded from the next command schema because it cannot add new information.
 
 Coordinator and Critic receive **no simulator or tool handles**. Explorer's decision
 class receives only the LLM client and tool schemas. The manager dispatches its
@@ -169,7 +172,7 @@ Copy `backend/.env.example` to `backend/.env`. Environment variables override it
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama endpoint |
 | `OLLAMA_MODEL` | `qwen3:8b` | One model shared by all roles |
 | `LLM_TIMEOUT_SECONDS` | `120` | Per model HTTP request |
-| `TASK_TIMEOUT_SECONDS` | `900` | Entire task, including retries and reviews |
+| `TASK_TIMEOUT_SECONDS` | `1800` | Entire task, including retries and reviews; allows CPU-only inference |
 | `TEMPERATURE` | `0.1` | Conservative structured generation |
 | `CONTEXT_TOKENS` | `8192` | Ollama context size |
 | `MAX_COORDINATOR_CYCLES` | `20` | Maximum planning iterations |

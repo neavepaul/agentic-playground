@@ -19,7 +19,8 @@ class EventBus:
                  "timestamp": datetime.now(timezone.utc).isoformat(),
                  "type": type, "agent": agent, "data": data}
         self.history.append(event)
-        logger.info("%s [%s] %s", type, agent, data.get("summary", data.get("observation", "")))
+        logger.info("%s [%s] %s", type, agent,
+                    data.get("summary", data.get("observation", data.get("error", ""))))
         for queue in tuple(self.subscribers):
             if queue.full():
                 # Force a snapshot resync rather than silently lose state changes.

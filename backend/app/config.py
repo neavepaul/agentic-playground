@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen3:8b"
     llm_timeout_seconds: float = Field(default=120, gt=0)
-    task_timeout_seconds: float = Field(default=900, gt=0)
+    task_timeout_seconds: float = Field(default=1800, gt=0)
     temperature: float = Field(default=0.1, ge=0, le=1)
     context_tokens: int = Field(default=8192, ge=2048, le=32768)
     max_coordinator_cycles: int = Field(default=20, ge=1, le=100)

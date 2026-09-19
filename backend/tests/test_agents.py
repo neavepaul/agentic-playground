@@ -213,3 +213,17 @@ async def test_no_progress_report_is_reviewed_and_recovers():
     assert task.critic_count == 2
     assert not any(e["type"] == "agent_message" and e["data"].get("summary") == "Charger found."
                    for e in bus.history)
+
+
+async def test_explorer_rejects_repeated_read_without_new_information():
+    from app.agents.explorer import Explorer
+    from app.tasks.models import TaskContext
+    engine, bus = WorldEngine(), EventBus()
+    tools = WorldTools(engine, bus)
+    context = TaskContext(goal="Find keys.")
+    context.record("look", {}, tools.execute("look", {}))
+    fake = ScriptedLLM([tool("look"), tool("move_to", room="kitchen")])
+    choice = await Explorer(fake, tools.schemas()).decide(context, "Find keys.")
+    assert choice.tool == "move_to"
+    assert len(fake.calls) == 2
+    assert "look" not in fake.calls[0][1]["properties"]["tool"]["enum"]
