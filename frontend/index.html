@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f4f5f1" />
+    <title>House simulation · agentic_friend</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="identity"><span class="app-mark" aria-hidden="true">⌂</span><span>House simulation <span class="version">V1</span></span></div>
+        <div class="connection"><span id="connection-dot" class="dot"></span><span id="connection">Connecting</span></div>
+      </header>
+      <main class="layout">
+        <section class="world-panel" aria-label="3D house simulation">
+          <div class="world-heading"><span class="eyebrow">LOCAL WORLD / 01</span><h1>A small world.<br>A goal to explore.</h1><p>One avatar. Three collaborating agents.</p></div>
+          <div id="scene" aria-label="Interactive 3D house. Drag to orbit, scroll to zoom."></div>
+          <div class="world-toolbar"><button id="view-reset" class="quiet">↗ Reset view</button><span>Drag to orbit · Scroll to zoom</span></div>
+          <div class="legend"><span><i class="swatch robot"></i>Avatar</span><span><i class="swatch person"></i>People</span><span><i class="swatch item"></i>Objects</span><span class="legend-note">Live world state</span></div>
+        </section>
+        <aside class="sidebar">
+          <section class="mission-panel">
+            <div class="section-title"><h2>Give it a goal</h2><span class="small-tag">LOCAL INFERENCE</span></div>
+            <p class="subtle">Describe what you need. Watch the agents work.</p>
+            <form id="goal-form">
+              <label class="sr-only" for="goal">Household goal</label>
+              <textarea id="goal" rows="3" maxlength="1000" required>Find out who needs the charger and deliver it.</textarea>
+              <div class="examples"><span>Try</span><button type="button" data-goal="Find the missing keys.">Find the keys</button><button type="button" data-goal="Find Neave and tell him dinner is ready.">Dinner is ready</button></div>
+              <div class="actions"><button id="run" class="primary" type="submit">Run goal <span>↗</span></button><button id="cancel" type="button" hidden>Cancel</button><button id="reset" type="button" title="Cancel current task and restore the initial world">Reset</button></div>
+            </form>
+            <p id="error" class="error" role="alert" hidden></p>
+            <div id="model-status" class="model-status">Checking local model…</div>
+          </section>
+          <section class="state-panel" aria-label="Current task">
+            <div class="section-title"><h2>Current state</h2><span id="task-status" class="status">Idle</span></div>
+            <p id="task-summary" aria-live="polite">Ready when you are.</p>
+            <div class="state-grid"><div><span class="eyebrow">AVATAR LOCATION</span><strong id="robot-room">—</strong></div><div><span class="eyebrow">INVENTORY</span><strong id="inventory">Empty</strong></div></div>
+            <div class="agent-strip"><span data-agent="coordinator">Coordinator</span><span data-agent="explorer">Explorer</span><span data-agent="critic">Critic</span></div>
+            <p id="budget" class="budget">0 cycles · 0 tool calls</p>
+          </section>
+          <section class="activity-panel" aria-label="Agent activity">
+            <div class="section-title"><h2>Agent activity</h2><span id="event-count" class="subtle">0 events</span></div>
+            <div id="feed" role="log" aria-live="polite"><div id="feed-empty" class="empty-feed"><span class="empty-icon">↳</span><p>The next move starts here.</p><span>Submit a goal to see actions and discoveries.</span></div></div>
+          </section>
+          <footer>Ollama on your machine <span>·</span> No cloud models</footer>
+        </aside>
+      </main>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

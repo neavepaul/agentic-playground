@@ -1,0 +1,62 @@
+import './style.css';
+import { api } from './api.js';
+import { createScene } from './scene.js';
+import { connectEvents } from './websocket.js';
+import { addEvent, clearFeed, getTask, setAgent, setConnection, setTask, setWorld, showError } from './ui.js';
+
+let scene;
+try { scene = createScene(document.getElementById('scene')); }
+catch { showError('The 3D view requires WebGL. Enable hardware acceleration or try another browser.'); }
+let sequence = -1;
+function snapshot(data, events) {
+  sequence = data.sequence;
+  scene?.update(data.world, true);
+  setWorld(data.world);
+  setTask(data.task);
+  if (events) { clearFeed(); events.forEach(addEvent); }
+}
+connectEvents({ snapshot, connection: setConnection, error: showError, event(event) {
+  if (event.sequence <= sequence) return;
+  sequence = event.sequence;
+  const d = event.data;
+  if (event.type === 'world_reset') { clearFeed(); setTask(null); }
+  if (d.world) { scene?.update(d.world, event.type === 'world_reset'); setWorld(d.world); }
+  if (d.task) setTask(d.task);
+  if (event.type === 'agent_active' || event.type === 'agent_message' || event.type === 'critic_review') setAgent(event.agent);
+  if (event.type === 'agent_message') document.getElementById('task-summary').textContent = d.summary;
+  addEvent(event);
+} });
+
+document.getElementById('goal-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const goal = document.getElementById('goal').value.trim();
+  if (!goal) return showError('Enter a goal first.');
+  showError();
+  document.getElementById('run').disabled = true;
+  try { setTask(await api('/tasks', { goal })); }
+  catch (error) { showError(error.message); setTask(getTask()); }
+});
+document.getElementById('reset').addEventListener('click', async () => {
+  try { snapshot(await api('/world/reset', {})); showError(); }
+  catch (error) { showError(error.message); }
+});
+document.getElementById('cancel').addEventListener('click', async () => {
+  if (!getTask()) return;
+  try { setTask(await api(`/tasks/${getTask().id}/cancel`, {})); }
+  catch (error) { showError(error.message); }
+});
+document.getElementById('view-reset').addEventListener('click', () => scene?.resetView());
+document.querySelectorAll('[data-goal]').forEach(button => button.addEventListener('click', () => {
+  document.getElementById('goal').value = button.dataset.goal;
+  document.getElementById('goal').focus();
+}));
+async function checkModel() {
+  try {
+    const { ollama } = await api('/health');
+    document.getElementById('model-status').textContent = ollama.model_available
+      ? `${ollama.model} · ready locally`
+      : ollama.reachable ? `Model missing · run ollama pull ${ollama.model}` : 'Ollama offline · run ollama serve';
+  } catch { document.getElementById('model-status').textContent = 'Backend offline'; }
+}
+checkModel();
+setInterval(checkModel, 30000);
