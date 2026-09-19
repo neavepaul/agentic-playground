@@ -13,13 +13,13 @@ class Coordinator:
     async def decide(self, context: TaskContext) -> CoordinatorDecision:
         return await structured(self.client, CoordinatorDecision, COORDINATOR, context.compact())
 
-    async def define_goal(self, goal: str) -> GoalPlan:
+    async def define_goal(self, goal: str, floor_plan: dict | None = None) -> GoalPlan:
         prompt = GOAL_PLANNER
         # A narrow consistency check for an explicit delivery clause. This rejects
         # prerequisite-only plans without hardcoding an object, recipient or route.
         explicit_delivery = re.search(r"(?:^\s*(?:please\s+)?|\b(?:and|then)\s+)deliver\b", goal, re.I)
         for attempt in range(2):
-            plan = await structured(self.client, GoalPlan, prompt, {"goal": goal})
+            plan = await structured(self.client, GoalPlan, prompt, {"goal": goal, "floor_plan": floor_plan or {}})
             prerequisite_only = all(c.kind in {"find_object", "find_person", "identify_recipient", "visit_room"}
                                     for c in plan.conditions)
             if not (explicit_delivery and prerequisite_only):

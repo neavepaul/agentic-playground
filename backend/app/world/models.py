@@ -1,26 +1,37 @@
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 
-class Location(BaseModel):
+class ScenarioModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+
+class Location(ScenarioModel):
     kind: Literal["room", "robot", "person"]
     id: str
 
 
-class WorldObject(BaseModel):
+class WorldObject(ScenarioModel):
     id: str
     name: str
     location: Location
     portable: bool = True
 
 
-class Dialogue(BaseModel):
+class Dialogue(ScenarioModel):
     topics: list[str] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def nonempty_topics(self):
+        if any(not re.search(r"\w", topic) for topic in self.topics):
+            raise ValueError("Dialogue topics must contain words.")
+        return self
     response: str = Field(min_length=1)
 
 
-class Person(BaseModel):
+class Person(ScenarioModel):
     id: str
     name: str
     room: str
@@ -28,7 +39,7 @@ class Person(BaseModel):
     dialogue: list[Dialogue] = Field(default_factory=list)
 
 
-class Room(BaseModel):
+class Room(ScenarioModel):
     id: str
     name: str
     connections: list[str]
@@ -37,17 +48,17 @@ class Room(BaseModel):
     color: str = "#d3dfc4"
 
 
-class Door(BaseModel):
+class Door(ScenarioModel):
     rooms: tuple[str, str]
     position: tuple[float, float]
     width: float = Field(default=0.6, gt=0)
 
 
-class Robot(BaseModel):
+class Robot(ScenarioModel):
     room: str = "hall"
 
 
-class World(BaseModel):
+class World(ScenarioModel):
     model_config = ConfigDict(extra="forbid")
     name: str = "House"
     robot: Robot
@@ -59,7 +70,6 @@ class World(BaseModel):
 
     @model_validator(mode="after")
     def valid_references(self):
-        import re
         for collection in (self.rooms, self.people, self.objects):
             for key, value in collection.items():
                 if key != value.id or not re.fullmatch(r"[a-z][a-z0-9_]{0,39}", key):
@@ -67,6 +77,8 @@ class World(BaseModel):
         if self.robot.room not in self.rooms:
             raise ValueError("Robot must start in an existing room.")
         for room in self.rooms.values():
+            if len(set(room.connections)) != len(room.connections):
+                raise ValueError("Room connections must not repeat.")
             if room.outline and len(room.outline) < 3:
                 raise ValueError("Room outlines need at least three points.")
             for other in room.connections:

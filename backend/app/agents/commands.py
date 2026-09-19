@@ -16,11 +16,18 @@ def observable_commands(context: TaskContext) -> tuple[dict, dict | None]:
     deliveries = {(c.object, c.person or needs.get(c.object)) for c in context.conditions if c.kind == "deliver"}
     entry = context.discoveries.get("room:" + str(room))
     view = deepcopy(entry["observation"]) if entry else None
-    commands = {"report": {"description": "Return discoveries or a blockage to Coordinator."}}
+    commands = {"report": {"description": "Return discoveries or a blockage to Coordinator."},
+                "look": {"tool": "look", "arguments": {},
+                         "description": "Scan the current room and refresh local visual observations."}}
     if view is None:
         commands["look"] = {"tool": "look", "arguments": {},
                             "description": "Observe this room; its contents and exits are not yet known."}
         return commands, None
+
+    # Permit fresh scans on return; don't immediately repeat an unchanged scan.
+    previous = context.action_history[-1] if context.action_history else None
+    if previous and previous["success"] and previous["tool"] == "look":
+        commands.pop("look", None)
 
     # NPCs are static. Reconcile cached objects with our own successful actions.
     for key, update in context.discoveries.items():

@@ -1,11 +1,9 @@
 import json
-from copy import deepcopy
 
 import pytest
 from pydantic import ValidationError
 
 from app.agents.commands import observable_commands
-from app.agents.conversation import interpret_conversation
 from app.agents.schemas import ConversationMeaning, GoalCondition, SpokenNeed
 from app.config import Settings
 from app.events.bus import EventBus
@@ -128,3 +126,27 @@ def test_transcript_claims_require_real_source_and_exact_quote(tmp_path):
     task.remember_meaning("invented", fabricated)
     assert not task.interpreted_needs
     assert "give:medicine:alice" not in observable_commands(task)[0]
+
+
+def test_api_uses_configured_json_and_failed_reset_preserves_world(tmp_path):
+    from fastapi.testclient import TestClient
+    from app.main import create_app
+    from tests.fakes import WaitingLLM
+    path, _ = alternate_world(tmp_path)
+    with TestClient(create_app(client=WaitingLLM(), settings=Settings(world_file=path))) as client:
+        initial = client.get("/api/world").json()["world"]
+        assert initial["name"] == "Unfamiliar workshop"
+        path.write_text('{"invalid": true}')
+        response = client.post("/api/world/reset")
+        assert response.status_code == 422
+        assert client.get("/api/world").json()["world"] == initial
+
+
+def test_can_scan_again_after_returning_to_a_known_room(tmp_path):
+    path, _ = alternate_world(tmp_path)
+    tools = WorldTools(WorldEngine(path), EventBus())
+    task = TaskContext(goal="Explore")
+    for name, args in [("get_status", {}), ("look", {}),
+                       ("move_to", {"room": "workshop"}), ("move_to", {"room": "entry"})]:
+        task.record(name, args, tools.execute(name, args))
+    assert "look" in observable_commands(task)[0]

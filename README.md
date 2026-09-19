@@ -86,7 +86,7 @@ The included pnpm lockfile records the frontend versions used here; npm is also 
 
 Only one task runs at a time. A second request receives HTTP 409. The world persists
 between goals until Reset or a backend restart. Room labels, people and objects
-are visible to you, but the agents must discover them with tools.
+are visible to you. Agents receive the static map but must discover people and objects with tools.
 
 ## How the code fits together
 
@@ -140,32 +140,57 @@ that remembered view, so unchanged rooms do not require repeated `look` calls.
 
 ### World and evidence
 
-The graph is `kitchen ↔ hall ↔ bedroom`, with `hall ↔ study`. The avatar starts in
-hall. Mom and keys start in kitchen; Neave and laptop in bedroom; Dad and charger
-in study. Every object has exactly one tagged location: room, robot or person.
-Inventory is derived from those locations, never maintained as a second list.
+The default scenario is [`backend/worlds/house.json`](backend/worlds/house.json),
+modelled after the supplied sketch: an L-shaped hall, kitchen, bedroom corridor,
+master bedroom, second bedroom, entrance vestibule and office. Doorways determine
+adjacency. Coordinates approximate the drawing; they are not measured dimensions.
+Mom/keys start in the kitchen, Neave/laptop in the master bedroom and Dad/charger
+in the office. These are editable example placements, not agent knowledge.
 
-`look` reveals the current room, exits, people, floor objects and visible held
-objects. `get_status` reveals only the avatar's room and inventory. Tool failures
-return structured observations and events, so the next model decision can recover.
-Movement cannot skip the hall. Give/talk require the person to be in the room.
+The JSON defines room outlines, anchors, connections, door positions, people,
+objects, the robot start and topic-based NPC dialogue. Change it and click **Reset**
+to reload it. Set `WORLD_FILE` to an absolute path to load another scenario at startup.
+Invalid references, asymmetric connections and unknown fields are rejected. A failed
+reset preserves the previous world. See [the world format and hardware boundary](backend/worlds/README.md).
 
-Task memory retains tool evidence, latest room/object observations, conversation
-results, failed actions, the current plan, Explorer reports and Critic feedback.
-Model prompts receive bounded recent history and compact discoveries, not the
-entire event stream. Explorer reports are explicitly unverified; facts come from tools.
-Before acting, Coordinator translates the goal into fixed typed success conditions:
-find an object/person, identify a recipient, hold/deliver/place an object, notify
-a person/everyone, or visit a room. The conditions cannot be changed by later
-Coordinator decisions. Python checks them against tool evidence on every turn.
-For example, handing over a laptop cannot satisfy a charger-delivery condition,
-even if Coordinator and Critic both mistakenly say it does. NPC responses include
-small structured facts for the deterministic knowledge they convey.
+There are three distinct information layers:
 
-Completion requires **all conditions satisfied**, valid successful evidence IDs
-(a status call alone does not qualify), and Critic approval. Natural-language goal
-interpretation still comes from the model; this is not a formal semantic proof of
-arbitrary language. Notification checks use normalized message text.
+- **Simulator truth:** the JSON and mutable world state. Only the simulator and
+  observer UI receive all occupants, objects and dialogue definitions.
+- **Prior map:** `get_map` returns static room geometry and connections, as a robot
+  could receive from a surveyed house. It contains no occupants, object locations,
+  dialogue, needs or inventory. The task starts with status and map observations.
+- **Robot evidence:** `look` scans the current room; `talk_to` returns the local
+  conversation transcript; movement and manipulation return action results.
+  `get_status` returns local position and carried inventory. These are idealized
+  semantic sensor/controller outputs, not implemented camera/audio processing.
+
+Every object has one tagged location: room, robot or person. Inventory is derived.
+Movement is restricted to adjacent rooms. Talk/give require a nearby person;
+pickup requires a portable object on the current room's floor. The scene draws
+room polygons and doorway waypoints from JSON, independently of agent planning.
+The outside of the house is not a navigable region in this version.
+
+NPC dialogue is scenario data. A response is a speech transcript, **not** a hidden
+structured `needs_object` fact. Explorer's language interpretation makes a separate
+local model call and proposes needs with exact supporting quotes. Python checks
+that the quote occurs in a real response; that does not prove the interpretation
+is correct or the speaker is truthful. Claims remain labelled unverified and the
+Critic sees the transcripts. A known recipient can still receive other messages.
+
+Task memory holds observations and interpretations separately. Cached views can
+be refreshed with `look`. No agent reads `/api/world` or the observer scene.
+Coordinator translates the goal into fixed typed outcomes: find an object/person,
+identify a recipient, hold/deliver/place an object, notify a person/everyone, or
+visit a room. Python checks action evidence for these outcomes; unknown-recipient
+conditions also rely on fallible transcript interpretation. These capabilities
+can compose across scenarios, but do not cover every possible household task.
+
+Completion requires all conditions satisfied, successful observation evidence IDs,
+and Critic approval. This is not a formal proof of arbitrary natural-language goals.
+Notification checks use normalized message text. Hardware will need perception,
+localization, collision-aware navigation, grasp feedback and safety controllers
+behind these interfaces; none is implemented or validated by this simulator.
 
 ### Model interface
 
@@ -195,13 +220,14 @@ Copy `backend/.env.example` to `backend/.env`. Environment variables override it
 |---|---|---|
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama endpoint |
 | `OLLAMA_MODEL` | `qwen3:8b` | One model shared by all roles |
+| `WORLD_FILE` | `backend/worlds/house.json` | Optional absolute path to a scenario JSON |
 | `LLM_TIMEOUT_SECONDS` | `120` | Per model HTTP request |
 | `TASK_TIMEOUT_SECONDS` | `1800` | Entire task, including retries and reviews; allows CPU-only inference |
 | `TEMPERATURE` | `0.1` | Conservative structured generation |
 | `CONTEXT_TOKENS` | `8192` | Ollama context size |
 | `MAX_COORDINATOR_CYCLES` | `20` | Maximum planning iterations |
 | `MAX_EXPLORER_ACTIONS` | `8` | Maximum decisions per delegation |
-| `MAX_TOOL_CALLS` | `50` | Includes bootstrap status and failed calls |
+| `MAX_TOOL_CALLS` | `50` | Includes bootstrap status/map and failed calls |
 | `MAX_CRITIC_REVIEWS` | `8` | Bounds transfer/completion reviews and recovery |
 | `LOG_LEVEL` | `INFO` | Use `DEBUG` for application diagnostics |
 

@@ -119,7 +119,7 @@ class TaskManager:
         self.call_tool(context, "get_status", {})
         self.call_tool(context, "get_map", {})
         self.bus.emit("agent_active", "coordinator", task_id=context.id)
-        goal_plan = await self.coordinator.define_goal(context.goal)
+        goal_plan = await self.coordinator.define_goal(context.goal, context.floor_plan)
         context.conditions = goal_plan.conditions
         context.refresh_task_state()
         self.message(context, "coordinator", goal_plan.summary)

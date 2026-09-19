@@ -58,7 +58,10 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
     async def reset():
         async with mutation_lock:
             await manager.close()
-            engine.reset()
+            try:
+                engine.reset()
+            except (ValueError, OSError) as exc:
+                raise HTTPException(422, "Cannot reload world definition: " + str(exc)) from None
             # A new world starts a new session; old tasks should not appear active in UI.
             manager.tasks.clear()
             bus.history.clear()

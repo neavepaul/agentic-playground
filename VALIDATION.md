@@ -1,3 +1,21 @@
+# Current JSON-world change validation
+
+- 49 backend tests passed, including the original regression fixture and new
+  scenario loading, reference validation, information boundary, reset isolation,
+  transcript grounding, and an unfamiliar medicine/Alice workshop delivery plus
+  follow-up notification using a scripted model.
+- Frontend animation test passed; production build passed (Three.js bundle size warning).
+- Browser visual inspection confirmed the sketch layout and labels; inspected
+  browser console had no errors or warnings.
+- A live qwen3:8b transcript interpretation check correctly returned Alice / medicine
+  with the exact supporting quote. No simulator facts were supplied.
+- Graph refresh attempted with `python -m graphify update .`; the workspace runtime
+  reported `No module named graphify`. The saved graph may therefore be stale.
+- Live model planning on this new house has not been validated. The historical
+  evaluation below applies to the earlier four-room version.
+
+---
+
 # Validation record
 
 Environment: Windows, Python 3.12.14, Node.js 24.19.0, FastAPI 0.141.1,

@@ -63,7 +63,7 @@ GOAL_PLANNER = COMMON + """
 You are Coordinator, translating the user goal into required, verifiable outcomes.
 Define FINAL success for the ENTIRE goal, not just prerequisites or the first phase.
 Return conditions that match the ORIGINAL goal, without inventing extra tasks.
-Use lowercase IDs matching the named object/person/room. Do not guess locations.
+Use room IDs from the floor plan and lowercase IDs for named objects/people. Do not guess locations.
 find_object: locate the requested object. find_person: locate the named person.
 hold_object: pick up the requested object and keep it in the avatar inventory.
 identify_recipient: find who needs the requested object.

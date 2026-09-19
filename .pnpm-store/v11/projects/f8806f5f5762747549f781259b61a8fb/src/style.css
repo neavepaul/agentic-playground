@@ -228,11 +228,15 @@ button:focus-visible,textarea:focus-visible {
 .scene-label.room {
   background:transparent;
   border:0;
-  font-size:12px;
+  font-size:10px;
   font-weight:600;
-  letter-spacing:1.2px;
+  letter-spacing:.3px;
   color:#65775b;
   text-transform:uppercase;
+  white-space:normal;
+  max-width:80px;
+  text-align:center;
+  line-height:1.2;
 }
 
 .scene-label.avatar {
