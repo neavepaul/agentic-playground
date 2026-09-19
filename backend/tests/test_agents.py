@@ -4,13 +4,15 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from app.agents.schemas import CoordinatorDecision, CriticReview
+from app.agents.commands import observable_commands
+from app.agents.schemas import CoordinatorDecision, CriticReview, GoalCondition
 from app.config import Settings
 from app.evaluate import mission_satisfied
 from app.events.bus import EventBus
 from app.llm.base import ModelError, structured
 from app.llm.ollama import OllamaClient
 from app.tasks.manager import TaskManager
+from app.tasks.models import TaskContext
 from app.world.engine import WorldEngine
 from app.world.tools import WorldTools
 from tests.fakes import ScriptedLLM, WaitingLLM, complete, tool
@@ -250,6 +252,49 @@ async def test_repeated_command_returns_to_coordinator_before_action_budget():
     assert task.tool_count == 5 and task.critic_count == 2
     assert sum(a["tool"] == "talk_to" for a in task.action_history) == 1
     assert any("Repeated identical" in e["data"].get("summary", "") for e in bus.history)
+
+
+def test_known_recipient_blocks_repeated_talk_to_same_person():
+    tools = WorldTools(WorldEngine(), EventBus())
+    task = TaskContext(
+        goal="Find out who needs the charger and deliver it.",
+        conditions=[GoalCondition(kind="deliver", object="charger", person="")],
+    )
+
+    def act(name, **args):
+        task.record(name, args, tools.execute(name, args))
+
+    act("get_status")
+    act("look")
+    act("move_to", room="bedroom")
+    act("look")
+    act("talk_to", person="neave", message="Who needs the charger?")
+
+    choices, _ = observable_commands(task)
+    assert "talk_to:neave" not in choices
+    assert "move_to:hall" in choices
+    assert "move_to:study" not in choices
+
+
+def test_known_recipient_allows_hall_exit_but_blocks_repeated_talk():
+    tools = WorldTools(WorldEngine(), EventBus())
+    task = TaskContext(
+        goal="Find out who needs the charger and deliver it.",
+        conditions=[GoalCondition(kind="deliver", object="charger", person="")],
+    )
+
+    def act(name, **args):
+        task.record(name, args, tools.execute(name, args))
+
+    act("get_status")
+    act("look")
+    act("move_to", room="bedroom")
+    act("look")
+    act("talk_to", person="neave", message="Who needs the charger?")
+
+    choices, _ = observable_commands(task)
+    assert "talk_to:neave" not in choices
+    assert "move_to:hall" in choices
 
 
 async def test_valid_evidence_ids_cannot_substitute_for_required_outcomes():

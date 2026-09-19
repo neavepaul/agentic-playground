@@ -5,7 +5,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from app.agents.schemas import GoalCondition
-from .goals import check_conditions
+from .goals import check_conditions, known_recipients
 
 
 class TaskContext(BaseModel):
@@ -23,6 +23,78 @@ class TaskContext(BaseModel):
     critic_feedback: list[dict] = Field(default_factory=list)
     explorer_reports: list[str] = Field(default_factory=list)
     conditions: list[GoalCondition] = Field(default_factory=list)
+    recipient: str | None = None
+    recipient_location: str | None = None
+    item_location: str | None = None
+    carried_by: str | None = None
+    delivered: bool = False
+    explored_rooms: set[str] = Field(default_factory=set)
+    last_progress_signature: tuple | None = None
+
+    def _person_location(self, person: str) -> str | None:
+        for entry in (v for k, v in self.discoveries.items() if k.startswith("room:") and v.get("success")):
+            obs = entry["observation"]
+            if any(p["id"] == person for p in obs.get("people", [])):
+                return obs["room"]
+        return None
+
+    def _object_location(self, object_id: str):
+        for action in reversed(self.action_history):
+            if not action.get("success"):
+                continue
+            if action.get("tool") == "pick_up" and action["arguments"].get("object") == object_id:
+                return ("robot", "robot")
+            if action.get("tool") == "drop" and action["arguments"].get("object") == object_id:
+                return ("room", action["observation"].get("room"))
+            if action.get("tool") == "give" and action["arguments"].get("object") == object_id:
+                return ("person", action["observation"].get("person"))
+        for entry in reversed([v for k, v in self.discoveries.items() if k.startswith("room:") and v.get("success")]):
+            obs = entry["observation"]
+            for item in obs.get("held_objects", []):
+                if item["object"] == object_id:
+                    return ("person", item["person"])
+            if any(item["id"] == object_id for item in obs.get("objects", [])):
+                return ("room", obs["room"])
+        if object_id in self.robot_status.get("inventory", []):
+            return ("robot", "robot")
+        return None
+
+    def refresh_task_state(self) -> None:
+        self.explored_rooms = {entry["observation"]["room"] for key, entry in self.discoveries.items()
+                               if key.startswith("room:") and entry.get("success")}
+        recipient_name = None
+        target_object = None
+        for condition in self.conditions:
+            if condition.kind == "deliver":
+                target_object = condition.object
+                recipient_name = condition.person or known_recipients(self).get(target_object)
+                break
+        if target_object:
+            self.item_location = None
+            object_state = self._object_location(target_object)
+            if object_state:
+                self.item_location = object_state[1]
+            self.recipient = recipient_name
+            self.recipient_location = self._person_location(recipient_name) if recipient_name else None
+            self.carried_by = "robot" if target_object in self.robot_status.get("inventory", []) else None
+            self.delivered = bool(recipient_name and object_state and object_state[0] == "person" and object_state[1] == recipient_name)
+        else:
+            self.recipient = None
+            self.recipient_location = None
+            self.item_location = None
+            self.carried_by = None
+            self.delivered = False
+
+    def progress_signature(self) -> tuple:
+        return (
+            self.robot_status.get("room"),
+            tuple(sorted(self.robot_status.get("inventory", []))),
+            self.recipient,
+            self.recipient_location,
+            self.item_location,
+            self.delivered,
+            tuple(sorted(self.explored_rooms)),
+        )
 
     def record(self, tool: str, arguments: dict, result: dict) -> None:
         entry = {"tool": tool, "arguments": arguments, **result}
@@ -45,6 +117,7 @@ class TaskContext(BaseModel):
                 inventory.append(arguments["object"])
             elif tool != "pick_up" and arguments["object"] in inventory:
                 inventory.remove(arguments["object"])
+        self.refresh_task_state()
 
     def compact(self) -> dict:
         # Bounded task memory: latest room/object facts, recent conversations/actions.
@@ -67,4 +140,7 @@ class TaskContext(BaseModel):
                 "cycle_count": self.cycle_count, "tool_count": self.tool_count}
 
     def public(self) -> dict:
-        return self.model_dump(exclude={"action_history", "discoveries", "critic_feedback", "explorer_reports"})
+        payload = self.model_dump(exclude={"action_history", "discoveries", "critic_feedback", "explorer_reports"})
+        payload["explored_rooms"] = sorted(self.explored_rooms)
+        payload["last_progress_signature"] = list(self.last_progress_signature) if self.last_progress_signature else None
+        return payload

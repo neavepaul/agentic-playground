@@ -93,18 +93,43 @@ class TaskManager:
         self.bus.emit("critic_review", "critic", task_id=context.id, **review.model_dump())
         return review.approved
 
+    def _validate_delivery_prereqs(self, context: TaskContext, task: str) -> str | None:
+        deliver_condition = next((condition for condition in context.conditions if condition.kind == "deliver"), None)
+        if deliver_condition is None or "deliver" not in task.lower():
+            return None
+        object_id = deliver_condition.object
+        if not object_id:
+            return None
+        if object_id in context.robot_status.get("inventory", []):
+            return None
+        if context.item_location is None:
+            return f"Delivery rejected: {object_id} must be located and acquired before delivery."
+        return None
+
+    def _progress_changed(self, context: TaskContext, previous: tuple | None = None) -> bool:
+        signature = context.progress_signature()
+        current = previous if previous is not None else context.last_progress_signature
+        context.last_progress_signature = signature
+        return current != signature
+
     async def _loop(self, context: TaskContext) -> None:
         # Bootstrap through a permitted tool; no agent gets an omniscient snapshot.
         self.call_tool(context, "get_status", {})
         self.bus.emit("agent_active", "coordinator", task_id=context.id)
         goal_plan = await self.coordinator.define_goal(context.goal)
         context.conditions = goal_plan.conditions
+        context.refresh_task_state()
         self.message(context, "coordinator", goal_plan.summary)
         for cycle in range(self.settings.max_coordinator_cycles):
             context.cycle_count = cycle + 1
             self.bus.emit("task_updated", task=context.public())
             self.bus.emit("agent_active", "coordinator", task_id=context.id)
             decision = await self.coordinator.decide(context)
+            if decision.action == "delegate":
+                blocked = self._validate_delivery_prereqs(context, decision.task)
+                if blocked:
+                    self.message(context, "system", blocked)
+                    decision.task = f"Search for the missing object before any delivery."
             public_summary = {
                 "complete": "Checking goal completion against tool evidence.",
                 "delegate": "Delegating: " + decision.task,
@@ -164,7 +189,12 @@ class TaskManager:
                         if not await self.review(context, proposal, "object_transfer"):
                             self.message(context, "system", "Object action rejected by Critic; revising the plan.")
                             break
-                    self.call_tool(context, action.tool, action.arguments)
+                    previous_signature = context.progress_signature()
+                    result = self.call_tool(context, action.tool, action.arguments)
+                    if (result.get("success") and action.tool in {"move_to", "pick_up", "drop", "give"}
+                            and not self._progress_changed(context, previous_signature)):
+                        self.message(context, "system", "No measurable progress; forcing replan.")
+                        break
                     # Let cancellation, sockets and other API requests run between tools.
                     await asyncio.sleep(0)
                 else:
