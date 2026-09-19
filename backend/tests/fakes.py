@@ -26,4 +26,5 @@ def tool(name, **arguments):
 
 def complete(context):
     return {"action": "complete", "summary": "Requested actions completed.",
-            "evidence_ids": [a["evidence_id"] for a in context["recent_actions"] if a["success"]]}
+            "evidence_ids": [a["evidence_id"] for a in context["recent_actions"]
+                             if a["success"] and a["tool"] != "get_status"]}

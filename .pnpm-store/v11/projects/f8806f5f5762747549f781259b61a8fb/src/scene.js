@@ -12,6 +12,8 @@ export function createScene(container) {
   const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 100);
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 0.85;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   container.append(renderer.domElement);
@@ -35,7 +37,7 @@ export function createScene(container) {
   sun.shadow.bias = -0.001;
   scene.add(sun);
 
-  function box(parent, size, position, color, radius = false) {
+  function box(parent, size, position, color) {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(...size), new THREE.MeshStandardMaterial({ color, roughness: 0.8 }));
     mesh.position.set(...position);
     mesh.castShadow = true;

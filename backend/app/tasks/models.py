@@ -1,3 +1,4 @@
+from copy import deepcopy
 from typing import Literal
 from uuid import uuid4
 
@@ -17,6 +18,7 @@ class TaskContext(BaseModel):
     discoveries: dict = Field(default_factory=dict)
     action_history: list[dict] = Field(default_factory=list)
     critic_feedback: list[dict] = Field(default_factory=list)
+    explorer_reports: list[str] = Field(default_factory=list)
 
     def record(self, tool: str, arguments: dict, result: dict) -> None:
         entry = {"tool": tool, "arguments": arguments, **result}
@@ -25,7 +27,7 @@ class TaskContext(BaseModel):
             return
         obs = result["observation"]
         if tool == "get_status":
-            self.robot_status = obs
+            self.robot_status = deepcopy(obs)
         elif tool == "move_to":
             self.robot_status["room"] = obs["room"]
         elif tool == "look":
@@ -48,7 +50,8 @@ class TaskContext(BaseModel):
                 "robot_status": self.robot_status, "discoveries": facts + conversations[-8:],
                 "recent_actions": self.action_history[-8:],
                 "critic_feedback": self.critic_feedback[-2:],
+                "explorer_reports_unverified": self.explorer_reports[-2:],
                 "cycle_count": self.cycle_count, "tool_count": self.tool_count}
 
     def public(self) -> dict:
-        return self.model_dump(exclude={"action_history", "discoveries", "critic_feedback"})
+        return self.model_dump(exclude={"action_history", "discoveries", "critic_feedback", "explorer_reports"})

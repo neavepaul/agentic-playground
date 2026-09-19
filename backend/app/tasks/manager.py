@@ -78,6 +78,7 @@ class TaskManager:
         context.tool_count += 1
         result = self.tools.execute(tool, arguments, context.id)
         context.record(tool, arguments, result)
+        self.bus.emit("task_updated", task=context.public())
         return result
 
     async def review(self, context: TaskContext, proposal: str, kind: str,
@@ -85,6 +86,7 @@ class TaskManager:
         if context.critic_count >= self.settings.max_critic_reviews:
             raise LimitReached("Maximum Critic reviews reached; stopping repeated debate.")
         context.critic_count += 1
+        self.bus.emit("agent_active", "critic", task_id=context.id)
         review = await self.critic.review(context, proposal, kind, evidence)
         context.critic_feedback.append({"proposal": proposal, **review.model_dump()})
         self.bus.emit("critic_review", "critic", task_id=context.id, **review.model_dump())
@@ -95,6 +97,7 @@ class TaskManager:
         self.call_tool(context, "get_status", {})
         for cycle in range(self.settings.max_coordinator_cycles):
             context.cycle_count = cycle + 1
+            self.bus.emit("task_updated", task=context.public())
             self.bus.emit("agent_active", "coordinator", task_id=context.id)
             decision = await self.coordinator.decide(context)
             self.message(context, "coordinator", decision.summary)
@@ -123,6 +126,7 @@ class TaskManager:
                     action = await self.explorer.decide(context, decision.task)
                     self.message(context, "explorer", action.summary)
                     if action.action == "report":
+                        context.explorer_reports.append(action.summary)
                         break
                     self.call_tool(context, action.tool, action.arguments)
                     # Let cancellation, sockets and other API requests run between tools.
