@@ -49,10 +49,14 @@ class TaskContext(BaseModel):
         observed_rooms = {v["observation"]["room"] for v in facts if v["tool"] == "look"}
         known_exits = {room for v in facts if v["tool"] == "look"
                        for room in v["observation"]["connections"]}
+        recent = self.action_history[-8:]
+        recent_ids = {entry["evidence_id"] for entry in recent}
+        older_discoveries = [entry for entry in facts + conversations[-8:]
+                             if entry["evidence_id"] not in recent_ids]
         return {"goal": self.goal, "current_plan": self.current_plan,
-                "robot_status": self.robot_status, "discoveries": facts + conversations[-8:],
+                "robot_status": self.robot_status, "discoveries": older_discoveries,
                 "known_but_unobserved_rooms": sorted(known_exits - observed_rooms),
-                "recent_actions": self.action_history[-8:],
+                "recent_actions": recent,
                 "critic_feedback": self.critic_feedback[-2:],
                 "explorer_reports_unverified": self.explorer_reports[-2:],
                 "cycle_count": self.cycle_count, "tool_count": self.tool_count}

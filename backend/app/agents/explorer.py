@@ -11,7 +11,12 @@ from .schemas import ExplorerDecision
 class Explorer:
     def __init__(self, client: LLMClient, tool_schemas: dict) -> None:
         self.client = client
-        self.tool_schemas = tool_schemas
+        # Keep argument signatures small in the prompt. The complete Pydantic
+        # schemas still validate every call at the tool boundary.
+        self.tool_schemas = {
+            name: {"arguments": {key: value["type"] for key, value in schema["properties"].items()}}
+            for name, schema in tool_schemas.items()
+        }
 
     async def decide(self, context: TaskContext, task: str) -> ExplorerDecision:
         allowed = list(self.tool_schemas)

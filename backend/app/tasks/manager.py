@@ -100,8 +100,12 @@ class TaskManager:
             self.bus.emit("task_updated", task=context.public())
             self.bus.emit("agent_active", "coordinator", task_id=context.id)
             decision = await self.coordinator.decide(context)
-            public_summary = ("Checking goal completion against tool evidence."
-                              if decision.action == "complete" else decision.summary)
+            public_summary = {
+                "complete": "Checking goal completion against tool evidence.",
+                "delegate": "Delegating: " + decision.task,
+                "consult_critic": "Reviewing plan: " + decision.plan,
+                "fail": decision.summary,
+            }[decision.action]
             self.message(context, "coordinator", public_summary)
             if decision.action == "fail":
                 self.finish(context, "failed", decision.summary)
