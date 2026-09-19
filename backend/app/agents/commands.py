@@ -1,5 +1,3 @@
-from copy import deepcopy
-
 from app.tasks.models import TaskContext
 from app.tasks.goals import known_recipients
 
@@ -14,8 +12,7 @@ def observable_commands(context: TaskContext) -> tuple[dict, dict | None]:
     movable = {c.object for c in context.conditions if c.kind in {"hold_object", "deliver", "place_object"}}
     needs = known_recipients(context)
     deliveries = {(c.object, c.person or needs.get(c.object)) for c in context.conditions if c.kind == "deliver"}
-    entry = context.discoveries.get("room:" + str(room))
-    view = deepcopy(entry["observation"]) if entry else None
+    view = context.memory.room_view(room)
     commands = {"report": {"description": "Return discoveries or a blockage to Coordinator."},
                 "look": {"tool": "look", "arguments": {},
                          "description": "Scan the current room and refresh local visual observations."}}
@@ -28,20 +25,6 @@ def observable_commands(context: TaskContext) -> tuple[dict, dict | None]:
     previous = context.action_history[-1] if context.action_history else None
     if previous and previous["success"] and previous["tool"] == "look":
         commands.pop("look", None)
-
-    # NPCs are static. Reconcile cached objects with our own successful actions.
-    for key, update in context.discoveries.items():
-        if not key.startswith("object:"):
-            continue
-        obs = update["observation"]
-        id = obs["object"]
-        view["objects"] = [item for item in view["objects"] if item["id"] != id]
-        view["held_objects"] = [item for item in view["held_objects"] if item["object"] != id]
-        if obs["room"] == room:
-            if update["tool"] == "drop":
-                view["objects"].append({"id": id, "portable": True})
-            elif update["tool"] == "give":
-                view["held_objects"].append({"object": id, "person": obs["person"]})
 
     def add(tool: str, arguments: dict, description: str) -> None:
         id = ":".join([tool, *arguments.values()])

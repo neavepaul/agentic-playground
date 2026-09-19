@@ -12,7 +12,6 @@ async def interpret_conversation(client, context, result):
         "Resolve 'I' to the speaker. Use known IDs where available; otherwise lowercase "
         "names with underscores. These are fallible interpretations, not verified truth.",
         {"conversation": result["observation"], "goal": context.goal,
-         "observed_people": [p for key, entry in context.discoveries.items()
-                             if key.startswith("room:") for p in entry["observation"]["people"]],
+         "observed_people": [{"id": key, "name": p.name} for key, p in context.memory.people.items()],
          "requested_objects": sorted({c.object for c in context.conditions if c.object})})
     context.remember_meaning(result["evidence_id"], meaning)

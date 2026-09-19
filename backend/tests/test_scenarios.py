@@ -109,8 +109,10 @@ async def test_new_names_delivery_and_followup_notification(tmp_path):
     assert len(engine.snapshot()["people"]["alice"]["messages"]) == 2
     assert task.interpreted_needs[0]["quote"] == "I need the medicine, please."
     # No remote occupants or dialogue scripts in the first model decision.
-    first_input = fake.calls[0][0][1]["content"]
-    assert '"dialogue"' not in first_input and '"people"' not in first_input
+    first_input = json.loads(fake.calls[0][0][1]["content"])
+    assert first_input["task_memory"]["people"] == {}
+    assert first_input["task_memory"]["objects"] == {}
+    assert "dialogue" not in json.dumps(first_input)
 
 
 def test_transcript_claims_require_real_source_and_exact_quote(tmp_path):
@@ -150,3 +152,67 @@ def test_can_scan_again_after_returning_to_a_known_room(tmp_path):
                        ("move_to", {"room": "workshop"}), ("move_to", {"room": "entry"})]:
         task.record(name, args, tools.execute(name, args))
     assert "look" in observable_commands(task)[0]
+
+
+def test_task_memory_preserves_charger_plan_after_recent_history_eviction():
+    engine, bus = WorldEngine(), EventBus()
+    tools = WorldTools(engine, bus)
+    task = TaskContext(
+        goal="Find who needs the charger and deliver it.",
+        conditions=[GoalCondition(kind="deliver", object="charger")],
+    )
+
+    def act(name, **args):
+        result = tools.execute(name, args)
+        task.record(name, args, result)
+        return result
+
+    act("get_status")
+    act("look")
+    act("move_to", room="entrance")
+    act("move_to", room="office")
+    act("look")
+    conversation = act("talk_to", person="dad", message="Who needs the charger?")
+    task.remember_meaning(conversation["evidence_id"], ConversationMeaning(needs=[
+        SpokenNeed(object="charger", person="neave", quote="Neave needs the charger for his laptop.")
+    ]))
+    act("move_to", room="entrance")
+    act("move_to", room="hall")
+    act("move_to", room="bedroom_corridor")
+    act("move_to", room="master_bedroom")
+    act("look")
+    for room in ["bedroom_corridor", "hall", "kitchen", "hall", "entrance", "hall"]:
+        act("move_to", room=room)
+
+    payload = task.compact()
+    memory = payload["task_memory"]
+    assert len(payload["recent_actions"]) == 8
+    assert memory["objects"]["charger"]["location"] == {"kind": "room", "id": "office"}
+    assert memory["people"]["dad"]["location"] == "office"
+    assert memory["people"]["neave"]["location"] == "master_bedroom"
+    assert memory["people"]["dad"]["asked_topics"]["charger"]["response_excerpt"] == \
+        "Neave needs the charger for his laptop."
+    assert memory["reported_needs_unverified"][0]["person"] == "neave"
+    assert "office" in memory["visited_rooms"]
+
+
+def test_semantically_equivalent_topic_questions_are_blocked_but_new_topics_are_allowed():
+    tools = WorldTools(WorldEngine(), EventBus())
+    task = TaskContext(
+        goal="Find who needs the charger and deliver it.",
+        conditions=[GoalCondition(kind="deliver", object="charger")],
+    )
+
+    def act(name, **args):
+        task.record(name, args, tools.execute(name, args))
+
+    act("get_status")
+    act("move_to", room="entrance")
+    act("move_to", room="office")
+    act("look")
+    act("talk_to", person="dad", message="Do you know where the charger is?")
+
+    assert task.repeat_reason("dad", "Have you seen the charger?") is not None
+    assert task.repeat_reason("dad", "Who has the charger?") is not None
+    assert task.repeat_reason("dad", "Do you know anything about the charger?") is not None
+    assert task.repeat_reason("dad", "Are you ready for dinner?") is None

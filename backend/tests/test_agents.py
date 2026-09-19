@@ -67,10 +67,11 @@ async def test_delivery_end_to_end_with_mock_model():
     assert mission_satisfied(3, task, engine.snapshot())
     assert mgr.active_id is None
     assert any(e["type"] == "object_given" for e in bus.history)
-    # Initial Coordinator and Explorer inputs do not reveal hidden people/items.
+    # Initial Coordinator and Explorer inputs do not reveal hidden occupants/items.
     for messages, _ in fake.calls[:2]:
-        assert '"people"' not in messages[1]["content"]
-        assert '"objects"' not in messages[1]["content"]
+        payload = messages[1]["content"]
+        assert '"people": {' not in payload or '"people": {}' in payload
+        assert '"objects": {' not in payload or '"objects": {}' in payload
         assert '"world"' not in messages[1]["content"]
 
 

@@ -108,7 +108,6 @@ class TaskManager:
         self.bus.emit("agent_active", "coordinator", task_id=context.id)
         goal_plan = await self.coordinator.define_goal(context.goal, context.floor_plan)
         context.conditions = goal_plan.conditions
-        context.refresh_task_state()
         self.message(context, "coordinator", goal_plan.summary)
         for cycle in range(self.settings.max_coordinator_cycles):
             context.cycle_count = cycle + 1
