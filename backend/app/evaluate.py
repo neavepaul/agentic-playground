@@ -44,7 +44,7 @@ async def evaluate(numbers: list[int]) -> bool:
     try:
         for number in numbers:
             started = time.monotonic()
-            engine, bus = WorldEngine(), EventBus()
+            engine, bus = WorldEngine(settings.world_file), EventBus()
             manager = TaskManager(client, WorldTools(engine, bus), bus, settings)
             task = manager.start(MISSIONS[number])
             await manager.runner

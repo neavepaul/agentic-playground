@@ -4,6 +4,7 @@ import logging
 from app.agents.coordinator import Coordinator
 from app.agents.critic import Critic
 from app.agents.explorer import Explorer
+from app.agents.conversation import interpret_conversation
 from app.config import Settings
 from app.events.bus import EventBus
 from app.llm.base import LLMClient, ModelError
@@ -23,6 +24,7 @@ class LimitReached(RuntimeError):
 class TaskManager:
     def __init__(self, client: LLMClient, tools: WorldTools, bus: EventBus, settings: Settings) -> None:
         self.tools, self.bus, self.settings = tools, bus, settings
+        self.client = client
         self.coordinator = Coordinator(client)
         self.explorer = Explorer(client, tools.schemas())
         self.critic = Critic(client)
@@ -115,6 +117,7 @@ class TaskManager:
     async def _loop(self, context: TaskContext) -> None:
         # Bootstrap through a permitted tool; no agent gets an omniscient snapshot.
         self.call_tool(context, "get_status", {})
+        self.call_tool(context, "get_map", {})
         self.bus.emit("agent_active", "coordinator", task_id=context.id)
         goal_plan = await self.coordinator.define_goal(context.goal)
         context.conditions = goal_plan.conditions
@@ -191,6 +194,8 @@ class TaskManager:
                             break
                     previous_signature = context.progress_signature()
                     result = self.call_tool(context, action.tool, action.arguments)
+                    if result.get("success") and action.tool == "talk_to":
+                        await interpret_conversation(self.client, context, result)
                     if (result.get("success") and action.tool in {"move_to", "pick_up", "drop", "give"}
                             and not self._progress_changed(context, previous_signature)):
                         self.message(context, "system", "No measurable progress; forcing replan.")

@@ -1,3 +1,6 @@
+from pathlib import Path
+LEGACY_WORLD = Path(__file__).parent / "fixtures" / "legacy_house.json"
+
 import pytest
 
 from app.events.bus import EventBus
@@ -7,7 +10,7 @@ from app.world.tools import TOOL_REGISTRY, WorldTools
 
 @pytest.fixture
 def setup():
-    engine, bus = WorldEngine(), EventBus()
+    engine, bus = WorldEngine(LEGACY_WORLD), EventBus()
     return engine, bus, WorldTools(engine, bus)
 
 
@@ -39,12 +42,12 @@ def test_pickup_give_drop_reset(setup):
     assert engine.snapshot()["objects"]["charger"]["location"] == {"kind": "person", "id": "neave"}
     assert engine.snapshot()["robot"]["inventory"] == []
     engine.reset()
-    assert engine.snapshot() == WorldEngine().snapshot()
+    assert engine.snapshot() == WorldEngine(LEGACY_WORLD).snapshot()
 
 
 def test_registry_validation_and_conversation(setup):
     _, _, tools = setup
-    assert set(TOOL_REGISTRY) == {"look", "get_status", "move_to", "talk_to", "pick_up", "drop", "give"}
+    assert set(TOOL_REGISTRY) == {"look", "get_map", "get_status", "move_to", "talk_to", "pick_up", "drop", "give"}
     for tool, args in [("teleport", {}), ("move_to", {}), ("look", {"secret": True}),
                        ("move_to", {"room": 4}), ("give", {"object": "keys", "person": "mom"})]:
         assert not tools.execute(tool, args)["success"]

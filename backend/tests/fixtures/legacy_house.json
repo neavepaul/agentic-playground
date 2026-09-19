@@ -1,0 +1,111 @@
+{
+  "robot": {
+    "room": "hall"
+  },
+  "rooms": {
+    "hall": {
+      "id": "hall",
+      "name": "Hall",
+      "connections": [
+        "kitchen",
+        "bedroom",
+        "study"
+      ]
+    },
+    "kitchen": {
+      "id": "kitchen",
+      "name": "Kitchen",
+      "connections": [
+        "hall"
+      ]
+    },
+    "bedroom": {
+      "id": "bedroom",
+      "name": "Bedroom",
+      "connections": [
+        "hall"
+      ]
+    },
+    "study": {
+      "id": "study",
+      "name": "Study",
+      "connections": [
+        "hall"
+      ]
+    }
+  },
+  "people": {
+    "mom": {
+      "id": "mom",
+      "name": "Mom",
+      "room": "kitchen",
+      "messages": [],
+      "dialogue": [
+        {
+          "topics": [
+            "keys",
+            "key"
+          ],
+          "response": "I saw the keys in the kitchen earlier."
+        }
+      ]
+    },
+    "neave": {
+      "id": "neave",
+      "name": "Neave",
+      "room": "bedroom",
+      "messages": [],
+      "dialogue": [
+        {
+          "topics": [
+            "charger"
+          ],
+          "response": "I need the charger for my laptop, please."
+        }
+      ]
+    },
+    "dad": {
+      "id": "dad",
+      "name": "Dad",
+      "room": "study",
+      "messages": [],
+      "dialogue": [
+        {
+          "topics": [
+            "charger"
+          ],
+          "response": "Neave needs the charger for his laptop."
+        }
+      ]
+    }
+  },
+  "objects": {
+    "keys": {
+      "id": "keys",
+      "name": "Keys",
+      "location": {
+        "kind": "room",
+        "id": "kitchen"
+      },
+      "portable": true
+    },
+    "laptop": {
+      "id": "laptop",
+      "name": "Laptop",
+      "location": {
+        "kind": "room",
+        "id": "bedroom"
+      },
+      "portable": true
+    },
+    "charger": {
+      "id": "charger",
+      "name": "Charger",
+      "location": {
+        "kind": "room",
+        "id": "study"
+      },
+      "portable": true
+    }
+  }
+}

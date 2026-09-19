@@ -9,6 +9,14 @@ class ScriptedLLM:
         self.conditions = conditions
 
     async def generate(self, messages, response_schema):
+        if response_schema.get("title") == "ConversationMeaning":
+            conversation = json.loads(messages[1]["content"])["conversation"]
+            # Deliberately scripted interpretation for the legacy regression fixture.
+            response = conversation["response"]
+            needs = ([{"object": "charger", "person": "neave", "quote": response}]
+                     if response in {"Neave needs the charger for his laptop.",
+                                     "I need the charger for my laptop, please."} else [])
+            return json.dumps({"needs": needs})
         if response_schema.get("title") == "GoalPlan":
             goal = json.loads(messages[1]["content"])["goal"].lower()
             conditions = self.conditions

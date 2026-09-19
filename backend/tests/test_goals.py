@@ -1,4 +1,7 @@
-from app.agents.schemas import GoalCondition
+from pathlib import Path
+LEGACY_WORLD = Path(__file__).parent / "fixtures" / "legacy_house.json"
+
+from app.agents.schemas import GoalCondition, ConversationMeaning, SpokenNeed
 from app.events.bus import EventBus
 from app.tasks.goals import check_conditions
 from app.tasks.models import TaskContext
@@ -7,7 +10,7 @@ from app.world.tools import WorldTools
 
 
 def setup(conditions):
-    tools = WorldTools(WorldEngine(), EventBus())
+    tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
     task = TaskContext(goal="Test conditions", conditions=conditions)
 
     def act(name, **args):
@@ -24,6 +27,9 @@ def test_laptop_delivery_cannot_satisfy_charger_goal():
     act("move_to", room="bedroom")
     act("look")
     act("talk_to", person="neave", message="Who needs the charger?")
+    source = task.action_history[-1]
+    task.remember_meaning(source["evidence_id"], ConversationMeaning(needs=[SpokenNeed(
+        object="charger", person="neave", quote=source["observation"]["response"])]))
     act("pick_up", object="laptop")
     act("give", object="laptop", person="neave")
     assert not check_conditions(task)[0]["satisfied"]

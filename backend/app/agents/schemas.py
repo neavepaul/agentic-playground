@@ -78,3 +78,13 @@ class GoalCondition(StrictModel):
 class GoalPlan(StrictModel):
     summary: ShortText
     conditions: list[GoalCondition] = Field(min_length=1, max_length=8)
+
+
+class SpokenNeed(StrictModel):
+    object: str = Field(min_length=1, max_length=40)
+    person: str = Field(min_length=1, max_length=40)
+    quote: str = Field(min_length=1, max_length=500)
+
+
+class ConversationMeaning(StrictModel):
+    needs: list[SpokenNeed] = Field(default_factory=list, max_length=8)

@@ -1,14 +1,10 @@
-from .models import Location, Person, Robot, Room, World, WorldObject
+from pathlib import Path
+
+from .models import World
+
+DEFAULT_WORLD = Path(__file__).resolve().parents[2] / "worlds" / "house.json"
 
 
-def initial_world() -> World:
-    graph = {"hall": ["kitchen", "bedroom", "study"],
-             "kitchen": ["hall"], "bedroom": ["hall"], "study": ["hall"]}
-    return World(
-        robot=Robot(),
-        rooms={id: Room(id=id, name=id.title(), connections=links) for id, links in graph.items()},
-        people={id: Person(id=id, name=id.title(), room=room) for id, room in
-                [("mom", "kitchen"), ("neave", "bedroom"), ("dad", "study")]},
-        objects={id: WorldObject(id=id, name=id.title(), location=Location(kind="room", id=room))
-                 for id, room in [("keys", "kitchen"), ("laptop", "bedroom"), ("charger", "study")]},
-    )
+def initial_world(path: str | Path | None = None) -> World:
+    """Read and validate a fresh scenario; never share mutable initial state."""
+    return World.model_validate_json(Path(path or DEFAULT_WORLD).read_text(encoding="utf-8"))

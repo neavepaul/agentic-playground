@@ -14,7 +14,6 @@ def observable_commands(context: TaskContext) -> tuple[dict, dict | None]:
     movable = {c.object for c in context.conditions if c.kind in {"hold_object", "deliver", "place_object"}}
     needs = known_recipients(context)
     deliveries = {(c.object, c.person or needs.get(c.object)) for c in context.conditions if c.kind == "deliver"}
-    known_people = set(needs.values())
     entry = context.discoveries.get("room:" + str(room))
     view = deepcopy(entry["observation"]) if entry else None
     commands = {"report": {"description": "Return discoveries or a blockage to Coordinator."}}
@@ -47,8 +46,6 @@ def observable_commands(context: TaskContext) -> tuple[dict, dict | None]:
         if item.get("portable", True) and item["id"] in movable:
             add("pick_up", {"object": item["id"]}, f"Take visible {item['id']} into inventory.")
     for person in view["people"]:
-        if person["id"] in known_people:
-            continue
         add("talk_to", {"person": person["id"]}, f"Speak to {person['id']}; supply message. This transfers no objects.")
     for item in inventory:
         if item not in movable:

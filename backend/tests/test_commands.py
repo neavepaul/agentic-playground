@@ -1,3 +1,6 @@
+from pathlib import Path
+LEGACY_WORLD = Path(__file__).parent / "fixtures" / "legacy_house.json"
+
 from app.agents.commands import observable_commands
 from app.events.bus import EventBus
 from app.tasks.models import TaskContext
@@ -7,7 +10,7 @@ from app.world.tools import WorldTools
 
 
 def test_command_choices_use_only_observations_and_reconcile_ownership():
-    tools = WorldTools(WorldEngine(), EventBus())
+    tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
     task = TaskContext(goal="Arbitrary goal text is not parsed by the command builder.",
                        conditions=[GoalCondition(kind="deliver", object="charger", person="neave")])
 

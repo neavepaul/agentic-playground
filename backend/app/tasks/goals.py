@@ -11,9 +11,8 @@ def normalize(text: str) -> str:
 
 
 def known_recipients(context: "TaskContext") -> dict[str, str]:
-    return {fact["object"]: fact["person"] for action in context.action_history
-            if action["success"] and action["tool"] == "talk_to"
-            for fact in action["observation"].get("facts", []) if fact.get("type") == "needs_object"}
+    # Grounded language interpretations remain fallible; no simulator needs are read.
+    return {claim["object"]: claim["person"] for claim in context.interpreted_needs}
 
 
 def check_conditions(context: "TaskContext") -> list[dict]:

@@ -1,3 +1,6 @@
+from pathlib import Path
+LEGACY_WORLD = Path(__file__).parent / "fixtures" / "legacy_house.json"
+
 import asyncio
 
 import httpx
@@ -19,7 +22,7 @@ from tests.fakes import ScriptedLLM, WaitingLLM, complete, tool
 
 
 def manager(client, **limits):
-    engine, bus = WorldEngine(), EventBus()
+    engine, bus = WorldEngine(LEGACY_WORLD), EventBus()
     return TaskManager(client, WorldTools(engine, bus), bus, Settings(**limits)), engine, bus
 
 
@@ -162,7 +165,7 @@ async def test_impossible_action_is_observed_and_recovered():
     task = mgr.start("Find Neave and tell him dinner is ready.")
     await mgr.runner
     assert task.status == "completed"
-    assert not task.action_history[4]["success"]
+    assert not task.action_history[5]["success"]
     assert "Invalid arguments" in fake.calls[5][0][1]["content"]
     assert mission_satisfied(2, task, engine.snapshot())
 
@@ -225,7 +228,7 @@ async def test_no_progress_report_is_reviewed_and_recovers():
 async def test_explorer_rejects_repeated_read_without_new_information():
     from app.agents.explorer import Explorer
     from app.tasks.models import TaskContext
-    engine, bus = WorldEngine(), EventBus()
+    engine, bus = WorldEngine(LEGACY_WORLD), EventBus()
     tools = WorldTools(engine, bus)
     context = TaskContext(goal="Find keys.")
     context.record("get_status", {}, tools.execute("get_status", {}))
@@ -249,13 +252,13 @@ async def test_repeated_command_returns_to_coordinator_before_action_budget():
     task = mgr.start("Find keys.")
     await mgr.runner
     assert task.status == "completed"
-    assert task.tool_count == 5 and task.critic_count == 2
+    assert task.tool_count == 6 and task.critic_count == 2
     assert sum(a["tool"] == "talk_to" for a in task.action_history) == 1
     assert any("Repeated identical" in e["data"].get("summary", "") for e in bus.history)
 
 
-def test_known_recipient_blocks_repeated_talk_to_same_person():
-    tools = WorldTools(WorldEngine(), EventBus())
+def test_recipient_can_still_receive_other_messages():
+    tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
     task = TaskContext(
         goal="Find out who needs the charger and deliver it.",
         conditions=[GoalCondition(kind="deliver", object="charger", person="")],
@@ -271,13 +274,13 @@ def test_known_recipient_blocks_repeated_talk_to_same_person():
     act("talk_to", person="neave", message="Who needs the charger?")
 
     choices, _ = observable_commands(task)
-    assert "talk_to:neave" not in choices
+    assert "talk_to:neave" in choices
     assert "move_to:hall" in choices
     assert "move_to:study" not in choices
 
 
-def test_known_recipient_allows_hall_exit_but_blocks_repeated_talk():
-    tools = WorldTools(WorldEngine(), EventBus())
+def test_conversation_preserves_local_navigation():
+    tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
     task = TaskContext(
         goal="Find out who needs the charger and deliver it.",
         conditions=[GoalCondition(kind="deliver", object="charger", person="")],
@@ -293,7 +296,7 @@ def test_known_recipient_allows_hall_exit_but_blocks_repeated_talk():
     act("talk_to", person="neave", message="Who needs the charger?")
 
     choices, _ = observable_commands(task)
-    assert "talk_to:neave" not in choices
+    assert "talk_to:neave" in choices
     assert "move_to:hall" in choices
 
 

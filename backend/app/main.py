@@ -25,7 +25,7 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
     # Never enable HTTP wire-body logging, even with application DEBUG.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-    bus, engine = EventBus(), WorldEngine()
+    bus, engine = EventBus(), WorldEngine(config.world_file)
     llm = client or OllamaClient(config)
     manager = TaskManager(llm, WorldTools(engine, bus), bus, config)
     mutation_lock = asyncio.Lock()

@@ -32,6 +32,7 @@ class TalkArguments(Arguments):
 
 # Explicit allowlist: model strings are never resolved as Python attributes.
 TOOL_REGISTRY = {
+    "get_map": (Arguments, WorldEngine.get_map, "map_observed"),
     "get_status": (Arguments, WorldEngine.get_status, "status_observed"),
     "look": (Arguments, WorldEngine.look, "room_observed"),
     "move_to": (MoveArguments, WorldEngine.move_to, "robot_moved"),

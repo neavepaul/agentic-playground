@@ -9,14 +9,18 @@ class WorldError(ValueError):
 class WorldEngine:
     """Deterministic simulator. Only the tool service calls these operations."""
 
-    def __init__(self) -> None:
-        self._world = initial_world()
+    def __init__(self, world_file=None) -> None:
+        self.world_file = world_file
+        self._world = initial_world(world_file)
 
     def snapshot(self) -> dict:
         return self._world.snapshot()
 
     def reset(self) -> None:
-        self._world = initial_world()
+        self._world = initial_world(self.world_file)
+
+    def get_map(self) -> dict:
+        return self._world.floor_plan()
 
     def get_status(self) -> dict:
         return {"room": self._world.robot.room,
@@ -77,16 +81,12 @@ class WorldEngine:
         npc.messages.append(message)
         npc.messages[:] = npc.messages[-50:]
         text = message.lower()
-        facts = []
-        if "charger" in text and person in ("dad", "neave"):
-            response = ("Neave asked me about the charger earlier. He needs it." if person == "dad"
-                        else "I need the charger for my laptop, please.")
-            facts = [{"type": "needs_object", "object": "charger", "person": "neave"}]
-        elif "key" in text and person == "mom":
-            response = "I saw the keys in the kitchen at the start of the day."
-        elif "dinner" in text or "leaving" in text:
-            response = "Thanks for letting me know. I heard your message."
-        else:
-            response = "I heard you. I don't have any more information about that."
+        import re
+        words = set(re.findall(r"\w+", text))
+        response = "I heard your message. I don't have any more information about that."
+        for dialogue in npc.dialogue:
+            if any(set(re.findall(r"\w+", topic.lower())) <= words for topic in dialogue.topics):
+                response = dialogue.response
+                break
         return {"person": person, "message": message, "response": response,
-                "room": self._world.robot.room, "facts": facts}
+                "room": self._world.robot.room}

@@ -3,8 +3,6 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { CSS2DObject, CSS2DRenderer } from 'three/addons/renderers/CSS2DRenderer.js';
 import { MovementQueue } from './animations.js';
 
-const ROOMS = { hall: [0, 0], kitchen: [-5, 0], bedroom: [5, 0], study: [0, -5] };
-const roomPosition = (room) => new THREE.Vector3(ROOMS[room][0], 0, ROOMS[room][1]);
 
 export function createScene(container) {
   const scene = new THREE.Scene();
@@ -24,9 +22,10 @@ export function createScene(container) {
   controls.enableDamping = true;
   controls.maxPolarAngle = Math.PI / 2.35;
   controls.minDistance = 10;
-  controls.maxDistance = 35;
+  controls.maxDistance = 60;
+  let viewDistance = 18;
   controls.enablePan = false;
-  const resetView = () => { camera.position.set(13, 17, 19); controls.target.set(0, 0, -1); controls.update(); };
+  const resetView = () => { camera.position.set(0, viewDistance, viewDistance * .45); controls.target.set(0, 0, 0); controls.update(); };
   resetView();
   scene.add(new THREE.HemisphereLight(0xffffff, 0xaab397, 2.5));
   const sun = new THREE.DirectionalLight(0xfff6df, 3);
@@ -55,33 +54,82 @@ export function createScene(container) {
     return object;
   }
   box(scene, [200, .1, 200], [0, -.31, 0], '#edf0e8').castShadow = false;
-  const colors = { hall: '#e5dfce', kitchen: '#dae4d3', bedroom: '#dedfe7', study: '#d3e1de' };
-  for (const [id, [x, z]] of Object.entries(ROOMS)) {
-    const room = new THREE.Group();
-    room.position.set(x, 0, z);
-    scene.add(room);
-    box(room, [4.6, .25, 4.6], [0, -.15, 0], colors[id]);
-    label(room, id, [0, .02, 1.88], 'room');
-    // Low walls leave room contents visible; openings face the hall.
-    const openings = { hall: ['west', 'east', 'north'], kitchen: ['east'], bedroom: ['west'], study: ['south'] }[id];
-    for (const side of ['north', 'south', 'east', 'west']) {
-      const horizontal = side === 'north' || side === 'south';
-      const sign = side === 'north' || side === 'west' ? -1 : 1;
-      const parts = openings.includes(side) ? [[-1.65, 1.3], [1.65, 1.3]] : [[0, 4.6]];
-      for (const [offset, length] of parts) {
-        box(room, horizontal ? [length, .48, .12] : [.12, .48, length],
-          horizontal ? [offset, .13, sign * 2.25] : [sign * 2.25, .13, offset], '#f7f8ef');
+  let layoutKey = '';
+  let layout = new THREE.Group();
+  scene.add(layout);
+  let roomDefinitions = {};
+  let origin = [0, 0];
+  const point = ([x, z]) => new THREE.Vector3(x - origin[0], 0, z - origin[1]);
+  const roomPosition = (id) => point(roomDefinitions[id].anchor);
+
+  function disposeTree(group) {
+    group.traverse(object => {
+      object.element?.remove();
+      object.geometry?.dispose();
+      if (Array.isArray(object.material)) object.material.forEach(m => m.dispose());
+      else object.material?.dispose();
+    });
+    group.removeFromParent();
+  }
+
+  function buildLayout(world) {
+    const key = JSON.stringify([world.rooms, world.doors]);
+    if (key === layoutKey) return false;
+    layoutKey = key;
+    disposeTree(layout);
+    layout = new THREE.Group();
+    scene.add(layout);
+    roomDefinitions = Object.fromEntries(Object.entries(world.rooms).map(([id, room], index) => {
+      if (room.outline?.length) return [id, room];
+      // Geometry is optional for headless fixtures; give unknown rooms a generic tile.
+      const x = (index % 3) * 5, z = Math.floor(index / 3) * 5;
+      return [id, { ...room, anchor: [x, z], outline: [[x-2,z-2],[x+2,z-2],[x+2,z+2],[x-2,z+2]] }];
+    }));
+    const points = Object.values(roomDefinitions).flatMap(room => room.outline);
+    const xs = points.map(p => p[0]), zs = points.map(p => p[1]);
+    const width = Math.max(...xs) - Math.min(...xs), depth = Math.max(...zs) - Math.min(...zs);
+    origin = [(Math.max(...xs) + Math.min(...xs)) / 2, (Math.max(...zs) + Math.min(...zs)) / 2];
+    viewDistance = Math.max(14, width * 1.55, depth * 1.8);
+    resetView();
+    for (const room of Object.values(roomDefinitions)) {
+      const vertices = room.outline.map(point);
+      const shape = new THREE.Shape(vertices.map(p => new THREE.Vector2(p.x, -p.z)));
+      const floor = new THREE.Mesh(new THREE.ShapeGeometry(shape), new THREE.MeshStandardMaterial({ color: room.color, side: THREE.DoubleSide }));
+      floor.rotation.x = -Math.PI / 2;
+      floor.position.y = -.025;
+      floor.receiveShadow = true;
+      layout.add(floor);
+      const center = roomPosition(room.id);
+      label(layout, room.name, [center.x, .04, center.z + .65], 'room');
+      for (let i = 0; i < vertices.length; i++) {
+        const a = vertices[i], b = vertices[(i + 1) % vertices.length];
+        const length = a.distanceTo(b), direction = b.clone().sub(a).normalize();
+        const gaps = (world.doors || []).filter(door => door.rooms.includes(room.id)).flatMap(door => {
+          const delta = point(door.position).sub(a), along = delta.dot(direction);
+          const perpendicular = delta.clone().sub(direction.clone().multiplyScalar(along)).length();
+          return perpendicular < .02 && along >= 0 && along <= length
+            ? [[Math.max(0, along-door.width/2), Math.min(length, along+door.width/2)]] : [];
+        }).sort((a,b) => a[0]-b[0]);
+        let cursor = 0;
+        for (const [start, end] of [...gaps, [length, length]]) {
+          if (start > cursor) {
+            const middle = a.clone().addScaledVector(direction, (cursor+start)/2);
+            const wall = box(layout, [start-cursor, .22, .075], [middle.x, .085, middle.z], '#536359');
+            wall.rotation.y = -Math.atan2(direction.z, direction.x);
+          }
+          cursor = Math.max(cursor, end);
+        }
       }
     }
+    for (const door of world.doors || []) {
+      const position = point(door.position);
+      const marker = new THREE.Mesh(new THREE.CircleGeometry(.14, 20), new THREE.MeshBasicMaterial({ color: '#fff8df', side: THREE.DoubleSide }));
+      marker.rotation.x = -Math.PI / 2;
+      marker.position.set(position.x, .005, position.z);
+      layout.add(marker);
+    }
+    return true;
   }
-  box(scene, [.5, .08, 1.3], [-2.5, -.09, 0], '#d3d6c4');
-  box(scene, [.5, .08, 1.3], [2.5, -.09, 0], '#d3d6c4');
-  box(scene, [1.3, .08, .5], [0, -.09, -2.5], '#d3d6c4');
-  // A few fixed furnishings for orientation, with no simulation semantics.
-  box(scene, [2.8, .65, .65], [-5, .25, -1.6], '#9cad92');
-  box(scene, [1.45, .45, 2.0], [5.8, .18, -.6], '#b6b8c5');
-  box(scene, [1.35, .12, .5], [5.8, .47, -1.15], '#f1f0ee');
-  box(scene, [2, .65, .7], [.25, .26, -6.55], '#8ea79c');
 
   function person(color, robot = false) {
     const group = new THREE.Group();
@@ -111,22 +159,28 @@ export function createScene(container) {
 
   function update(nextWorld, snap = false) {
     world = nextWorld;
-    if (snap || !lastRoom) movement.snap(roomPosition(world.robot.room));
-    else if (world.robot.room !== lastRoom) movement.move(roomPosition(world.robot.room));
+    const changed = buildLayout(world);
+    if (snap || changed || !lastRoom) movement.snap(roomPosition(world.robot.room));
+    else if (world.robot.room !== lastRoom) {
+      const door = (world.doors || []).find(d => d.rooms.includes(lastRoom) && d.rooms.includes(world.robot.room));
+      if (door) movement.move(point(door.position));
+      movement.move(roomPosition(world.robot.room));
+    }
     lastRoom = world.robot.room;
+    for (const [id, mesh] of people) if (!world.people[id]) { disposeTree(mesh); people.delete(id); }
+    for (const [id, mesh] of objects) if (!world.objects[id]) { disposeTree(mesh); objects.delete(id); }
     for (const npc of Object.values(world.people)) {
       if (!people.has(npc.id)) {
-        const mesh = person({ mom: '#7f9b72', dad: '#689b91', neave: '#8e93b0' }[npc.id]);
+        const mesh = person('#748caa');
         label(mesh, npc.name, [0, 1.48, 0]);
         people.set(npc.id, mesh);
       }
-      people.get(npc.id).position.copy(roomPosition(npc.room)).add(new THREE.Vector3(-.8, 0, -.5));
+      people.get(npc.id).position.copy(roomPosition(npc.room)).add(new THREE.Vector3(-.35, 0, -.3));
     }
     for (const item of Object.values(world.objects)) {
       if (!objects.has(item.id)) {
         const group = new THREE.Group();
-        const sizes = { charger: [.32, .18, .38], keys: [.3, .07, .16], laptop: [.6, .08, .43] };
-        box(group, sizes[item.id] || [.3, .2, .3], [0, .13, 0], item.id === 'keys' ? '#bc9b55' : '#637280');
+        box(group, [.25, .18, .3], [0, .13, 0], '#637280');
         label(group, item.name, [0, .5, 0], 'object');
         scene.add(group);
         objects.set(item.id, group);
@@ -144,7 +198,7 @@ export function createScene(container) {
       } else if (item.location.kind === 'person') {
         mesh.position.copy(people.get(item.location.id).position).add(new THREE.Vector3(.5, .6, 0));
       } else {
-        mesh.position.copy(roomPosition(item.location.id)).add(new THREE.Vector3(.6, 0, .5));
+        mesh.position.copy(roomPosition(item.location.id)).add(new THREE.Vector3(.35, 0, .25));
       }
     }
   }

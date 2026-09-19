@@ -23,6 +23,8 @@ class TaskContext(BaseModel):
     critic_feedback: list[dict] = Field(default_factory=list)
     explorer_reports: list[str] = Field(default_factory=list)
     conditions: list[GoalCondition] = Field(default_factory=list)
+    floor_plan: dict = Field(default_factory=dict)
+    interpreted_needs: list[dict] = Field(default_factory=list)
     recipient: str | None = None
     recipient_location: str | None = None
     item_location: str | None = None
@@ -30,6 +32,16 @@ class TaskContext(BaseModel):
     delivered: bool = False
     explored_rooms: set[str] = Field(default_factory=set)
     last_progress_signature: tuple | None = None
+
+    def remember_meaning(self, evidence_id, meaning) -> None:
+        source = next((a for a in self.action_history if a["evidence_id"] == evidence_id
+                       and a["success"] and a["tool"] == "talk_to"), None)
+        if source is None:
+            return
+        for need in meaning.needs:
+            if need.quote in source["observation"]["response"]:
+                self.interpreted_needs.append({**need.model_dump(), "evidence_id": evidence_id})
+        self.refresh_task_state()
 
     def _person_location(self, person: str) -> str | None:
         for entry in (v for k, v in self.discoveries.items() if k.startswith("room:") and v.get("success")):
@@ -104,6 +116,8 @@ class TaskContext(BaseModel):
         obs = result["observation"]
         if tool == "get_status":
             self.robot_status = deepcopy(obs)
+        elif tool == "get_map":
+            self.floor_plan = deepcopy(obs)
         elif tool == "move_to":
             self.robot_status["room"] = obs["room"]
         elif tool == "look":
@@ -126,11 +140,14 @@ class TaskContext(BaseModel):
         observed_rooms = {v["observation"]["room"] for v in facts if v["tool"] == "look"}
         known_exits = {room for v in facts if v["tool"] == "look"
                        for room in v["observation"]["connections"]}
+        known_exits |= set(self.floor_plan.get("rooms", {}))
         recent = self.action_history[-8:]
         recent_ids = {entry["evidence_id"] for entry in recent}
         older_discoveries = [entry for entry in facts + conversations[-8:]
                              if entry["evidence_id"] not in recent_ids]
         return {"goal": self.goal, "current_plan": self.current_plan,
+                "floor_plan": self.floor_plan,
+                "interpreted_needs_unverified": self.interpreted_needs,
                 "required_outcomes": check_conditions(self),
                 "robot_status": self.robot_status, "discoveries": older_discoveries,
                 "known_but_unobserved_rooms": sorted(known_exits - observed_rooms),
