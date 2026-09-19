@@ -77,9 +77,11 @@ class WorldEngine:
         npc.messages.append(message)
         npc.messages[:] = npc.messages[-50:]
         text = message.lower()
+        facts = []
         if "charger" in text and person in ("dad", "neave"):
             response = ("Neave asked me about the charger earlier. He needs it." if person == "dad"
                         else "I need the charger for my laptop, please.")
+            facts = [{"type": "needs_object", "object": "charger", "person": "neave"}]
         elif "key" in text and person == "mom":
             response = "I saw the keys in the kitchen at the start of the day."
         elif "dinner" in text or "leaving" in text:
@@ -87,4 +89,4 @@ class WorldEngine:
         else:
             response = "I heard you. I don't have any more information about that."
         return {"person": person, "message": message, "response": response,
-                "room": self._world.robot.room}
+                "room": self._world.robot.room, "facts": facts}

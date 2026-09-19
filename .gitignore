@@ -6,3 +6,6 @@ __pycache__/
 node_modules/
 dist/
 artifacts/
+graphify-out/
+.pnpm-store/
+venv/

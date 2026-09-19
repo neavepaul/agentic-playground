@@ -1,13 +1,15 @@
 from app.agents.commands import observable_commands
 from app.events.bus import EventBus
 from app.tasks.models import TaskContext
+from app.agents.schemas import GoalCondition
 from app.world.engine import WorldEngine
 from app.world.tools import WorldTools
 
 
 def test_command_choices_use_only_observations_and_reconcile_ownership():
     tools = WorldTools(WorldEngine(), EventBus())
-    task = TaskContext(goal="Arbitrary goal, deliberately not examined by command builder.")
+    task = TaskContext(goal="Arbitrary goal text is not parsed by the command builder.",
+                       conditions=[GoalCondition(kind="deliver", object="charger", person="neave")])
 
     def act(name, **args):
         task.record(name, args, tools.execute(name, args))
@@ -27,7 +29,7 @@ def test_command_choices_use_only_observations_and_reconcile_ownership():
     assert "move_to:bedroom" not in choices and "give:charger:dad" not in choices
     act("pick_up", object="charger")
     choices, view = observable_commands(task)
-    assert "pick_up:charger" not in choices and "give:charger:dad" in choices
+    assert "pick_up:charger" not in choices and "give:charger:dad" not in choices
     assert not view["objects"]
     act("drop", object="charger")
     choices, view = observable_commands(task)
@@ -37,6 +39,8 @@ def test_command_choices_use_only_observations_and_reconcile_ownership():
     act("move_to", room="hall")
     act("move_to", room="bedroom")
     act("look")
+    assert "give:charger:neave" in observable_commands(task)[0]
+    assert "pick_up:laptop" not in observable_commands(task)[0]
     act("give", object="charger", person="neave")
     choices, view = observable_commands(task)
     assert "give:charger:neave" not in choices and "pick_up:charger" not in choices

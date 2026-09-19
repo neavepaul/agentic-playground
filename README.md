@@ -30,9 +30,9 @@ ollama pull qwen3:8b
 ```powershell
 cd backend
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+python -m pip install -r requirements.txt
 Copy-Item .env.example .env
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 Environment activation is optional because these commands invoke the virtual
@@ -42,8 +42,9 @@ environment's Python directly. Do not overwrite an existing `.env` when updating
 
 ```powershell
 cd frontend
-npm install
-npm run dev
+npm install -g pnpm
+pnpm install
+pnpm dev
 ```
 
 Open **[http://127.0.0.1:5173](http://127.0.0.1:5173)**. The development server proxies
@@ -62,11 +63,11 @@ use these commands from the project root with that existing installation:
 
 ```powershell
 # Backend, terminal 1
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
+python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 
 # Frontend, terminal 2
 cd frontend
-node node_modules/vite/bin/vite.js --host 127.0.0.1
+pnpm dev
 ```
 
 The standard setup above remains the portable way to recreate the environment.
@@ -113,7 +114,8 @@ requests a review, proposes completion, or fails. Explorer returns a single
 allowlisted tool command or a report. A delegated task has an action budget,
 after which control returns to Coordinator. Critic reviews plans on request and
 every proposed completion. Reports from a delegation with no tool progress also
-receive a review, allowing Critic feedback to correct unsupported claims. It has
+receive a review, allowing Critic feedback to correct unsupported claims. Pickup
+and handoff proposals also require Critic approval before execution. It has
 a separate review budget to prevent debate loops. Repeated identical commands
 return control early for Critic feedback and a revised Coordinator plan.
 
@@ -125,8 +127,11 @@ distinct prompts and role-specific context. NPCs use deterministic keyword match
 
 Explorer chooses a schema-constrained `command_id` such as `move_to:hall` or
 `pick_up:charger`, with a free-text `message` for conversation. `agents/commands.py`
-constructs these tool choices **only from observed rooms, inventory and successful
-actions**. It never reads the simulator or examines the goal. The choice maps to
+constructs these tool choices from **observed rooms, inventory, successful actions
+and Coordinator's fixed success conditions**. It never reads the simulator or
+parses natural-language goal text. Object actions are scoped to the requested
+objects, and a handoff to an unnamed recipient requires conversation evidence
+establishing who needs that object. The choice maps to
 an ordinary `{tool, arguments}` call, which is validated again by the tool registry.
 This avoids requiring a small local model to invent valid identifiers and arguments
 on every step. The model still selects the route, questions, object actions and
@@ -149,9 +154,18 @@ Task memory retains tool evidence, latest room/object observations, conversation
 results, failed actions, the current plan, Explorer reports and Critic feedback.
 Model prompts receive bounded recent history and compact discoveries, not the
 entire event stream. Explorer reports are explicitly unverified; facts come from tools.
-Completion must cite existing successful tool evidence IDs (a status call alone
-does not qualify), and Critic must approve its match to the original goal.
-This is evidence grounding, not a formal proof of arbitrary natural-language goals.
+Before acting, Coordinator translates the goal into fixed typed success conditions:
+find an object/person, identify a recipient, hold/deliver/place an object, notify
+a person/everyone, or visit a room. The conditions cannot be changed by later
+Coordinator decisions. Python checks them against tool evidence on every turn.
+For example, handing over a laptop cannot satisfy a charger-delivery condition,
+even if Coordinator and Critic both mistakenly say it does. NPC responses include
+small structured facts for the deterministic knowledge they convey.
+
+Completion requires **all conditions satisfied**, valid successful evidence IDs
+(a status call alone does not qualify), and Critic approval. Natural-language goal
+interpretation still comes from the model; this is not a formal semantic proof of
+arbitrary language. Notification checks use normalized message text.
 
 ### Model interface
 
@@ -188,7 +202,7 @@ Copy `backend/.env.example` to `backend/.env`. Environment variables override it
 | `MAX_COORDINATOR_CYCLES` | `20` | Maximum planning iterations |
 | `MAX_EXPLORER_ACTIONS` | `8` | Maximum decisions per delegation |
 | `MAX_TOOL_CALLS` | `50` | Includes bootstrap status and failed calls |
-| `MAX_CRITIC_REVIEWS` | `6` | Prevents repeated review loops |
+| `MAX_CRITIC_REVIEWS` | `8` | Bounds transfer/completion reviews and recovery |
 | `LOG_LEVEL` | `INFO` | Use `DEBUG` for application diagnostics |
 
 The application uses in-process memory; use **one Uvicorn worker**. Bind it to

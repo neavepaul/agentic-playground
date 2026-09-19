@@ -6,7 +6,7 @@ Pydantic 2.13.5, Vite 7.3.6, Three.js 0.180.0. Default local model:
 
 ## Automated checks
 
-- Backend: **30 tests passed** with `python -m pytest -q`.
+- Backend: **35 tests passed** with `python -m pytest -q`.
 - Python source compilation passed with `python -m compileall -q app`
   before the final command-menu change; the final modules were imported/executed by pytest.
 - Frontend animation test: **1 passed**, covering room-to-room queue order,
@@ -28,6 +28,9 @@ schema validation, model transport failures, execution budgets, timeout, cancell
 completion evidence rejection, Critic rejection/recovery, duplicate-command recovery,
 observation-derived command choices, cached object ownership, API lifecycle,
 single-task enforcement and WebSocket snapshot/overflow behavior.
+Additional regressions cover a laptop delivery failing a charger condition,
+incomplete broadcasts, holding/placing objects, completion with valid but
+insufficient evidence IDs, and a Critic veto preventing a proposed transfer.
 
 ## Live checks
 
@@ -47,6 +50,9 @@ single-task enforcement and WebSocket snapshot/overflow behavior.
 
 Earlier full live attempts exposed repeated reads/questions and an unsupported
 delivery report. Those attempts were cancelled during development, not counted
-as successes. They motivated observation-derived command choices, bounded
-Critic recovery for repetition, and keeping unverified reports out of the UI's
-confirmed action feed. A scripted mission is not evidence of live-model reliability.
+as successes. One model-only completion review also incorrectly approved a
+laptop transfer as a charger delivery; the independent mission predicate failed
+that run. These findings motivated observation-derived command choices, fixed
+typed goal conditions checked by Python, object-action scoping, transfer reviews,
+bounded Critic recovery for repetition, and keeping unverified reports out of
+the UI's confirmed action feed. A scripted mission is not evidence of live-model reliability.

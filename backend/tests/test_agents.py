@@ -101,8 +101,8 @@ async def test_timeout_and_cancel():
 async def test_false_completion_rejected():
     mgr, _, _ = manager(ScriptedLLM([
         {"action": "complete", "summary": "Invented success.", "evidence_ids": ["fake"]}
-    ]), max_coordinator_cycles=1)
-    task = mgr.start("Find charger.")
+    ], conditions=[{"kind": "visit_room", "room": "hall"}]), max_coordinator_cycles=1)
+    task = mgr.start("Go to the hall.")
     await mgr.runner
     assert task.status == "failed"
     assert task.critic_count == 0
@@ -135,8 +135,9 @@ async def test_ollama_contract_and_thinking_exclusion():
 
 async def test_critic_rejection_returns_to_coordinator():
     fake = ScriptedLLM([
-        {"action": "delegate", "summary": "Observe.", "task": "Look."}, tool("look"),
-        {"action": "report", "summary": "Hall observed."}, complete,
+        {"action": "delegate", "summary": "Observe.", "task": "Find charger."}, tool("look"),
+        tool("move_to", room="study"), tool("look"),
+        {"action": "report", "summary": "Charger observed."}, complete,
         {"approved": False, "summary": "Charger has not been observed.", "suggestion": "Search rooms."},
         {"action": "fail", "summary": "Cannot establish completion within this test."}])
     mgr, _, _ = manager(fake)
@@ -249,3 +250,30 @@ async def test_repeated_command_returns_to_coordinator_before_action_budget():
     assert task.tool_count == 5 and task.critic_count == 2
     assert sum(a["tool"] == "talk_to" for a in task.action_history) == 1
     assert any("Repeated identical" in e["data"].get("summary", "") for e in bus.history)
+
+
+async def test_valid_evidence_ids_cannot_substitute_for_required_outcomes():
+    fake = ScriptedLLM([
+        {"action": "delegate", "summary": "Ask recipient.", "task": "Ask who needs charger."},
+        tool("look"), tool("move_to", room="bedroom"), tool("look"),
+        tool("talk_to", person="neave", message="Who needs the charger?"),
+        {"action": "report", "summary": "Neave needs it."}, complete,
+        {"approved": True, "summary": "This model vote must never be consulted."}])
+    mgr, _, _ = manager(fake, max_coordinator_cycles=2)
+    task = mgr.start("Find out who needs the charger and deliver it.")
+    await mgr.runner
+    assert task.status == "failed" and task.critic_count == 0
+    assert task.critic_feedback[-1]["unmet_conditions"][0]["kind"] == "deliver"
+
+
+async def test_critic_can_reject_a_proposed_transfer():
+    fake = ScriptedLLM([
+        {"action": "delegate", "summary": "Find charger.", "task": "Find and pick up charger."},
+        tool("look"), tool("move_to", room="study"), tool("look"), tool("pick_up", object="charger"),
+        {"approved": False, "summary": "Need a revised plan.", "suggestion": "Return to Coordinator."},
+        {"action": "fail", "summary": "Stopping the test after rejected transfer."}])
+    mgr, engine, _ = manager(fake)
+    task = mgr.start("Find out who needs the charger and deliver it.")
+    await mgr.runner
+    assert task.status == "failed" and task.critic_count == 1
+    assert engine.snapshot()["objects"]["charger"]["location"] == {"kind": "room", "id": "study"}

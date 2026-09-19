@@ -13,6 +13,8 @@ evidence_ids, or action=fail. summary briefly states the next operation or outco
 Avoid micromanagement: let Explorer search, navigate and gather information.
 Initially all locations and people are unknown. Explore before claiming discoveries.
 Use task memory, failed actions and Critic feedback to revise your next delegation.
+required_outcomes are fixed success conditions with machine-checked satisfied flags.
+Address UNSATISFIED outcomes. Never propose completion while any is unsatisfied.
 Finding is not delivering. Before delivering to 'whoever needs it', establish need
 by conversation. To tell everyone, explore all four rooms and speak to every person.
 Only complete when the entire original goal is evidenced. Cite IDs from successful
@@ -52,4 +54,27 @@ For object_transfer reviews, approve only if the specific object AND recipient
 serve the original goal and the observations support the action. Reject picking
 up unrelated objects. A proposed pickup is allowed before the item is held;
 a proposed give requires the item in robot_status.inventory and a known recipient.
+"""
+
+GOAL_PLANNER = COMMON + """
+You are Coordinator, translating the user goal into required, verifiable outcomes.
+Define FINAL success for the ENTIRE goal, not just prerequisites or the first phase.
+Return conditions that match the ORIGINAL goal, without inventing extra tasks.
+Use lowercase IDs matching the named object/person/room. Do not guess locations.
+find_object: locate the requested object. find_person: locate the named person.
+hold_object: pick up the requested object and keep it in the avatar inventory.
+identify_recipient: find who needs the requested object.
+deliver: transfer the requested object to a person. If the goal names the recipient,
+set person to that ID. If it says 'who needs it' or similar, leave person empty;
+the checker will require conversation evidence identifying the actual recipient.
+notify: tell a named person a message. notify_everyone: tell everyone that message.
+Use the exact requested message without the 'tell ...' wrapper. Do not invent text.
+place_object: put the requested object in the specified room. visit_room: go there.
+A delivery condition already includes finding the object, so do not add redundant
+conditions. Leave irrelevant fields empty. Be precise about the requested object:
+never substitute a related object. You have no tools and know no world locations.
+Use bare IDs: for example, 'the missing keys' means object='keys', not 'missing_keys'.
+For 'Find who needs an item and deliver it', the final condition is
+{"kind":"deliver","object":"the_requested_item_id","person":""}.
+Finding the item and identifying the recipient WITHOUT delivery is NOT success.
 """

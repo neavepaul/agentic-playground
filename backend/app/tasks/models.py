@@ -4,6 +4,9 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from app.agents.schemas import GoalCondition
+from .goals import check_conditions
+
 
 class TaskContext(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
@@ -19,6 +22,7 @@ class TaskContext(BaseModel):
     action_history: list[dict] = Field(default_factory=list)
     critic_feedback: list[dict] = Field(default_factory=list)
     explorer_reports: list[str] = Field(default_factory=list)
+    conditions: list[GoalCondition] = Field(default_factory=list)
 
     def record(self, tool: str, arguments: dict, result: dict) -> None:
         entry = {"tool": tool, "arguments": arguments, **result}
@@ -54,6 +58,7 @@ class TaskContext(BaseModel):
         older_discoveries = [entry for entry in facts + conversations[-8:]
                              if entry["evidence_id"] not in recent_ids]
         return {"goal": self.goal, "current_plan": self.current_plan,
+                "required_outcomes": check_conditions(self),
                 "robot_status": self.robot_status, "discoveries": older_discoveries,
                 "known_but_unobserved_rooms": sorted(known_exits - observed_rooms),
                 "recent_actions": recent,

@@ -9,6 +9,7 @@ from app.events.bus import EventBus
 from app.llm.base import LLMClient, ModelError
 from app.world.tools import WorldTools
 from .models import TaskContext
+from .goals import check_conditions
 
 
 class TaskBusy(ValueError):
@@ -95,6 +96,10 @@ class TaskManager:
     async def _loop(self, context: TaskContext) -> None:
         # Bootstrap through a permitted tool; no agent gets an omniscient snapshot.
         self.call_tool(context, "get_status", {})
+        self.bus.emit("agent_active", "coordinator", task_id=context.id)
+        goal_plan = await self.coordinator.define_goal(context.goal)
+        context.conditions = goal_plan.conditions
+        self.message(context, "coordinator", goal_plan.summary)
         for cycle in range(self.settings.max_coordinator_cycles):
             context.cycle_count = cycle + 1
             self.bus.emit("task_updated", task=context.public())
@@ -113,6 +118,14 @@ class TaskManager:
             if decision.action == "consult_critic":
                 await self.review(context, decision.plan, "plan")
             elif decision.action == "complete":
+                unmet = [condition for condition in check_conditions(context) if not condition["satisfied"]]
+                if unmet:
+                    context.critic_feedback.append({"source": "system", "approved": False,
+                        "summary": "Completion rejected: required outcomes lack tool evidence.",
+                        "unmet_conditions": unmet,
+                        "suggestion": "Complete the missing outcomes using tools."})
+                    self.message(context, "system", "Completion rejected: required outcomes have not been observed.")
+                    continue
                 by_id = {entry["evidence_id"]: entry for entry in context.action_history
                          if entry["success"] and entry["tool"] != "get_status"}
                 if not all(id in by_id for id in decision.evidence_ids):

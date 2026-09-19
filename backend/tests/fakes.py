@@ -3,11 +3,23 @@ import json
 
 
 class ScriptedLLM:
-    def __init__(self, replies):
+    def __init__(self, replies, conditions=None):
         self.replies = iter(replies)
         self.calls = []
+        self.conditions = conditions
 
     async def generate(self, messages, response_schema):
+        if response_schema.get("title") == "GoalPlan":
+            goal = json.loads(messages[1]["content"])["goal"].lower()
+            conditions = self.conditions
+            if conditions is None:
+                if "dinner" in goal:
+                    conditions = [{"kind": "notify", "person": "neave", "message": "dinner is ready"}]
+                elif "deliver" in goal:
+                    conditions = [{"kind": "deliver", "object": "charger"}]
+                else:
+                    conditions = [{"kind": "find_object", "object": "keys" if "key" in goal else "charger"}]
+            return json.dumps({"summary": "Required outcomes defined.", "conditions": conditions})
         self.calls.append((messages, response_schema))
         reply = next(self.replies)
         if callable(reply):

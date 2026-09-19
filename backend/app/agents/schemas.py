@@ -52,3 +52,29 @@ class CommandChoice(StrictModel):
     command_id: str
     message: str = Field(default="", max_length=500)
     summary: ShortText
+
+
+class GoalCondition(StrictModel):
+    kind: Literal["find_object", "find_person", "identify_recipient", "hold_object", "deliver", "notify",
+                  "notify_everyone", "place_object", "visit_room"]
+    object: str = Field(default="", max_length=40)
+    person: str = Field(default="", max_length=40)
+    room: str = Field(default="", max_length=40)
+    message: str = Field(default="", max_length=500)
+
+    @model_validator(mode="after")
+    def required_targets(self):
+        if self.kind in {"find_object", "identify_recipient", "hold_object", "deliver", "place_object"} and not self.object:
+            raise ValueError("This condition requires an object ID.")
+        if self.kind in {"find_person", "notify"} and not self.person:
+            raise ValueError("This condition requires a person ID.")
+        if self.kind in {"place_object", "visit_room"} and not self.room:
+            raise ValueError("This condition requires a room ID.")
+        if self.kind in {"notify", "notify_everyone"} and not self.message:
+            raise ValueError("A notification requires its actual message.")
+        return self
+
+
+class GoalPlan(StrictModel):
+    summary: ShortText
+    conditions: list[GoalCondition] = Field(min_length=1, max_length=8)
