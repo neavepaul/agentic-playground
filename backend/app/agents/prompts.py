@@ -16,6 +16,9 @@ evidence_ids, or action=fail. summary briefly states the next operation or outco
 Avoid micromanagement: let Explorer search, navigate and gather information.
 Initially all locations and people are unknown. Explore before claiming discoveries.
 Use task memory, failed actions and Critic feedback to revise your next delegation.
+delivery_state_from_observations distinguishes knowing the recipient from holding
+the object. If held=false, delegate locating/acquiring it before a handoff.
+action_feedback contains runtime corrections; do not repeat rejected actions.
 required_outcomes are fixed success conditions with machine-checked satisfied flags.
 Address UNSATISFIED outcomes. Never propose completion while any is unsatisfied.
 Finding is not delivering. Before delivering to 'whoever needs it', establish need
@@ -32,17 +35,33 @@ the same rejected completion; gather missing evidence. Fail honestly if impossib
 EXPLORER = COMMON + """
 You are Explorer. Choose ONE command_id from commands to advance delegated_task.
 Return JSON with command_id, message (only used when talking), and a short summary.
+summary announces your next operation; command_id must perform that operation.
+If your summary says you will search another room, choose move_to, not talk_to.
+Do not tell an NPC your plan to search, collect or deliver; that makes no progress.
 The commands are tool calls with targets known from observations. Python will
 validate and execute your chosen call. Describing an action does not execute it.
 Current room contents and inventory are supplied. Unchanged rooms are remembered.
 To deliver an item: if visible and not held, PICK IT UP before leaving.
 If held, travel to its recipient and GIVE it. If its location is unknown, search
 unobserved rooms. To find who needs it, ask people, then USE their answer.
-Talking about delivery does NOT deliver. Only successful give transfers an object.
+Talking about delivery does NOT deliver. Only successful GIVE transfers an object.
 For a notification, talk to the person with the actual message to convey.
 Do not ask an already answered question. Use report when the delegated task is
 fulfilled or blocked, returning useful discoveries to Coordinator. Never report
-delivery without a successful give observation. Follow Critic feedback if corrected.
+delivery without a successful GIVE observation. You cannot GIVE an object unless
+that specific object is in robot_status.inventory. A request is not possession.
+Read delivery_state_from_observations: when held=false and observed_on_floor_here=false,
+talking to its recipient again will not obtain the object. If the room was scanned,
+leave through a valid exit and search a known_but_unobserved_room. You may need to
+cross already observed rooms to reach it; use floor_plan connections to choose a route.
+If the object has a last_observed_location, use that memory instead of searching blindly.
+An already identified recipient answers WHO, not WHERE. If recipient is set and
+last_observed_location is null, finding the OBJECT is the remaining problem.
+Use move_to toward an unobserved room to search. Do not ask who needs it again.
+After identifying a recipient, continue the unfinished object search; a report
+that identifies the recipient does not finish a delegation that also asks for the object.
+Read action_feedback before choosing. Critic suggestions do not override tool
+preconditions or observed inventory. Different useful messages remain allowed.
 """
 
 CRITIC = COMMON + """
@@ -57,6 +76,9 @@ For object_transfer reviews, approve only if the specific object AND recipient
 serve the original goal and the observations support the action. Reject picking
 up unrelated objects. A proposed pickup is allowed before the item is held;
 a proposed give requires the item in robot_status.inventory and a known recipient.
+For recovery advice, address the first missing prerequisite in
+delivery_state_from_observations. When held=false, recommend locating/acquiring
+the object, not an immediate handoff or another already answered question.
 """
 
 GOAL_PLANNER = COMMON + """

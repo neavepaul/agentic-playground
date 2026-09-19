@@ -116,8 +116,9 @@ after which control returns to Coordinator. Critic reviews plans on request and
 every proposed completion. Reports from a delegation with no tool progress also
 receive a review, allowing Critic feedback to correct unsupported claims. Pickup
 and handoff proposals also require Critic approval before execution. It has
-a separate review budget to prevent debate loops. Repeated identical commands
-return control early for Critic feedback and a revised Coordinator plan.
+a separate review budget to prevent debate loops. Repeated answered messages receive one direct Explorer correction, retained in
+task context. Repeating the message after that correction stops the task instead
+of starting another Critic debate. Other messages to the same person remain valid.
 
 Coordinator and Critic receive **no simulator or tool handles**. Explorer's decision
 class receives only the LLM client and tool schemas. The manager dispatches its
@@ -313,3 +314,19 @@ the actual validation performed during implementation.
 A useful V2 step is a larger regression mission suite with evidence-based goal
 predicates and measured success/latency across local models, before adding a
 larger world or more autonomous capabilities.
+
+
+### Search recovery
+
+Agent context includes a compact map (room names and connections, without rendering
+geometry) and per-object delivery prerequisites derived only from observations.
+Knowing a recipient does not imply holding or locating the object. Explorer must
+use a movement command to search elsewhere, rather than announcing that plan through
+speech. The same applies when Critic advice skips a pickup prerequisite.
+
+Within a task, a successfully answered message cannot be repeated to the same person
+with only case, whitespace or punctuation changes. Explorer receives a correction
+and one new decision; persistent repetition fails clearly without another Critic loop.
+This guard is lexical, not a semantic equivalence detector: differently worded
+questions can still repeat information. Prompt guidance and bounded execution remain
+necessary; this change does not guarantee arbitrary live-model planning reliability.

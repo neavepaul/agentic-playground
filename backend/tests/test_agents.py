@@ -240,21 +240,21 @@ async def test_explorer_rejects_repeated_read_without_new_information():
     assert "look" not in fake.calls[0][1]["properties"]["command_id"]["enum"]
 
 
-async def test_repeated_command_returns_to_coordinator_before_action_budget():
+async def test_repeated_message_is_corrected_without_critic_debate():
     fake = ScriptedLLM([
         {"action": "delegate", "summary": "Search.", "task": "Find keys."},
         tool("look"), tool("move_to", room="kitchen"), tool("look"),
         tool("talk_to", person="mom", message="Where are the keys?"),
         tool("talk_to", person="mom", message="Where are the keys?"),
-        {"approved": False, "summary": "The keys were already observed.", "suggestion": "Report completion."},
+        {"action": "report", "summary": "The keys were already observed."},
         complete, {"approved": True, "summary": "Keys observed."}])
     mgr, _, bus = manager(fake)
     task = mgr.start("Find keys.")
     await mgr.runner
     assert task.status == "completed"
-    assert task.tool_count == 6 and task.critic_count == 2
+    assert task.tool_count == 6 and task.critic_count == 1
     assert sum(a["tool"] == "talk_to" for a in task.action_history) == 1
-    assert any("Repeated identical" in e["data"].get("summary", "") for e in bus.history)
+    assert any("Repeated message rejected" in message for message in task.action_feedback)
 
 
 def test_recipient_can_still_receive_other_messages():
@@ -325,3 +325,52 @@ async def test_critic_can_reject_a_proposed_transfer():
     await mgr.runner
     assert task.status == "failed" and task.critic_count == 1
     assert engine.snapshot()["objects"]["charger"]["location"] == {"kind": "room", "id": "study"}
+
+
+async def test_delivery_search_continues_after_repeated_recipient_question():
+    fake = ScriptedLLM([
+        {"action": "delegate", "summary": "Find item and recipient.", "task": "Find charger and who needs it."},
+        tool("look"), tool("move_to", room="bedroom"), tool("look"),
+        tool("talk_to", person="neave", message="Who needs the charger?"),
+        tool("talk_to", person="neave", message="WHO needs the charger?!"),
+        tool("move_to", room="hall"), tool("move_to", room="study"), tool("look"),
+        tool("pick_up", object="charger"), {"approved": True, "summary": "Requested object observed."},
+        {"action": "delegate", "summary": "Handoff.", "task": "Take held charger to Neave."},
+        tool("move_to", room="hall"), tool("move_to", room="bedroom"),
+        tool("give", object="charger", person="neave"), {"approved": True, "summary": "Held and nearby."},
+        {"action": "report", "summary": "Transferred."}, complete,
+        {"approved": True, "summary": "Delivery evidenced."},
+    ])
+    mgr, engine, _ = manager(fake)
+    task = mgr.start("Find who needs the charger and deliver it.")
+    await mgr.runner
+    assert task.status == "completed", task.summary
+    assert engine.snapshot()["objects"]["charger"]["location"] == {"kind": "person", "id": "neave"}
+    assert sum(a["tool"] == "talk_to" for a in task.action_history) == 1
+    assert task.critic_count == 3  # pickup, give, completion; no repetition review
+    import json
+    corrected = [json.loads(messages[1]["content"]) for messages, schema in fake.calls
+                 if schema["title"] == "ExplorerCommand" and 'Repeated message rejected' in messages[1]["content"]]
+    state = corrected[0]["delivery_state_from_observations"][0]
+    assert state["recipient"] == "neave" and not state["held"]
+    assert not state["observed_on_floor_here"] and state["last_observed_location"] is None
+    assert "study" in corrected[0]["known_but_unobserved_rooms"]
+    assert "give:charger:neave" not in corrected[0]["commands"]
+    assert 'outline' not in corrected[0]["floor_plan"]["rooms"]["hall"]
+
+
+async def test_persistent_repeated_speech_stops_without_critic_loop():
+    fake = ScriptedLLM([
+        {"action": "delegate", "summary": "Find recipient.", "task": "Ask who needs charger."},
+        tool("look"), tool("move_to", room="bedroom"), tool("look"),
+        tool("talk_to", person="neave", message="Who needs the charger?"),
+        tool("talk_to", person="neave", message="Who needs the charger?"),
+        tool("talk_to", person="neave", message="Who needs the charger?"),
+    ])
+    mgr, _, _ = manager(fake)
+    task = mgr.start("Find who needs the charger and deliver it.")
+    await mgr.runner
+    assert task.status == "failed"
+    assert "repeated an answered message" in task.summary
+    assert task.critic_count == 0
+    assert sum(a["tool"] == "talk_to" for a in task.action_history) == 1

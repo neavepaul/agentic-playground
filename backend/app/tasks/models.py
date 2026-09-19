@@ -32,6 +32,43 @@ class TaskContext(BaseModel):
     delivered: bool = False
     explored_rooms: set[str] = Field(default_factory=set)
     last_progress_signature: tuple | None = None
+    action_feedback: list[str] = Field(default_factory=list)
+
+    def feedback(self, message: str) -> None:
+        self.action_feedback.append(message)
+        self.action_feedback[:] = self.action_feedback[-6:]
+
+    def delivery_state(self) -> list[dict]:
+        """Summarize remembered prerequisites; never consult simulator truth."""
+        needs = known_recipients(self)
+        inventory = self.robot_status.get("inventory", [])
+        room = self.robot_status.get("room")
+        result = []
+        for condition in self.conditions:
+            if condition.kind != "deliver":
+                continue
+            recipient = condition.person or needs.get(condition.object)
+            location = self._object_location(condition.object)
+            held = condition.object in inventory
+            delivered = bool(recipient and location == ("person", recipient))
+            missing = []
+            if not delivered:
+                if not held:
+                    if location is None:
+                        missing.append("locate_object")
+                    missing.append("acquire_object")
+                if not recipient:
+                    missing.append("identify_recipient")
+                elif not self._person_location(recipient):
+                    missing.append("locate_recipient")
+                missing.append("give_object")
+            result.append({"object": condition.object, "recipient": recipient,
+                           "held": held, "last_observed_location": location,
+                           "current_room_observed": "room:" + str(room) in self.discoveries,
+                           "observed_on_floor_here": location == ("room", room),
+                           "recipient_last_seen": self._person_location(recipient) if recipient else None,
+                           "missing_prerequisites": missing, "delivered": delivered})
+        return result
 
     def remember_meaning(self, evidence_id, meaning) -> None:
         source = next((a for a in self.action_history if a["evidence_id"] == evidence_id
@@ -146,7 +183,10 @@ class TaskContext(BaseModel):
         older_discoveries = [entry for entry in facts + conversations[-8:]
                              if entry["evidence_id"] not in recent_ids]
         return {"goal": self.goal, "current_plan": self.current_plan,
-                "floor_plan": self.floor_plan,
+                "floor_plan": {"rooms": {key: {"name": value["name"], "connections": value["connections"]}
+                                           for key, value in self.floor_plan.get("rooms", {}).items()}},
+                "delivery_state_from_observations": self.delivery_state(),
+                "action_feedback": self.action_feedback,
                 "interpreted_needs_unverified": self.interpreted_needs,
                 "required_outcomes": check_conditions(self),
                 "robot_status": self.robot_status, "discoveries": older_discoveries,

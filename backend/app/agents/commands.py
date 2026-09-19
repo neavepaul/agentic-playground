@@ -53,7 +53,9 @@ def observable_commands(context: TaskContext) -> tuple[dict, dict | None]:
         if item.get("portable", True) and item["id"] in movable:
             add("pick_up", {"object": item["id"]}, f"Take visible {item['id']} into inventory.")
     for person in view["people"]:
-        add("talk_to", {"person": person["id"]}, f"Speak to {person['id']}; supply message. This transfers no objects.")
+        add("talk_to", {"person": person["id"]},
+            f"Ask {person['id']} an unanswered question or convey a requested notification. "
+            "Do not use speech to announce your plan; put that in summary. This transfers no objects.")
     for item in inventory:
         if item not in movable:
             continue

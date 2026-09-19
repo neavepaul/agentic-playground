@@ -95,19 +95,6 @@ class TaskManager:
         self.bus.emit("critic_review", "critic", task_id=context.id, **review.model_dump())
         return review.approved
 
-    def _validate_delivery_prereqs(self, context: TaskContext, task: str) -> str | None:
-        deliver_condition = next((condition for condition in context.conditions if condition.kind == "deliver"), None)
-        if deliver_condition is None or "deliver" not in task.lower():
-            return None
-        object_id = deliver_condition.object
-        if not object_id:
-            return None
-        if object_id in context.robot_status.get("inventory", []):
-            return None
-        if context.item_location is None:
-            return f"Delivery rejected: {object_id} must be located and acquired before delivery."
-        return None
-
     def _progress_changed(self, context: TaskContext, previous: tuple | None = None) -> bool:
         signature = context.progress_signature()
         current = previous if previous is not None else context.last_progress_signature
@@ -128,11 +115,6 @@ class TaskManager:
             self.bus.emit("task_updated", task=context.public())
             self.bus.emit("agent_active", "coordinator", task_id=context.id)
             decision = await self.coordinator.decide(context)
-            if decision.action == "delegate":
-                blocked = self._validate_delivery_prereqs(context, decision.task)
-                if blocked:
-                    self.message(context, "system", blocked)
-                    decision.task = f"Search for the missing object before any delivery."
             public_summary = {
                 "complete": "Checking goal completion against tool evidence.",
                 "delegate": "Delegating: " + decision.task,
@@ -183,10 +165,10 @@ class TaskManager:
                     self.message(context, "explorer", f"Next action: {action.tool}.")
                     previous = context.action_history[-1] if context.action_history else None
                     if previous and previous["tool"] == action.tool and previous["arguments"] == action.arguments:
-                        self.message(context, "system", "Repeated identical command; returning to Coordinator for a revised plan.")
-                        await self.review(context, "Explorer is repeating a command that already returned an observation. "
-                                          "Review progress and suggest the next useful task.", "stalled_delegation")
-                        break
+                        correction = "Repeated identical command rejected. Use its existing observation and choose a different action."
+                        context.feedback(correction)
+                        self.message(context, "system", correction)
+                        continue
                     if action.tool in {"pick_up", "give"}:
                         proposal = f"Execute {action.tool} with arguments {action.arguments}."
                         if not await self.review(context, proposal, "object_transfer"):

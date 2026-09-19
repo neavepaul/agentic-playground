@@ -114,7 +114,7 @@ export function createScene(container) {
         for (const [start, end] of [...gaps, [length, length]]) {
           if (start > cursor) {
             const middle = a.clone().addScaledVector(direction, (cursor+start)/2);
-            const wall = box(layout, [start-cursor, .22, .075], [middle.x, .085, middle.z], '#536359');
+            const wall = box(layout, [start-cursor, .42, .075], [middle.x, .21, middle.z], '#536359');
             wall.rotation.y = -Math.atan2(direction.z, direction.x);
           }
           cursor = Math.max(cursor, end);

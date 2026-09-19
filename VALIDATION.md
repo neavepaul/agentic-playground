@@ -1,3 +1,21 @@
+# Recipient-question loop recovery
+
+- 51 backend tests passed on the final run. Regression coverage includes normalized
+  duplicate-message rejection, successful continuation through search/pickup/give,
+  and bounded failure when Explorer ignores the correction. Existing follow-up
+  notification coverage still passes.
+- A focused live qwen3:8b probe used real tool observations from the master bedroom,
+  a quoted recipient interpretation, empty inventory, and the misleading Critic
+  advice from the reported loop. Before the final prompt adjustment it chose to
+  announce its plan via talk_to. After the adjustment it selected
+  move_to:bedroom_corridor. No full live mission was run for this change.
+- An initial full test run hit an intermittent WebSocket TestClient teardown
+  CancelledError. A targeted rerun and the final full suite passed; the WebSocket
+  implementation was not modified here.
+- Graphify update remains blocked: the Python runtime has no graphify module.
+
+---
+
 # Current JSON-world change validation
 
 - 49 backend tests passed, including the original regression fixture and new
