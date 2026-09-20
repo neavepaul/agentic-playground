@@ -2,7 +2,7 @@ import './style.css';
 import { api } from './api.js';
 import { createScene } from './scene.js';
 import { connectEvents } from './websocket.js';
-import { addEvent, clearFeed, getTask, setAgent, setConnection, setTask, setWorld, showError } from './ui.js';
+import { addEvent, clearFeed, getTask, setAgent, setConnection, setMemoryOpen, setTask, setWorld, showError } from './ui.js';
 
 let scene;
 try { scene = createScene(document.getElementById('scene')); }
@@ -50,6 +50,14 @@ document.getElementById('cancel').addEventListener('click', async () => {
   catch (error) { showError(error.message); }
 });
 document.getElementById('view-reset').addEventListener('click', () => scene?.resetView());
+document.getElementById('memory-open').addEventListener('click', () => setMemoryOpen(true));
+document.getElementById('memory-close').addEventListener('click', () => setMemoryOpen(false));
+document.getElementById('memory-overlay').addEventListener('click', (event) => {
+  if (event.target.id === 'memory-overlay') setMemoryOpen(false);
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') setMemoryOpen(false);
+});
 document.querySelectorAll('[data-goal]').forEach(button => button.addEventListener('click', () => {
   document.getElementById('goal').value = button.dataset.goal;
   document.getElementById('goal').focus();

@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=Path(__file__).resolve().parents[1] / ".env", extra="ignore")
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "qwen3:8b"
+    ollama_model: str = "qwen3:4b"
     world_file: Path | None = None
     llm_timeout_seconds: float = Field(default=120, gt=0)
     task_timeout_seconds: float = Field(default=1800, gt=0)

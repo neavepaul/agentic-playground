@@ -1,8 +1,8 @@
 from typing import Literal
 
-from pydantic import create_model
+from pydantic import Field, create_model
 
-from app.llm.base import LLMClient, ModelError, structured
+from app.llm.base import LLMClient, structured
 from app.tasks.models import TaskContext
 from .commands import observable_commands
 from .prompts import EXPLORER
@@ -18,22 +18,16 @@ class Explorer:
         commands, view = observable_commands(context)
         commands = {id: command for id, command in commands.items()
                     if id == "report" or command["tool"] in self.tool_names}
-        schema = create_model("ExplorerCommand", __base__=CommandChoice,
-                              command_id=(Literal[tuple(commands)], ...))
-        for attempt in range(2):
-            choice = await structured(self.client, schema, EXPLORER,
-                                      {**context.compact(), "delegated_task": task,
-                                       "current_room_observation": view, "commands": commands})
-            command = commands[choice.command_id]
-            reason = (context.repeat_reason(command["arguments"]["person"], choice.message)
-                      if command.get("tool") == "talk_to" else None)
-            if reason is None:
-                break
-            context.feedback("Repeated message rejected: " + reason +
-                             " Read task_memory. Choose a different useful action or an uninvestigated topic. "
-                             "A requested notification is separate from investigation.")
-            if attempt:
-                raise ModelError("Explorer repeated an answered message after correction; stopped without another Critic loop.")
+        fields = {"command_id": (Literal[tuple(commands)], ...)}
+        if all(command.get("tool") == "talk_to" for command in commands.values()):
+            fields["message"] = (str, Field(min_length=1, max_length=500, pattern=r"\S",
+                                            description="Required actual words to say to the person."))
+        schema = create_model("ExplorerCommand", __base__=CommandChoice, **fields)
+        choice = await structured(self.client, schema, EXPLORER,
+                                  {**context.compact(), "delegated_task": task,
+                                   "current_room_observation": view, "commands": commands},
+                                  repair_hint="For talk_to, include message with the actual nonblank words to speak. "
+                                              "Putting those words in summary does not supply message.")
         if choice.command_id == "report":
             return ExplorerDecision(action="report", summary=choice.summary)
         command = commands[choice.command_id]

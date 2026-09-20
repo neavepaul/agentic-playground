@@ -24,9 +24,20 @@ export function setTask(next) {
   $('budget').textContent = `${task?.cycle_count || 0} cycles · ${task?.tool_count || 0} tool calls`;
   $('run').disabled = running || !connected;
   $('cancel').hidden = !running;
+  renderMemory(task?.task_memory);
   if (!running) setAgent(null);
 }
 export function getTask() { return task; }
+function renderMemory(memory) {
+  $('memory-content').textContent = memory
+    ? JSON.stringify(memory, null, 2)
+    : 'No task memory yet.';
+}
+export function setMemoryOpen(open) {
+  const overlay = $('memory-overlay');
+  overlay.hidden = !open;
+  if (open) $('memory-close').focus();
+}
 export function setAgent(name) {
   document.querySelectorAll('[data-agent]').forEach(el => el.classList.toggle('active', el.dataset.agent === name));
 }

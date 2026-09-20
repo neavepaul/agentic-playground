@@ -19,6 +19,8 @@ def observable_commands(context: TaskContext) -> tuple[dict, dict | None]:
     if view is None:
         commands["look"] = {"tool": "look", "arguments": {},
                             "description": "Observe this room; its contents and exits are not yet known."}
+        if any(condition.kind == "deliver" for condition in context.conditions):
+            commands.pop("report", None)
         return commands, None
 
     # Permit fresh scans on return; don't immediately repeat an unchanged scan.
@@ -37,7 +39,7 @@ def observable_commands(context: TaskContext) -> tuple[dict, dict | None]:
             add("pick_up", {"object": item["id"]}, f"Take visible {item['id']} into inventory.")
     for person in view["people"]:
         add("talk_to", {"person": person["id"]},
-            f"Ask {person['id']} an unanswered question or convey a requested notification. "
+            f"Speak to {person['id']} with a useful unanswered question or message. "
             "Do not use speech to announce your plan; put that in summary. This transfers no objects.")
     for item in inventory:
         if item not in movable:
@@ -47,4 +49,22 @@ def observable_commands(context: TaskContext) -> tuple[dict, dict | None]:
             if (item, person["id"]) in deliveries:
                 add("give", {"object": item, "person": person["id"]},
                     f"Transfer held {item} to {person['id']} in this room.")
+    delivery = [condition for condition in context.conditions if condition.kind == "deliver"]
+    if delivery:
+        if room not in context.memory.rooms:
+            commands = {key: command for key, command in commands.items()
+                        if command.get("tool") == "look"}
+        else:
+            ambiguous_delivery = [condition for condition in delivery
+                                  if not condition.person and not needs.get(condition.object)]
+            pending_people = [person for person in view["people"]
+                              if any(condition.object not in context.memory.people[person["id"]].asked_topics
+                                     for condition in ambiguous_delivery
+                                     if person["id"] in context.memory.people)]
+            if ambiguous_delivery and pending_people:
+                commands = {key: command for key, command in commands.items()
+                            if command.get("tool") == "talk_to"
+                            and command["arguments"]["person"] in {person["id"] for person in pending_people}}
+            elif any(command.get("tool") == "pick_up" for command in commands.values()):
+                commands.pop("report", None)
     return commands, view

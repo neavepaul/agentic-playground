@@ -3,7 +3,7 @@ import re
 from app.llm.base import LLMClient, ModelError, structured
 from app.tasks.models import TaskContext
 from .prompts import COORDINATOR, GOAL_PLANNER
-from .schemas import CoordinatorDecision, GoalPlan
+from .schemas import CoordinatorDecision, GoalCondition, GoalPlan
 
 
 class Coordinator:
@@ -26,4 +26,11 @@ class Coordinator:
                 return plan
             prompt += "\nYour prior plan omitted DELIVERY. Define the FINAL outcome for the ENTIRE goal: " \
                       "a deliver condition for the requested object, not just finding it or identifying its recipient."
+        object_id = next((condition.object for condition in plan.conditions if condition.object), None)
+        if explicit_delivery and object_id:
+            person = next((condition.person for condition in plan.conditions if condition.person), "")
+            return plan.model_copy(update={
+                "summary": plan.summary + " Delivery is required and will be verified after a successful handoff.",
+                "conditions": [*plan.conditions, GoalCondition(kind="deliver", object=object_id, person=person)],
+            })
         raise ModelError("Could not define complete goal conditions: the delivery requirement was omitted.")

@@ -271,6 +271,25 @@ button:focus-visible,textarea:focus-visible {
   gap:8px;
 }
 
+.section-actions {
+  display:flex;
+  align-items:center;
+  gap:7px;
+}
+
+.memory-button {
+  padding:4px 7px;
+  border-radius:4px;
+  font-size:9px;
+  color:#52725c;
+  border-color:#cddbc9;
+  background:#f3f7ef;
+}
+
+.memory-button:hover {
+  background:#e8f1e4;
+}
+
 h2 {
   font-size:14px;
   margin:0;
@@ -438,6 +457,60 @@ textarea {
   font-size:9px;
   color:#99a28f;
   margin:10px 0 0;
+}
+
+.memory-overlay {
+  position:fixed;
+  inset:0;
+  z-index:20;
+  display:grid;
+  place-items:center;
+  padding:24px;
+  background:#24352d66;
+}
+
+.memory-dialog {
+  width:min(720px,100%);
+  max-height:min(780px,calc(100dvh - 48px));
+  display:flex;
+  flex-direction:column;
+  padding:26px;
+  border:1px solid #d8e1d5;
+  border-radius:10px;
+  background:#fbfcf9;
+  box-shadow:0 22px 70px #24352d33;
+}
+
+.memory-dialog h2 {
+  margin-top:5px;
+}
+
+.memory-dialog>.subtle {
+  margin:14px 0;
+}
+
+.icon-button {
+  width:32px;
+  height:32px;
+  padding:0;
+  font-size:22px;
+  line-height:1;
+  color:#718070;
+}
+
+.memory-content {
+  min-height:180px;
+  max-height:calc(100dvh - 220px);
+  overflow:auto;
+  margin:0;
+  padding:16px;
+  border:1px solid #e0e7dc;
+  border-radius:7px;
+  background:#f2f5ef;
+  color:#425443;
+  font:11px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
 }
 
 .activity-panel {

@@ -50,8 +50,16 @@ class CriticReview(StrictModel):
 
 class CommandChoice(StrictModel):
     command_id: str
-    message: str = Field(default="", max_length=500)
+    message: str = Field(default="", max_length=500,
+                         description="For talk_to, the actual nonempty words to say. Empty only for other commands.")
     summary: ShortText
+
+    @model_validator(mode="after")
+    def speech_required(self):
+        self.message = self.message.strip()
+        if self.command_id.startswith("talk_to:") and not self.message:
+            raise ValueError("talk_to requires a nonempty spoken message; summary is not speech.")
+        return self
 
 
 class GoalCondition(StrictModel):

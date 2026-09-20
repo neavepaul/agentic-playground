@@ -155,6 +155,12 @@ class TaskManager:
                     action = await self.explorer.decide(context, decision.task)
                     if action.action == "report":
                         context.explorer_reports.append(action.summary)
+                        if (any(condition.kind == "deliver" for condition in context.conditions)
+                            and context.robot_status.get("room") not in context.memory.rooms):
+                            correction = "Report rejected: the current room has not been observed. Scan it before reporting or replanning."
+                            context.feedback(correction)
+                            self.message(context, "system", correction)
+                            continue
                         self.message(context, "explorer", "Returning observations to Coordinator.")
                         if context.tool_count == starting_tool_count:
                             approved = await self.review(context, action.summary, "delegation_report")
@@ -163,12 +169,13 @@ class TaskManager:
                         break
                     self.message(context, "explorer", f"Next action: {action.tool}.")
                     previous = context.action_history[-1] if context.action_history else None
-                    if previous and previous["tool"] == action.tool and previous["arguments"] == action.arguments:
+                    if (previous and previous["success"] and action.tool != "talk_to"
+                            and previous["tool"] == action.tool and previous["arguments"] == action.arguments):
                         correction = "Repeated identical command rejected. Use its existing observation and choose a different action."
                         context.feedback(correction)
                         self.message(context, "system", correction)
                         continue
-                    if action.tool in {"pick_up", "give"}:
+                    if action.tool == "give":
                         proposal = f"Execute {action.tool} with arguments {action.arguments}."
                         if not await self.review(context, proposal, "object_transfer"):
                             self.message(context, "system", "Object action rejected by Critic; revising the plan.")

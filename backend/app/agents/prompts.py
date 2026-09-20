@@ -35,7 +35,12 @@ the same rejected completion; gather missing evidence. Fail honestly if impossib
 EXPLORER = COMMON + """
 You are Explorer. Choose ONE command_id from commands to advance delegated_task.
 Return JSON with command_id, message (only used when talking), and a short summary.
+For every talk_to command, message must contain the actual nonblank words to say.
+summary is a separate status field and is never spoken to the person.
 summary announces your next operation; command_id must perform that operation.
+For a delivery task, if the current room is unobserved, the only valid next step
+is look. After looking, ask every person currently in the room about the target
+object before moving on or reporting. The command list enforces this sequence.
 If your summary says you will search another room, choose move_to, not talk_to.
 Do not tell an NPC your plan to search, collect or deliver; that makes no progress.
 The commands are tool calls with targets known from observations. Python will
@@ -46,7 +51,8 @@ If held, travel to its recipient and GIVE it. If its location is unknown, search
 unobserved rooms. To find who needs it, ask people, then USE their answer.
 Talking about delivery does NOT deliver. Only successful GIVE transfers an object.
 For a notification, talk to the person with the actual message to convey.
-Do not ask an already answered question. Use report when the delegated task is
+Use remembered answers to avoid pointless repetition. Follow-up questions and
+clarifications about the same topic are allowed. Use report when the delegated task is
 fulfilled or blocked, returning useful discoveries to Coordinator. Never report
 delivery without a successful GIVE observation. You cannot GIVE an object unless
 that specific object is in robot_status.inventory. A request is not possession.
@@ -58,6 +64,8 @@ If the object has a last_observed_location, use that memory instead of searching
 An already identified recipient answers WHO, not WHERE. If recipient is set and
 last_observed_location is null, finding the OBJECT is the remaining problem.
 Use move_to toward an unobserved room to search. Do not ask who needs it again.
+If the recipient is present, talk_to remains allowed for a useful message or
+confirmation. Conversation memory is guidance, not a ban on further conversation.
 After identifying a recipient, continue the unfinished object search; a report
 that identifies the recipient does not finish a delegation that also asks for the object.
 Read action_feedback before choosing. Critic suggestions do not override tool
@@ -72,10 +80,12 @@ recipient unknown, a required message was not sent, or completion is premature.
 Use approved=true when evidence supports the proposal. A plan may legitimately
 propose future tool actions; a completion must demonstrate completed actions.
 Give a concise public summary and concrete suggestion. Do not invent facts.
-For object_transfer reviews, approve only if the specific object AND recipient
-serve the original goal and the observations support the action. Reject picking
-up unrelated objects. A proposed pickup is allowed before the item is held;
-a proposed give requires the item in robot_status.inventory and a known recipient.
+For object_transfer reviews, a GIVE requires the specific object AND recipient
+to serve the original goal, with the object in robot_status.inventory and a
+known recipient. A PICK_UP has a different rule: approve it when the specific
+visible object is required by the goal and the world observation supports that
+it is on the floor in the current room. Do not require a recipient for pickup;
+finding and acquiring the object can happen before the recipient is known.
 For recovery advice, address the first missing prerequisite in
 delivery_state_from_observations. When held=false, recommend locating/acquiring
 the object, not an immediate handoff or another already answered question.

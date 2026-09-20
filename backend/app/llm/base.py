@@ -14,7 +14,8 @@ class LLMClient(Protocol):
     async def generate(self, messages: list[dict], response_schema: dict) -> str: ...
 
 
-async def structured(client: LLMClient, schema: type[T], prompt: str, context: dict) -> T:
+async def structured(client: LLMClient, schema: type[T], prompt: str, context: dict,
+                     repair_hint: str = "") -> T:
     output_schema = schema.model_json_schema()
     messages = [{"role": "system", "content": prompt + "\nOutput JSON schema:\n" + json.dumps(output_schema)},
                 {"role": "user", "content": json.dumps(context, ensure_ascii=False)}]
@@ -29,5 +30,5 @@ async def structured(client: LLMClient, schema: type[T], prompt: str, context: d
             messages.append({"role": "user", "content":
                              "Your response did not match the schema. Retry with one valid JSON object. "
                              "Use only the specified fields and brief public operational summaries. "
-                             "Do not include thinking, analysis, markdown or a scratchpad."})
+                             "Do not include thinking, analysis, markdown or a scratchpad. " + repair_hint})
     raise ModelError("No valid response.")

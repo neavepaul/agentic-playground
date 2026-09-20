@@ -160,7 +160,7 @@ class TaskMemory(BaseModel):
             people[key] = {"name": person.name, "location": person.location, "evidence_id": person.evidence_id,
                            "asked_topics": {topic: {"response_excerpt": answer.response,
                                "evidence_id": answer.evidence_id,
-                               "can_requery": answer.state_stamp != self.question_stamp(key, topic)}
+                               "state_changed_since_question": answer.state_stamp != self.question_stamp(key, topic)}
                                for topic, answer in person.asked_topics.items()}}
         return {"visited_rooms": sorted(self.visited_rooms),
                 "observed_rooms": {key: room.model_dump() for key, room in self.rooms.items()},

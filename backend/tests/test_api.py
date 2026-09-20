@@ -16,6 +16,8 @@ def test_api_lifecycle_and_websocket():
             response = client.post("/api/tasks", json={"goal": "Find charger."})
             assert response.status_code == 202
             id = response.json()["id"]
+            assert response.json()["task_memory"]["visited_rooms"] == []
+            assert "action_history" not in response.json()
             assert socket.receive_json()["type"] == "task_started"
             assert client.post("/api/tasks", json={"goal": "Other task."}).status_code == 409
             assert client.get(f"/api/tasks/{id}").json()["status"] == "running"

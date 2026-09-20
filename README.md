@@ -22,7 +22,7 @@ If the Ollama desktop app is already serving port 11434, leave it running instea
 In another terminal, download the default model once:
 
 ```powershell
-ollama pull qwen3:8b
+ollama pull qwen3:4b
 ```
 
 **Terminal 2 — backend**
@@ -75,7 +75,7 @@ The included pnpm lockfile records the frontend versions used here; npm is also 
 
 ## Use it
 
-1. Check that the sidebar says `qwen3:8b · ready locally`.
+1. Check that the sidebar says `qwen3:4b · ready locally`.
 2. Enter a goal, such as **Find out who needs the charger and deliver it.**
 3. Click **Run goal**. The feed shows short public agent summaries, tool results,
    NPC responses and Critic reviews. The active role is highlighted.
@@ -116,9 +116,8 @@ after which control returns to Coordinator. Critic reviews plans on request and
 every proposed completion. Reports from a delegation with no tool progress also
 receive a review, allowing Critic feedback to correct unsupported claims. Pickup
 and handoff proposals also require Critic approval before execution. It has
-a separate review budget to prevent debate loops. Repeated answered messages receive one direct Explorer correction, retained in
-task context. Repeating the message after that correction stops the task instead
-of starting another Critic debate. Other messages to the same person remain valid.
+a separate review budget to prevent debate loops. Conversation memory guides follow-ups without blocking repeated topics or messages.
+Execution budgets still bound stalled tasks.
 
 Coordinator and Critic receive **no simulator or tool handles**. Explorer's decision
 class receives only the LLM client and tool schemas. The manager dispatches its
@@ -220,7 +219,7 @@ Copy `backend/.env.example` to `backend/.env`. Environment variables override it
 | Variable | Default | Purpose |
 |---|---|---|
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama endpoint |
-| `OLLAMA_MODEL` | `qwen3:8b` | One model shared by all roles |
+| `OLLAMA_MODEL` | `qwen3:4b` | One model shared by all roles |
 | `WORLD_FILE` | `backend/worlds/house.json` | Optional absolute path to a scenario JSON |
 | `LLM_TIMEOUT_SECONDS` | `120` | Per model HTTP request |
 | `TASK_TIMEOUT_SECONDS` | `1800` | Entire task, including retries and reviews; allows CPU-only inference |
@@ -294,7 +293,7 @@ the actual validation performed during implementation.
 
 ## Troubleshooting and V1 limits
 
-- **Model missing:** run `ollama pull qwen3:8b`. **Ollama offline:** start its server.
+- **Model missing:** run `ollama pull qwen3:4b`. **Ollama offline:** start its server.
 - **Slow inference:** CPU-only 8B inference may take tens of seconds per decision.
   The role indicator stays active while waiting. Use a supported smaller local
   model via `OLLAMA_MODEL`, or increase the task timeout. No fallback to cloud occurs.
@@ -324,9 +323,11 @@ Knowing a recipient does not imply holding or locating the object. Explorer must
 use a movement command to search elsewhere, rather than announcing that plan through
 speech. The same applies when Critic advice skips a pickup prerequisite.
 
-Within a task, a successfully answered message cannot be repeated to the same person
-with only case, whitespace or punctuation changes. Explorer receives a correction
-and one new decision; persistent repetition fails clearly without another Critic loop.
-This guard is lexical, not a semantic equivalence detector: differently worded
-questions can still repeat information. Prompt guidance and bounded execution remain
-necessary; this change does not guarantee arbitrary live-model planning reliability.
+Explorer validates nonblank speech before executing talk_to. Missing, empty or
+whitespace-only messages receive one structured-output repair attempt with an explicit
+instruction to supply the actual words. Two invalid decisions fail before speech
+execution. Task memory records prior conversations, but neither repeated wording nor
+an already investigated topic blocks further dialogue. Failed tool calls are not
+treated as successful observations by the remaining non-conversation repeat check.
+Tool, delegation, cycle and time limits still bound execution; these changes do not
+guarantee that every conversation will make progress.

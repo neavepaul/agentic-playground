@@ -17,7 +17,7 @@
           <div class="world-heading"><span class="eyebrow">YOUR HOUSE / SIMULATION</span><h1>A small world.<br>A goal to explore.</h1><p>One avatar. Three collaborating agents.</p></div>
           <div id="scene" aria-label="Interactive 3D house. Drag to orbit, scroll to zoom."></div>
           <div class="world-toolbar"><button id="view-reset" class="quiet">↗ Reset view</button><span>Drag to orbit · Scroll to zoom</span></div>
-          <div class="legend"><span><i class="swatch robot"></i>Avatar</span><span><i class="swatch person"></i>People</span><span><i class="swatch item"></i>Objects</span><span class="legend-note">Observer view � robot sees locally</span></div>
+          <div class="legend"><span><i class="swatch robot"></i>Avatar</span><span><i class="swatch person"></i>People</span><span><i class="swatch item"></i>Objects</span><span class="legend-note">Observer view � robot sees locally</span></div>
         </section>
         <aside class="sidebar">
           <section class="mission-panel">
@@ -33,7 +33,7 @@
             <div id="model-status" class="model-status">Checking local model…</div>
           </section>
           <section class="state-panel" aria-label="Current task">
-            <div class="section-title"><h2>Current state</h2><span id="task-status" class="status">Idle</span></div>
+            <div class="section-title"><h2>Current state</h2><div class="section-actions"><button id="memory-open" class="memory-button" type="button" title="Open live task memory" aria-haspopup="dialog">Memory</button><span id="task-status" class="status">Idle</span></div></div>
             <p id="task-summary" aria-live="polite">Ready when you are.</p>
             <div class="state-grid"><div><span class="eyebrow">AVATAR LOCATION</span><strong id="robot-room">—</strong></div><div><span class="eyebrow">INVENTORY</span><strong id="inventory">Empty</strong></div></div>
             <div class="agent-strip"><span data-agent="coordinator">Coordinator</span><span data-agent="explorer">Explorer</span><span data-agent="critic">Critic</span></div>
@@ -46,6 +46,13 @@
           <footer>Ollama on your machine <span>·</span> No cloud models</footer>
         </aside>
       </main>
+      <div id="memory-overlay" class="memory-overlay" hidden>
+        <section class="memory-dialog" role="dialog" aria-modal="true" aria-labelledby="memory-title">
+          <div class="section-title"><div><span class="eyebrow">TASK STATE</span><h2 id="memory-title">Live memory</h2></div><button id="memory-close" class="icon-button" type="button" title="Close memory">×</button></div>
+          <p class="subtle">Durable observations retained for this task. Recent transcript entries are not shown here.</p>
+          <pre id="memory-content" class="memory-content">No task memory yet.</pre>
+        </section>
+      </div>
     </div>
     <script type="module" src="/src/main.js"></script>
   </body>

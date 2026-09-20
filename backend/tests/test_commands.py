@@ -19,13 +19,13 @@ def test_command_choices_use_only_observations_and_reconcile_ownership():
 
     act("get_status")
     choices, view = observable_commands(task)
-    assert set(choices) == {"look", "report"}
+    assert set(choices) == {"look"}
     assert view is None and "charger" not in str(choices)
     act("look")
     choices, _ = observable_commands(task)
     assert set(choices) == {"report", "move_to:kitchen", "move_to:study", "move_to:bedroom"}
     act("move_to", room="study")
-    assert set(observable_commands(task)[0]) == {"look", "report"}
+    assert set(observable_commands(task)[0]) == {"look"}
     act("look")
     choices, _ = observable_commands(task)
     assert "pick_up:charger" in choices and "talk_to:dad" in choices
@@ -51,3 +51,29 @@ def test_command_choices_use_only_observations_and_reconcile_ownership():
     act("move_to", room="hall")
     act("move_to", room="study")
     assert "pick_up:charger" not in observable_commands(task)[0]
+
+
+def test_delivery_does_not_allow_report_when_local_investigation_is_available():
+    tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
+    task = TaskContext(goal="Find who needs the charger and deliver it.",
+                       conditions=[GoalCondition(kind="deliver", object="charger")])
+    for name, args in [("get_status", {}), ("move_to", {"room": "kitchen"}), ("look", {})]:
+        task.record(name, args, tools.execute(name, args))
+    choices, _ = observable_commands(task)
+    assert "talk_to:mom" in choices
+    assert "report" not in choices
+
+
+def test_delivery_requires_look_then_local_questions_before_navigation():
+    tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
+    task = TaskContext(goal="Find who needs the charger and deliver it.",
+                       conditions=[GoalCondition(kind="deliver", object="charger")])
+
+    task.record("get_status", {}, tools.execute("get_status", {}))
+    choices, view = observable_commands(task)
+    assert view is None and set(choices) == {"look"}
+
+    for name, args in [("look", {}), ("move_to", {"room": "kitchen"}), ("look", {})]:
+        task.record(name, args, tools.execute(name, args))
+    choices, _ = observable_commands(task)
+    assert set(choices) == {"talk_to:mom"}

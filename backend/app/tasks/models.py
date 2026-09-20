@@ -155,6 +155,7 @@ class TaskContext(BaseModel):
         return sorted(key for key, names in aliases.items() if any(self._mentions(message, name) for name in names))
 
     def repeat_reason(self, person: str, message: str) -> str | None:
+        """Optional diagnostic only; this never authorizes or blocks speech."""
         known = self.memory.people.get(person)
         if known is None:
             return None
@@ -233,4 +234,9 @@ class TaskContext(BaseModel):
                 "cycle_count": self.cycle_count, "tool_count": self.tool_count})
 
     def public(self) -> dict:
-        return self.model_dump(mode="json", exclude={"memory", "action_history", "discoveries", "critic_feedback", "explorer_reports"})
+        payload = self.model_dump(mode="json", exclude={"memory", "action_history", "discoveries", "critic_feedback", "explorer_reports"})
+        memory = self.memory.prompt()
+        memory["completed_outcomes"] = [condition for condition in check_conditions(self)
+                                         if condition["satisfied"]]
+        payload["task_memory"] = memory
+        return payload
