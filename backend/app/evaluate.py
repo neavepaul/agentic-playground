@@ -12,30 +12,27 @@ from app.tasks.manager import TaskManager
 from app.world.engine import WorldEngine
 from app.world.tools import WorldTools
 
-MISSIONS = {
-    1: "Find the charger.",
-    2: "Find Neave and tell him dinner is ready.",
-    3: "Find out who needs the charger and deliver it.",
-    4: "Find the missing keys.",
-}
+from pathlib import Path
+from app.agents.schemas import GoalCondition
+from app.tasks.goals import check_conditions
+
+SCENARIOS = {int(key): value for key, value in json.loads(
+    (Path(__file__).resolve().parents[1] / "evaluations" / "missions.json").read_text(encoding="utf-8")
+).items()}
+MISSIONS = {key: scenario["goal"] for key, scenario in SCENARIOS.items()}
 
 
 def mission_satisfied(number: int, context, world: dict) -> bool:
-    successful = [a for a in context.action_history if a["success"]]
-    if number in (1, 4):
-        item = "charger" if number == 1 else "keys"
-        return any(a["tool"] == "look" and any(o["id"] == item for o in a["observation"]["objects"])
-                   for a in successful)
-    if number == 2:
-        return any(a["tool"] == "talk_to" and a["observation"]["person"] == "neave"
-                   and "dinner" in a["observation"]["message"].lower()
-                   and "ready" in a["observation"]["message"].lower() for a in successful)
-    if number == 3:
-        need = any(a["tool"] == "talk_to" and a["observation"]["person"] in {"dad", "neave"}
-                   and "charger" in a["observation"]["message"].lower() for a in successful)
-        return need and world["objects"]["charger"]["location"] == {"kind": "person", "id": "neave"}
-    return False
-
+    scenario = SCENARIOS.get(number)
+    if scenario is None:
+        return False
+    expected = context.model_copy(update={
+        "conditions": [GoalCondition.model_validate(c) for c in scenario["conditions"]]
+    })
+    return all(c["satisfied"] for c in check_conditions(expected)) and all(
+        world["objects"].get(key, {}).get("location") == location
+        for key, location in scenario.get("object_locations", {}).items()
+    )
 
 async def evaluate(numbers: list[int]) -> bool:
     settings = Settings()

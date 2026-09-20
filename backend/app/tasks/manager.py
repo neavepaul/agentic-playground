@@ -4,7 +4,7 @@ import logging
 from app.agents.coordinator import Coordinator
 from app.agents.critic import Critic
 from app.agents.explorer import Explorer
-from app.agents.conversation import interpret_conversation
+from app.agents.conversation import classify_conversation_move, interpret_conversation
 from app.config import Settings
 from app.events.bus import EventBus
 from app.llm.base import LLMClient, ModelError
@@ -85,13 +85,15 @@ class TaskManager:
         return result
 
     async def review(self, context: TaskContext, proposal: str, kind: str,
-                     evidence: list[dict] | None = None) -> bool:
+                     evidence: list[dict] | None = None,
+                     proposed_action: dict | None = None) -> bool:
         if context.critic_count >= self.settings.max_critic_reviews:
             raise LimitReached("Maximum Critic reviews reached; stopping repeated debate.")
         context.critic_count += 1
         self.bus.emit("agent_active", "critic", task_id=context.id)
-        review = await self.critic.review(context, proposal, kind, evidence)
-        context.critic_feedback.append({"proposal": proposal, **review.model_dump()})
+        review = await self.critic.review(context, proposal, kind, evidence, proposed_action)
+        context.critic_feedback.append({"proposal": proposal, **review.model_dump(),
+                                       "observed_action_count": len(context.action_history)})
         self.bus.emit("critic_review", "critic", task_id=context.id, **review.model_dump())
         return review.approved
 
@@ -108,7 +110,7 @@ class TaskManager:
         self.bus.emit("agent_active", "coordinator", task_id=context.id)
         goal_plan = await self.coordinator.define_goal(context.goal, context.floor_plan)
         context.conditions = goal_plan.conditions
-        self.message(context, "coordinator", goal_plan.summary)
+        self.message(context, "coordinator", "Required outcomes defined. Locating targets requires tool observations.")
         for cycle in range(self.settings.max_coordinator_cycles):
             context.cycle_count = cycle + 1
             self.bus.emit("task_updated", task=context.public())
@@ -130,6 +132,7 @@ class TaskManager:
                 unmet = [condition for condition in check_conditions(context) if not condition["satisfied"]]
                 if unmet:
                     context.critic_feedback.append({"source": "system", "approved": False,
+                        "observed_action_count": len(context.action_history),
                         "summary": "Completion rejected: required outcomes lack tool evidence.",
                         "unmet_conditions": unmet,
                         "suggestion": "Complete the missing outcomes using tools."})
@@ -139,6 +142,7 @@ class TaskManager:
                          if entry["success"] and entry["tool"] != "get_status"}
                 if not all(id in by_id for id in decision.evidence_ids):
                     context.critic_feedback.append({"approved": False,
+                        "observed_action_count": len(context.action_history),
                         "summary": "Completion referenced unknown or failed tool evidence.",
                         "suggestion": "Gather evidence and cite successful tool observation IDs."})
                     self.message(context, "system", "Completion rejected: evidence IDs are not valid.")
@@ -154,18 +158,23 @@ class TaskManager:
                     self.bus.emit("agent_active", "explorer", task_id=context.id)
                     action = await self.explorer.decide(context, decision.task)
                     if action.action == "report":
-                        context.explorer_reports.append(action.summary)
                         if (any(condition.kind == "deliver" for condition in context.conditions)
                             and context.robot_status.get("room") not in context.memory.rooms):
                             correction = "Report rejected: the current room has not been observed. Scan it before reporting or replanning."
                             context.feedback(correction)
                             self.message(context, "system", correction)
                             continue
-                        self.message(context, "explorer", "Returning observations to Coordinator.")
                         if context.tool_count == starting_tool_count:
                             approved = await self.review(context, action.summary, "delegation_report")
                             if not approved:
-                                continue
+                                self.message(
+                                    context,
+                                    "system",
+                                    "Explorer report rejected; returning to Coordinator for replanning.",
+                                )
+                                break
+                        context.explorer_reports.append(action.summary)
+                        self.message(context, "explorer", "Returning observations to Coordinator.")
                         break
                     self.message(context, "explorer", f"Next action: {action.tool}.")
                     previous = context.action_history[-1] if context.action_history else None
@@ -175,15 +184,43 @@ class TaskManager:
                         context.feedback(correction)
                         self.message(context, "system", correction)
                         continue
+                    conversation_move = None
+                    conversation_thread_id = None
+                    if action.tool == "talk_to":
+                        conversation_move = await classify_conversation_move(
+                            self.client, context,
+                            action.arguments["person"], action.arguments["message"],
+                        )
+                        if not conversation_move.advances_thread:
+                            person = action.arguments["person"]
+                            context.conversation_rejections[person] = context.conversation_rejections.get(person, 0) + 1
+                            target = conversation_move.existing_thread_id or "an existing discussion"
+                            correction = (
+                                f"Conversation move rejected: it repeats or does not advance {target}. "
+                                "Choose a movement or object action next; speech resumes after successful physical action."
+                            )
+                            context.feedback(correction)
+                            self.message(context, "system", correction)
+                            continue
+                        known = context.memory.people.get(action.arguments["person"])
+                        if (conversation_move.existing_thread_id and known
+                                and conversation_move.existing_thread_id in known.conversation_threads):
+                            conversation_thread_id = conversation_move.existing_thread_id
+                        else:
+                            conversation_thread_id = context.memory.next_thread_id(action.arguments["person"])
                     if action.tool == "give":
                         proposal = f"Execute {action.tool} with arguments {action.arguments}."
-                        if not await self.review(context, proposal, "object_transfer"):
+                        if not await self.review(context, proposal, "object_transfer",
+                                                 proposed_action={"tool": action.tool, "arguments": action.arguments}):
                             self.message(context, "system", "Object action rejected by Critic; revising the plan.")
                             break
                     previous_signature = context.progress_signature()
                     result = self.call_tool(context, action.tool, action.arguments)
                     if result.get("success") and action.tool == "talk_to":
-                        await interpret_conversation(self.client, context, result)
+                        await interpret_conversation(
+                            self.client, context, result, conversation_thread_id,
+                            conversation_move.thread_summary,
+                        )
                     if (result.get("success") and action.tool in {"move_to", "pick_up", "drop", "give"}
                             and not self._progress_changed(context, previous_signature)):
                         self.message(context, "system", "No measurable progress; forcing replan.")

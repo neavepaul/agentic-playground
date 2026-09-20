@@ -28,6 +28,7 @@ class TaskContext(BaseModel):
     floor_plan: dict = Field(default_factory=dict)
     last_progress_signature: tuple | None = None
     action_feedback: list[str] = Field(default_factory=list)
+    conversation_rejections: dict[str, int] = Field(default_factory=dict)
 
     def feedback(self, message: str) -> None:
         self.action_feedback.append(message)
@@ -143,34 +144,12 @@ class TaskContext(BaseModel):
         return any(c.kind in {"notify", "notify_everyone"} and (c.kind == "notify_everyone" or c.person == person)
                    and normalize(c.message) in normalize(message) for c in self.conditions)
 
-    def conversation_topics(self, person: str, message: str) -> list[str]:
-        if self.is_notification(person, message):
-            return []
-        aliases = {c.object: {c.object} for c in self.conditions if c.object}
-        for key, item in self.memory.objects.items():
-            aliases.setdefault(key, set()).update({key, item.name})
-        for known in self.memory.people.values():
-            for topic in known.asked_topics:
-                aliases.setdefault(topic, set()).add(topic)
-        return sorted(key for key, names in aliases.items() if any(self._mentions(message, name) for name in names))
-
-    def repeat_reason(self, person: str, message: str) -> str | None:
-        """Optional diagnostic only; this never authorizes or blocks speech."""
-        known = self.memory.people.get(person)
-        if known is None:
-            return None
-        topics = self.conversation_topics(person, message)
-        for topic in topics:
-            answer = known.asked_topics.get(topic)
-            if answer and answer.state_stamp == self.memory.question_stamp(person, topic):
-                return (f"{person} was already asked about {topic} (evidence {answer.evidence_id}). "
-                        f"Their response was: {answer.response}. No relevant observed state changed.")
-        if topics:
-            return None  # A newly observed relevant change permits re-investigation.
-        stamp = known.answered_messages.get(self.memory.message_key(message))
-        if stamp is not None and stamp == self.memory.question_stamp(person):
-            return f"{person} already received this message; no relevant observed state changed."
-        return None
+    def remember_conversation_thread(self, person: str, thread_id: str, summary: str,
+                                     resolved: bool, message: str, response: str,
+                                     evidence_id: str) -> None:
+        self.memory.remember_conversation(
+            person, thread_id, summary, resolved, message, response, evidence_id
+        )
 
     def remember_meaning(self, evidence_id: str, meaning: ConversationMeaning) -> None:
         source = next((a for a in self.action_history if a["evidence_id"] == evidence_id
@@ -206,13 +185,16 @@ class TaskContext(BaseModel):
         self.action_history.append(entry)
         if not result["success"]:
             return
+        if tool in {"move_to", "pick_up", "drop", "give"}:
+            self.conversation_rejections.clear()
+        elif tool == "talk_to":
+            self.conversation_rejections.pop(arguments["person"], None)
         obs = entry["observation"]
         if tool == "get_map":
             self.floor_plan = deepcopy(obs)
             return
-        topics = self.conversation_topics(obs["person"], obs["message"]) if tool == "talk_to" else []
         notification = tool == "talk_to" and self.is_notification(obs["person"], obs["message"])
-        self.memory.observe(tool, entry["arguments"], obs, result["evidence_id"], topics, notification)
+        self.memory.observe(tool, entry["arguments"], obs, result["evidence_id"], notification)
 
     def compact(self) -> dict:
         known_rooms = set(self.floor_plan.get("rooms", {})) | set(self.memory.rooms)
@@ -220,16 +202,22 @@ class TaskContext(BaseModel):
         outcomes = check_conditions(self)
         memory = self.memory.prompt()
         memory["completed_outcomes"] = [c for c in outcomes if c["satisfied"]]
+        room_view = self.memory.room_view(self.robot_status.get("room"))
+        if room_view is not None:
+            room_view["objects_held_by_people"] = room_view.pop("held_objects")
+            room_view["robot_inventory"] = self.memory.inventory()
         return deepcopy({"goal": self.goal, "current_plan": self.current_plan,
                 "floor_plan": {"rooms": {key: {"name": value["name"], "connections": value["connections"]}
                                            for key, value in self.floor_plan.get("rooms", {}).items()}},
                 "task_memory": memory,
+                "current_room_observation": room_view,
                 "delivery_state_from_observations": self.delivery_state(),
                 "action_feedback": self.action_feedback[-6:],
                 "required_outcomes": outcomes, "robot_status": self.robot_status,
                 "known_but_unobserved_rooms": sorted(known_rooms - set(self.memory.rooms)),
                 "recent_actions": self.action_history[-8:],
-                "critic_feedback": self.critic_feedback[-2:],
+                "critic_feedback": [f for f in self.critic_feedback
+                                    if f.get("observed_action_count") == len(self.action_history)][-2:],
                 "explorer_reports_unverified": self.explorer_reports[-2:],
                 "cycle_count": self.cycle_count, "tool_count": self.tool_count})
 

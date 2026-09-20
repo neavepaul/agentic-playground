@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.agents.commands import observable_commands
+from app.agents.conversation import classify_conversation_move
 from app.agents.schemas import ConversationMeaning, GoalCondition, SpokenNeed
 from app.config import Settings
 from app.events.bus import EventBus
@@ -29,6 +30,41 @@ def alternate_world(tmp_path):
     path = tmp_path / "scenario.json"
     path.write_text(json.dumps(data))
     return path, data
+
+
+@pytest.mark.parametrize("item,recipient", [("sensor_pack", "bea"), ("parcel", "omar")])
+async def test_delivery_generalizes_after_unhelpful_source(tmp_path, item, recipient):
+    path, data = alternate_world(tmp_path)
+    data = json.loads(json.dumps(data).replace("medicine", item).replace("alice", recipient).replace("Alice", recipient))
+    data["people"]["witness"] = {"id": "witness", "name": "Witness", "room": "entry"}
+    path.write_text(json.dumps(data))
+
+    class ScenarioLLM(ScriptedLLM):
+        async def generate(self, messages, response_schema):
+            if response_schema.get("title") == "ConversationMeaning":
+                talk = json.loads(messages[1]["content"])["conversation"]
+                return json.dumps({"needs": [{"object": item, "person": recipient, "quote": talk["response"]}]
+                                  if talk["person"] == recipient else [], "thread_resolved": True})
+            return await super().generate(messages, response_schema)
+
+    model = ScenarioLLM([
+        {"action": "delegate", "summary": "Explore and deliver.", "task": "Find the requested item and its recipient."},
+        tool("look"), tool("talk_to", person="witness", message=f"Who needs the {item}?"),
+        tool("talk_to", person="witness", message=f"Who needs the {item}?"),
+        tool("move_to", room="workshop"), tool("look"),
+        tool("talk_to", person=recipient, message=f"Do you need the {item}?"),
+        tool("pick_up", object=item), tool("give", object=item, person=recipient),
+        {"approved": True, "summary": "Observed item held and recipient present."},
+        {"action": "report", "summary": "Delivered."}, complete,
+        {"approved": True, "summary": "Transfer evidenced."},
+    ], conditions=[{"kind": "deliver", "object": item}])
+    engine, bus = WorldEngine(path), EventBus()
+    manager = TaskManager(model, WorldTools(engine, bus), bus, Settings(max_explorer_actions=20))
+    task = manager.start(f"Find who needs the {item} and deliver it.")
+    await manager.runner
+    assert task.status == "completed", task.summary
+    assert engine.snapshot()["objects"][item]["location"] == {"kind": "person", "id": recipient}
+    assert sum(a["tool"] == "talk_to" and a["arguments"]["person"] == "witness" for a in task.action_history) == 1
 
 
 def test_sketch_topology_and_observation_boundary():
@@ -62,6 +98,17 @@ def test_json_reset_reloads_and_instances_do_not_share_state(tmp_path):
     path.write_text(json.dumps(data))
     a.reset()
     assert a.look()["objects"][0]["id"] == "medicine"
+
+
+def test_dialogue_matches_natural_words_for_multiword_identifiers(tmp_path):
+    path, data = alternate_world(tmp_path)
+    data["people"]["alice"]["dialogue"][0]["topics"] = ["sensor_pack"]
+    data["people"]["alice"]["dialogue"][0]["response"] = "I need the sensor pack."
+    path.write_text(json.dumps(data))
+    engine = WorldEngine(path)
+    engine.move_to("workshop")
+    assert engine.talk_to("alice", "Who needs the sensor pack?")["response"] == "I need the sensor pack."
+    assert engine.talk_to("alice", "Who needs the sensor_pack?")["response"] == "I need the sensor pack."
 
 
 @pytest.mark.parametrize("mutate", [
@@ -176,6 +223,11 @@ def test_task_memory_preserves_charger_plan_after_recent_history_eviction():
     task.remember_meaning(conversation["evidence_id"], ConversationMeaning(needs=[
         SpokenNeed(object="charger", person="neave", quote="Neave needs the charger for his laptop.")
     ]))
+    task.remember_conversation_thread(
+        "dad", "thread_1", "Determine who requested the item", True,
+        conversation["observation"]["message"], conversation["observation"]["response"],
+        conversation["evidence_id"],
+    )
     act("move_to", room="entrance")
     act("move_to", room="hall")
     act("move_to", room="bedroom_corridor")
@@ -190,29 +242,45 @@ def test_task_memory_preserves_charger_plan_after_recent_history_eviction():
     assert memory["objects"]["charger"]["location"] == {"kind": "room", "id": "office"}
     assert memory["people"]["dad"]["location"] == "office"
     assert memory["people"]["neave"]["location"] == "master_bedroom"
-    assert memory["people"]["dad"]["asked_topics"]["charger"]["response_excerpt"] == \
+    assert memory["people"]["dad"]["conversation_threads"]["thread_1"]["turns"][-1]["response"] == \
         "Neave needs the charger for his laptop."
     assert memory["reported_needs_unverified"][0]["person"] == "neave"
     assert "office" in memory["visited_rooms"]
 
 
-def test_semantically_equivalent_topic_questions_are_blocked_but_new_topics_are_allowed():
-    tools = WorldTools(WorldEngine(), EventBus())
-    task = TaskContext(
-        goal="Find who needs the charger and deliver it.",
-        conditions=[GoalCondition(kind="deliver", object="charger")],
+async def test_semantic_conversation_threads_block_rephrasing_but_allow_new_purposes():
+    class SemanticClassifier:
+        async def generate(self, messages, response_schema):
+            payload = json.loads(messages[1]["content"])
+            assert response_schema.get("title") == "ConversationMove"
+            message = payload["proposed_message"].casefold()
+            if "there" in message:
+                return json.dumps({
+                    "existing_thread_id": "thread_1",
+                    "thread_summary": "Determine arrival time",
+                    "advances_thread": False,
+                })
+            return json.dumps({
+                "existing_thread_id": "",
+                "thread_summary": "Determine which entrance to use",
+                "advances_thread": True,
+            })
+
+    task = TaskContext(goal="Coordinate a visit.")
+    task.memory.set_person("dad", "office", "person-evidence", "Dad")
+    task.remember_conversation_thread(
+        "dad", "thread_1", "Determine arrival time", True,
+        "What time should I arrive?", "Come at six.", "conversation-evidence",
     )
 
-    def act(name, **args):
-        task.record(name, args, tools.execute(name, args))
+    repeated = await classify_conversation_move(
+        SemanticClassifier(), task, "dad", "When do you want me there?"
+    )
+    assert repeated.existing_thread_id == "thread_1"
+    assert repeated.advances_thread is False
 
-    act("get_status")
-    act("move_to", room="entrance")
-    act("move_to", room="office")
-    act("look")
-    act("talk_to", person="dad", message="Do you know where the charger is?")
-
-    assert task.repeat_reason("dad", "Have you seen the charger?") is not None
-    assert task.repeat_reason("dad", "Who has the charger?") is not None
-    assert task.repeat_reason("dad", "Do you know anything about the charger?") is not None
-    assert task.repeat_reason("dad", "Are you ready for dinner?") is None
+    new_topic = await classify_conversation_move(
+        SemanticClassifier(), task, "dad", "Which entrance should I use?"
+    )
+    assert new_topic.existing_thread_id == ""
+    assert new_topic.advances_thread is True

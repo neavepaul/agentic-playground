@@ -1,6 +1,7 @@
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic_core import PydanticCustomError
 
 ShortText = Annotated[str, Field(min_length=1, max_length=300)]
 
@@ -58,7 +59,8 @@ class CommandChoice(StrictModel):
     def speech_required(self):
         self.message = self.message.strip()
         if self.command_id.startswith("talk_to:") and not self.message:
-            raise ValueError("talk_to requires a nonempty spoken message; summary is not speech.")
+            raise PydanticCustomError("speech_message_required",
+                                      "talk_to requires a nonempty spoken message; summary is not speech.")
         return self
 
 
@@ -94,5 +96,13 @@ class SpokenNeed(StrictModel):
     quote: str = Field(min_length=1, max_length=500)
 
 
+class ConversationMove(StrictModel):
+    existing_thread_id: str = Field(default="", max_length=40)
+    thread_summary: ShortText
+    advances_thread: bool
+
+
 class ConversationMeaning(StrictModel):
     needs: list[SpokenNeed] = Field(default_factory=list, max_length=8)
+    thread_resolved: bool = False
+    thread_summary: str = Field(default="", max_length=300)

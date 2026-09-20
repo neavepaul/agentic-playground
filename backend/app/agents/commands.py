@@ -38,6 +38,8 @@ def observable_commands(context: TaskContext) -> tuple[dict, dict | None]:
         if item.get("portable", True) and item["id"] in movable:
             add("pick_up", {"object": item["id"]}, f"Take visible {item['id']} into inventory.")
     for person in view["people"]:
+        if context.conversation_rejections.get(person["id"], 0) >= 1:
+            continue
         add("talk_to", {"person": person["id"]},
             f"Speak to {person['id']} with a useful unanswered question or message. "
             "Do not use speech to announce your plan; put that in summary. This transfers no objects.")
@@ -49,22 +51,9 @@ def observable_commands(context: TaskContext) -> tuple[dict, dict | None]:
             if (item, person["id"]) in deliveries:
                 add("give", {"object": item, "person": person["id"]},
                     f"Transfer held {item} to {person['id']} in this room.")
-    delivery = [condition for condition in context.conditions if condition.kind == "deliver"]
-    if delivery:
-        if room not in context.memory.rooms:
-            commands = {key: command for key, command in commands.items()
-                        if command.get("tool") == "look"}
-        else:
-            ambiguous_delivery = [condition for condition in delivery
-                                  if not condition.person and not needs.get(condition.object)]
-            pending_people = [person for person in view["people"]
-                              if any(condition.object not in context.memory.people[person["id"]].asked_topics
-                                     for condition in ambiguous_delivery
-                                     if person["id"] in context.memory.people)]
-            if ambiguous_delivery and pending_people:
-                commands = {key: command for key, command in commands.items()
-                            if command.get("tool") == "talk_to"
-                            and command["arguments"]["person"] in {person["id"] for person in pending_people}}
-            elif any(command.get("tool") == "pick_up" for command in commands.values()):
-                commands.pop("report", None)
+    if context.conversation_rejections:
+        physical = {key: command for key, command in commands.items()
+                    if command.get("tool") in {"move_to", "pick_up", "drop", "give"}}
+        if physical:
+            commands = physical
     return commands, view

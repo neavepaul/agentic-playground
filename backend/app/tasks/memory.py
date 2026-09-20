@@ -1,6 +1,4 @@
 """Task-scoped observation reducer. Agent prose never updates physical beliefs."""
-import hashlib
-import json
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -18,10 +16,16 @@ class RememberedObject(BaseModel):
     revision: int = 0
 
 
-class Investigation(BaseModel):
+class ConversationTurn(BaseModel):
+    message: str
     response: str
     evidence_id: str
-    state_stamp: str
+
+
+class ConversationThread(BaseModel):
+    summary: str
+    resolved: bool = False
+    turns: list[ConversationTurn] = Field(default_factory=list)
 
 
 class RememberedPerson(BaseModel):
@@ -29,9 +33,7 @@ class RememberedPerson(BaseModel):
     location: str | None = None
     evidence_id: str = ""
     revision: int = 0
-    asked_topics: dict[str, Investigation] = Field(default_factory=dict)
-    # Hashes retain exact-repeat protection without a second transcript.
-    answered_messages: dict[str, str] = Field(default_factory=dict)
+    conversation_threads: dict[str, ConversationThread] = Field(default_factory=dict)
     notifications: dict[str, str] = Field(default_factory=dict)
 
 
@@ -91,18 +93,29 @@ class TaskMemory(BaseModel):
                                  if o.location and o.location.kind == "person"
                                  and self.people[o.location.id].location == room]}
 
-    def question_stamp(self, person: str, topic: str = "") -> str:
-        # Movement, elapsed time and identical rescans do not unlock a question.
-        p = self.people.get(person)
-        o = self.objects.get(topic)
-        return json.dumps([p.revision if p else 0, o.revision if o else 0])
+    def next_thread_id(self, person: str) -> str:
+        known = self.people.setdefault(person, RememberedPerson(name=person))
+        index = 1
+        while f"thread_{index}" in known.conversation_threads:
+            index += 1
+        return f"thread_{index}"
 
-    @staticmethod
-    def message_key(message: str) -> str:
-        return hashlib.sha256(normalize(message).encode()).hexdigest()
+    def remember_conversation(self, person: str, thread_id: str, summary: str,
+                              resolved: bool, message: str, response: str,
+                              evidence_id: str) -> None:
+        known = self.people.setdefault(person, RememberedPerson(name=person))
+        thread = known.conversation_threads.get(thread_id)
+        if thread is None:
+            thread = ConversationThread(summary=summary or "Conversation topic")
+            known.conversation_threads[thread_id] = thread
+        elif summary:
+            thread.summary = summary
+        thread.resolved = resolved
+        thread.turns.append(ConversationTurn(message=message[:500], response=response[:500], evidence_id=evidence_id))
+        thread.turns[:] = thread.turns[-8:]
 
     def observe(self, tool: str, args: dict, obs: dict, evidence_id: str,
-                topics: list[str], notification: bool) -> None:
+                notification: bool) -> None:
         if tool == "get_status":
             self.robot_room = obs["room"]
             self.visited_rooms.add(obs["room"])
@@ -146,22 +159,25 @@ class TaskMemory(BaseModel):
         elif tool == "talk_to":
             key = obs["person"]
             self.set_person(key, obs["room"], evidence_id)
-            person = self.people[key]
-            for topic in topics:
-                person.asked_topics[topic] = Investigation(response=obs["response"][:500], evidence_id=evidence_id,
-                                                          state_stamp=self.question_stamp(key, topic))
-            person.answered_messages[self.message_key(obs["message"])] = self.question_stamp(key)
             if notification:
-                person.notifications[normalize(obs["message"])] = evidence_id
+                self.people[key].notifications[normalize(obs["message"])] = evidence_id
 
     def prompt(self) -> dict:
         people = {}
         for key, person in self.people.items():
-            people[key] = {"name": person.name, "location": person.location, "evidence_id": person.evidence_id,
-                           "asked_topics": {topic: {"response_excerpt": answer.response,
-                               "evidence_id": answer.evidence_id,
-                               "state_changed_since_question": answer.state_stamp != self.question_stamp(key, topic)}
-                               for topic, answer in person.asked_topics.items()}}
+            people[key] = {
+                "name": person.name,
+                "location": person.location,
+                "evidence_id": person.evidence_id,
+                "conversation_threads": {
+                    thread_id: {
+                        "summary": thread.summary,
+                        "resolved": thread.resolved,
+                        "turns": [turn.model_dump() for turn in thread.turns[-4:]],
+                    }
+                    for thread_id, thread in person.conversation_threads.items()
+                },
+            }
         return {"visited_rooms": sorted(self.visited_rooms),
                 "observed_rooms": {key: room.model_dump() for key, room in self.rooms.items()},
                 "people": people,

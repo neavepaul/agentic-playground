@@ -76,7 +76,7 @@ The included pnpm lockfile records the frontend versions used here; npm is also 
 ## Use it
 
 1. Check that the sidebar says `qwen3:4b · ready locally`.
-2. Enter a goal, such as **Find out who needs the charger and deliver it.**
+2. Enter a goal, such as **Neave needs the charger. Find it and bring it to him.**
 3. Click **Run goal**. The feed shows short public agent summaries, tool results,
    NPC responses and Critic reviews. The active role is highlighted.
 4. Watch the avatar move and objects change ownership. Inventory and location

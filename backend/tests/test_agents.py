@@ -46,6 +46,180 @@ async def test_invalid_json_repair_and_failure():
         await structured(ScriptedLLM(["oops", "oops again"]), CriticReview, "Review", {})
 
 
+async def test_validation_diagnostics_do_not_expose_rejected_content(caplog):
+    secret = "private rejected model content"
+    invalid = {"approved": secret, "summary": "Review.", secret: secret}
+    client = ScriptedLLM([invalid, invalid])
+    with pytest.raises(ModelError) as error:
+        await structured(client, CriticReview, "Review", {})
+    assert "approved: bool_type" in str(error.value)
+    assert "response: extra_forbidden" in str(error.value)
+    assert "approved: bool_type" in client.calls[1][0][-1]["content"]
+    assert secret not in str(error.value)
+    assert secret not in caplog.text
+    assert secret not in str(client.calls)
+
+
+async def test_mixed_command_schema_requires_speech_only_for_talking():
+    from app.agents.explorer import Explorer
+    tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
+    task = TaskContext(goal="Find charger", conditions=[GoalCondition(kind="find_object", object="charger")])
+    for name, args in [("get_status", {}), ("move_to", {"room": "bedroom"}), ("look", {})]:
+        task.record(name, args, tools.execute(name, args))
+    fake = ScriptedLLM([tool("talk_to", person="neave", message=""), tool("move_to", room="hall")])
+    decision = await Explorer(fake, tools.schemas()).decide(task, "Search for charger")
+    schema = fake.calls[0][1]
+    speech, other = schema["anyOf"]
+    for branch in (speech, other):
+        assert "summary" in branch["required"]
+        assert "summary" in branch["properties"]
+        assert branch["additionalProperties"] is False
+    assert speech["properties"]["command_id"]["enum"] == ["talk_to:neave"]
+    assert "message" in speech["required"]
+    assert speech["properties"]["message"]["minLength"] == 1
+    assert speech["properties"]["message"]["pattern"] == r"\S"
+    assert "move_to:hall" in other["properties"]["command_id"]["enum"]
+    assert "talk_to:neave" not in other["properties"]["command_id"]["enum"]
+    assert "message" not in other["required"]
+    assert "speech_message_required" in fake.calls[1][0][-1]["content"]
+    assert decision.tool == "move_to"
+
+
+async def test_new_observations_expire_advice_without_losing_inventory():
+    fake = ScriptedLLM([{"approved": False, "summary": "Locate Neave in the unobserved rooms."}])
+    mgr, _, _ = manager(fake)
+    task = TaskContext(goal="Deliver charger to Neave.",
+                       conditions=[GoalCondition(kind="deliver", object="charger", person="neave")])
+    for name, args in [("get_status", {}), ("move_to", {"room": "study"}),
+                       ("look", {}), ("pick_up", {"object": "charger"})]:
+        mgr.call_tool(task, name, args)
+    await mgr.review(task, "Locate recipient.", "plan")
+    assert len(task.compact()["critic_feedback"]) == 1
+    for name, args in [("move_to", {"room": "hall"}), ("move_to", {"room": "bedroom"}), ("look", {})]:
+        mgr.call_tool(task, name, args)
+    raw_scan = task.action_history[-1]["observation"]
+    assert raw_scan["held_objects"] == []
+    payload = task.compact()
+    assert payload["critic_feedback"] == []
+    assert len(task.critic_feedback) == 1  # Audit history survives.
+    assert payload["robot_status"]["inventory"] == ["charger"]
+    view = payload["current_room_observation"]
+    assert view["robot_inventory"] == ["charger"]
+    assert view["objects_held_by_people"] == [] and "held_objects" not in view
+    assert any(p["id"] == "neave" for p in view["people"])
+    assert "give:charger:neave" in observable_commands(task)[0]
+    mgr.call_tool(task, "give", {"object": "charger", "person": "neave"})
+    view = task.compact()["current_room_observation"]
+    assert view["robot_inventory"] == []
+    assert view["objects_held_by_people"] == [{"object": "charger", "person": "neave"}]
+
+
+async def test_critic_reviews_current_transfer_without_replaying_old_verdict():
+    import json
+    from app.agents.critic import Critic
+
+    tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
+    task = TaskContext(goal="Deliver charger to Neave.",
+                       conditions=[GoalCondition(kind="deliver", object="charger", person="neave")])
+    for name, args in [("get_status", {}), ("move_to", {"room": "study"}),
+                       ("look", {}), ("pick_up", {"object": "charger"})]:
+        task.record(name, args, tools.execute(name, args))
+    stale = {"approved": False, "summary": "Need to locate Neave in the house to deliver."}
+    task.critic_feedback.append(stale)
+    action = {"tool": "give", "arguments": {"object": "charger", "person": "neave"}}
+    fake = ScriptedLLM([stale, {"approved": True, "summary": "Recipient now visible and item held."}])
+    critic = Critic(fake)
+    await critic.review(task, "Transfer charger.", "object_transfer", proposed_action=action)
+    before = json.loads(fake.calls[0][0][1]["content"])
+    assert all(p["id"] != "neave" for p in before["current_room_observation"]["people"])
+    for name, args in [("move_to", {"room": "hall"}), ("move_to", {"room": "bedroom"}), ("look", {})]:
+        task.record(name, args, tools.execute(name, args))
+    await critic.review(task, "Transfer charger.", "object_transfer", proposed_action=action)
+    after = json.loads(fake.calls[1][0][1]["content"])
+    assert after["proposed_action"] == action
+    assert after["robot_status"] == {"room": "bedroom", "inventory": ["charger"]}
+    assert any(p["id"] == "neave" for p in after["current_room_observation"]["people"])
+    assert not after["required_outcomes"][0]["satisfied"]  # Transfer is still proposed.
+    assert "critic_feedback" not in before and "critic_feedback" not in after
+    assert task.critic_feedback == [stale]  # Preserve history outside independent review.
+
+
+@pytest.mark.parametrize("object_id,source_room", [("charger", "study"), ("laptop", "bedroom")])
+async def test_ready_handoff_context_survives_search_delegation(object_id, source_room):
+    import json
+    from app.agents.explorer import Explorer
+
+    tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
+    task = TaskContext(goal=f"Deliver {object_id} to Neave.",
+                       conditions=[GoalCondition(kind="deliver", object=object_id, person="neave")])
+
+    def act(name, **args):
+        result = tools.execute(name, args)
+        assert result["success"]
+        task.record(name, args, result)
+
+    async def payload_for(reply):
+        fake = ScriptedLLM([reply])
+        await Explorer(fake, tools.schemas()).decide(task, "Search bedroom and kitchen for Neave")
+        return json.loads(fake.calls[0][0][1]["content"])
+
+    act("get_status")
+    act("move_to", room=source_room)
+    act("look")
+    payload = await payload_for(tool("pick_up", object=object_id))
+    assert payload["ready_handoffs"] == []  # Seeing an item is not holding it.
+    act("pick_up", object=object_id)
+    act("move_to", room="hall")
+    payload = await payload_for(tool("look"))
+    assert payload["ready_handoffs"] == []  # Recipient is not here.
+    act("move_to", room="bedroom")
+    act("look")
+    payload = await payload_for(tool("give", object=object_id, person="neave"))
+    assert payload["ready_handoffs"] == [f"give:{object_id}:neave"]
+    assert "move_to:hall" in payload["commands"]
+    assert "talk_to:neave" in payload["commands"]  # Clarification stays possible.
+    act("give", object=object_id, person="neave")
+    payload = await payload_for({"action": "report", "summary": "Delivered."})
+    assert payload["ready_handoffs"] == []
+
+
+@pytest.mark.parametrize("invalid_field,value,error_code", [
+    ("message", None, "string_type"),
+    ("summary", "x" * 301, "string_too_long"),
+    ("command_id", "give:charger:dad", "literal_error"),
+])
+async def test_handoff_recovers_from_invalid_model_output(invalid_field, value, error_code):
+    # Use the current house and the real manager/tool/critic path. An invalid
+    # handoff response must be repaired before any transfer is attempted.
+    invalid = {"command_id": "give:charger:neave", "message": "", "summary": "Deliver charger."}
+    invalid[invalid_field] = value
+    fake = ScriptedLLM([
+        {"action": "delegate", "summary": "Find and deliver.", "task": "Find charger and recipient, then deliver."},
+        tool("look"), tool("move_to", room="entrance"), tool("look"),
+        tool("move_to", room="office"), tool("look"),
+        tool("talk_to", person="dad", message="Who needs the charger?"),
+        tool("pick_up", object="charger"),
+        tool("move_to", room="entrance"), tool("move_to", room="hall"),
+        tool("move_to", room="bedroom_corridor"), tool("look"),
+        tool("move_to", room="master_bedroom"), tool("look"),
+        invalid, tool("give", object="charger", person="neave"),
+        {"approved": True, "summary": "Held charger and observed recipient."},
+        {"action": "report", "summary": "Delivered."}, complete,
+        {"approved": True, "summary": "Successful transfer evidenced."},
+    ])
+    engine, bus = WorldEngine(), EventBus()
+    mgr = TaskManager(fake, WorldTools(engine, bus), bus, Settings(max_explorer_actions=20))
+    task = mgr.start("Neave needs the charger. Find it and bring it to him.")
+    await mgr.runner
+    assert task.status == "completed", task.summary
+    assert engine.snapshot()["objects"]["charger"]["location"] == {"kind": "person", "id": "neave"}
+    transfers = [a for a in task.action_history if a["tool"] == "give"]
+    assert len(transfers) == 1 and transfers[0]["success"]
+    assert task.critic_count == 2
+    assert any(f"{invalid_field}: {error_code}" in messages[-1]["content"]
+               for messages, _ in fake.calls)
+
+
 async def test_goal_planner_repairs_omitted_delivery_condition():
     class IncompletePlanner:
         async def generate(self, messages, response_schema):
@@ -53,9 +227,23 @@ async def test_goal_planner_repairs_omitted_delivery_condition():
                    '{"kind":"identify_recipient","object":"charger"}]}'
 
     plan = await Coordinator(IncompletePlanner()).define_goal(
-        "Find out who needs the charger and deliver it.")
+        "Neave needs the charger. Find it and bring it to him.")
     assert [condition.kind for condition in plan.conditions] == ["identify_recipient", "deliver"]
     assert plan.conditions[-1].object == "charger"
+
+
+async def test_goal_planner_cannot_invent_unknown_recipient():
+    class InventedRecipientPlanner:
+        async def generate(self, messages, response_schema):
+            return '{"summary":"Deliver charger.","conditions":[' \
+                   '{"kind":"deliver","object":"charger","person":"neave"}]}'
+
+    plan = await Coordinator(InventedRecipientPlanner()).define_goal(
+        "Neave needs the charger. Find it and bring it to him.")
+    assert len(plan.conditions) == 1
+    assert plan.conditions[0].kind == "deliver"
+    assert plan.conditions[0].object == "charger"
+    assert plan.conditions[0].person == ""
 
 
 async def test_delivery_end_to_end_with_mock_model():
@@ -72,7 +260,7 @@ async def test_delivery_end_to_end_with_mock_model():
                {"approved": True, "summary": "Delivery and need are evidenced."}]
     fake = ScriptedLLM(replies)
     mgr, engine, bus = manager(fake)
-    task = mgr.start("Find out who needs the charger and deliver it.")
+    task = mgr.start("Neave needs the charger. Find it and bring it to him.")
     await mgr.runner
     assert task.status == "completed"
     assert task.critic_count == 2
@@ -228,6 +416,8 @@ async def test_no_progress_report_is_reviewed_and_recovers():
         {"action": "delegate", "summary": "Search.", "task": "Find charger."},
         {"action": "report", "summary": "Charger found."},
         {"approved": False, "summary": "No observation supports finding it.", "suggestion": "Search the rooms."},
+        {"action": "delegate", "summary": "Continue search.",
+         "task": "Search unexplored rooms for the charger."},
         tool("look"), tool("move_to", room="study"), tool("look"),
         {"action": "report", "summary": "Charger observed."}, complete,
         {"approved": True, "summary": "Observed charger."}])
@@ -249,7 +439,7 @@ async def test_unobserved_room_report_forces_scan_before_coordinator_replan():
         {"action": "fail", "summary": "Stop test."},
     ])
     mgr, _, bus = manager(fake, max_coordinator_cycles=2)
-    task = mgr.start("Find out who needs the charger and deliver it.")
+    task = mgr.start("Neave needs the charger. Find it and bring it to him.")
     await mgr.runner
     assert task.status == "failed"
     assert [entry["tool"] for entry in task.action_history] == ["get_status", "get_map", "look", "move_to", "look", "talk_to"]
@@ -272,12 +462,12 @@ async def test_explorer_rejects_repeated_read_without_new_information():
     assert "look" not in fake.calls[0][1]["properties"]["command_id"]["enum"]
 
 
-async def test_same_message_can_be_spoken_again_without_critic_debate():
+async def test_distinct_followup_can_be_spoken_without_critic_debate():
     fake = ScriptedLLM([
         {"action": "delegate", "summary": "Search.", "task": "Find keys."},
         tool("look"), tool("move_to", room="kitchen"), tool("look"),
         tool("talk_to", person="mom", message="Where are the keys?"),
-        tool("talk_to", person="mom", message="Where are the keys?"),
+        tool("talk_to", person="mom", message="When did you last see them?"),
         {"action": "report", "summary": "The keys were already observed."},
         complete, {"approved": True, "summary": "Keys observed."}])
     mgr, _, bus = manager(fake)
@@ -292,7 +482,7 @@ async def test_same_message_can_be_spoken_again_without_critic_debate():
 def test_recipient_can_still_receive_other_messages():
     tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
     task = TaskContext(
-        goal="Find out who needs the charger and deliver it.",
+        goal="Neave needs the charger. Find it and bring it to him.",
         conditions=[GoalCondition(kind="deliver", object="charger", person="")],
     )
 
@@ -304,6 +494,11 @@ def test_recipient_can_still_receive_other_messages():
     act("move_to", room="bedroom")
     act("look")
     act("talk_to", person="neave", message="Who needs the charger?")
+    talk = task.action_history[-1]
+    task.remember_conversation_thread(
+        "neave", "thread_1", "Determine who requested the item", True,
+        talk["observation"]["message"], talk["observation"]["response"], talk["evidence_id"],
+    )
 
     choices, _ = observable_commands(task)
     assert "talk_to:neave" in choices
@@ -314,7 +509,7 @@ def test_recipient_can_still_receive_other_messages():
 def test_known_recipient_can_still_be_addressed_without_repeating_investigation():
     tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
     task = TaskContext(
-        goal="Find out who needs the charger and deliver it.",
+        goal="Neave needs the charger. Find it and bring it to him.",
         conditions=[GoalCondition(kind="deliver", object="charger")],
     )
 
@@ -329,14 +524,12 @@ def test_known_recipient_can_still_be_addressed_without_repeating_investigation(
     act("look")
     choices, _ = observable_commands(task)
     assert "talk_to:neave" in choices
-    assert task.repeat_reason("neave", "Who needs the charger?") is None
-    assert task.repeat_reason("neave", "I have your charger.") is None
 
 
 def test_conversation_preserves_local_navigation():
     tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
     task = TaskContext(
-        goal="Find out who needs the charger and deliver it.",
+        goal="Neave needs the charger. Find it and bring it to him.",
         conditions=[GoalCondition(kind="deliver", object="charger", person="")],
     )
 
@@ -348,6 +541,11 @@ def test_conversation_preserves_local_navigation():
     act("move_to", room="bedroom")
     act("look")
     act("talk_to", person="neave", message="Who needs the charger?")
+    talk = task.action_history[-1]
+    task.remember_conversation_thread(
+        "neave", "thread_1", "Determine who requested the item", True,
+        talk["observation"]["message"], talk["observation"]["response"], talk["evidence_id"],
+    )
 
     choices, _ = observable_commands(task)
     assert "talk_to:neave" in choices
@@ -362,7 +560,7 @@ async def test_valid_evidence_ids_cannot_substitute_for_required_outcomes():
         {"action": "report", "summary": "Neave needs it."}, complete,
         {"approved": True, "summary": "This model vote must never be consulted."}])
     mgr, _, _ = manager(fake, max_coordinator_cycles=2)
-    task = mgr.start("Find out who needs the charger and deliver it.")
+    task = mgr.start("Neave needs the charger. Find it and bring it to him.")
     await mgr.runner
     assert task.status == "failed" and task.critic_count == 0
     assert task.critic_feedback[-1]["unmet_conditions"][0]["kind"] == "deliver"
@@ -377,13 +575,13 @@ async def test_pickup_does_not_wait_for_critic_approval():
         {"action": "report", "summary": "Charger picked up."},
         {"action": "fail", "summary": "Stopping the test after pickup."}])
     mgr, engine, _ = manager(fake)
-    task = mgr.start("Find out who needs the charger and deliver it.")
+    task = mgr.start("Neave needs the charger. Find it and bring it to him.")
     await mgr.runner
     assert task.status == "failed" and task.critic_count == 0
     assert engine.snapshot()["objects"]["charger"]["location"] == {"kind": "robot", "id": "robot"}
 
 
-async def test_delivery_search_continues_after_repeated_recipient_question():
+async def test_delivery_search_rejects_rephrased_recipient_question_and_continues():
     fake = ScriptedLLM([
         {"action": "delegate", "summary": "Find item and recipient.", "task": "Find charger and who needs it."},
         tool("look"), tool("move_to", room="bedroom"), tool("look"),
@@ -402,9 +600,9 @@ async def test_delivery_search_continues_after_repeated_recipient_question():
     await mgr.runner
     assert task.status == "completed", task.summary
     assert engine.snapshot()["objects"]["charger"]["location"] == {"kind": "person", "id": "neave"}
-    assert sum(a["tool"] == "talk_to" for a in task.action_history) == 2
+    assert sum(a["tool"] == "talk_to" for a in task.action_history) == 1
     assert task.critic_count == 2  # give and completion; pickup is deterministic
-    assert not task.action_feedback
+    assert any("Conversation move rejected" in message for message in task.action_feedback)
 
 
 async def test_conversation_remains_bounded_by_task_limits():
@@ -415,13 +613,46 @@ async def test_conversation_remains_bounded_by_task_limits():
         tool("talk_to", person="neave", message="Who needs the charger?"),
         tool("talk_to", person="neave", message="Who needs the charger?"),
     ])
-    mgr, _, _ = manager(fake, max_explorer_actions=6, max_coordinator_cycles=1)
+    mgr, _, _ = manager(fake, max_explorer_actions=5, max_coordinator_cycles=1)
     task = mgr.start("Find who needs the charger and deliver it.")
     await mgr.runner
     assert task.status == "failed"
     assert "Coordinator cycles" in task.summary
     assert task.critic_count == 0
-    assert sum(a["tool"] == "talk_to" for a in task.action_history) == 3
+    assert sum(a["tool"] == "talk_to" for a in task.action_history) == 1
+    assert sum("Conversation move rejected" in message for message in task.action_feedback) == 1
+
+
+async def test_conversation_recovery_survives_redelegation_and_preserves_followups():
+    def leave(context):
+        assert "talk_to:mom" not in context["commands"]
+        assert "move_to:hall" in context["commands"]
+        return tool("move_to", room="hall")
+
+    fake = ScriptedLLM([
+        {"action": "delegate", "summary": "Search.", "task": "Find recipient."},
+        tool("look"), tool("move_to", room="kitchen"), tool("look"),
+        tool("talk_to", person="mom", message="Do you need the charger?"),
+        tool("talk_to", person="mom", message="Do you need the charger?"),
+
+        {"action": "delegate", "summary": "Continue.", "task": "Find recipient."},
+        leave, tool("move_to", room="study"), tool("look"),
+        tool("talk_to", person="dad", message="Who needs the charger?"),
+        tool("pick_up", object="charger"),
+
+        {"action": "fail", "summary": "End test."},
+    ])
+    mgr, _, _ = manager(fake, max_explorer_actions=5)
+    task = mgr.start("Find who needs the charger and deliver it.")
+    await mgr.runner
+    assert task.summary == "End test."
+    talks = [a for a in task.action_history if a["tool"] == "talk_to"]
+    assert len(talks) == 2
+    mgr.call_tool(task, "move_to", {"room": "hall"})
+    mgr.call_tool(task, "move_to", {"room": "kitchen"})
+    assert "talk_to:mom" in observable_commands(task)[0]
+    assert not task.conversation_rejections
+    assert not TaskContext(goal="New task").conversation_rejections
 
 
 @pytest.mark.parametrize("message", [None, "", "   "])
@@ -438,8 +669,8 @@ async def test_missing_or_blank_speech_never_reaches_tool(message):
     choice = await Explorer(fake, tools.schemas()).decide(context, "Ask Neave.")
     assert choice.arguments["message"] == "Who needs the charger?"
     assert len(fake.calls) == 2
-    assert "message" in fake.calls[0][1]["required"]
-    assert fake.calls[0][1]["properties"]["message"]["minLength"] == 1
+    assert "message" in fake.calls[0][1]["anyOf"][0]["required"]
+    assert fake.calls[0][1]["anyOf"][0]["properties"]["message"]["minLength"] == 1
     assert all(a["tool"] != "talk_to" for a in context.action_history)
 
 

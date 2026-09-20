@@ -82,10 +82,10 @@ class WorldEngine:
         npc.messages[:] = npc.messages[-50:]
         text = message.lower()
         import re
-        words = set(re.findall(r"\w+", text))
+        words = set(re.findall(r"\w+", text.replace("_", " ")))
         response = "I heard your message. I don't have any more information about that."
         for dialogue in npc.dialogue:
-            if any(set(re.findall(r"\w+", topic.lower())) <= words for topic in dialogue.topics):
+            if any(set(re.findall(r"\w+", topic.lower().replace("_", " "))) <= words for topic in dialogue.topics):
                 response = dialogue.response
                 break
         return {"person": person, "message": message, "response": response,

@@ -1,0 +1,6 @@
+{
+  "1": {"goal": "Find the charger.", "conditions": [{"kind": "find_object", "object": "charger"}]},
+  "2": {"goal": "Find Neave and tell him dinner is ready.", "conditions": [{"kind": "notify", "person": "neave", "message": "dinner is ready"}]},
+  "3": {"goal": "Neave needs the charger. Find it and bring it to him.", "conditions": [{"kind": "deliver", "object": "charger", "person": "neave"}], "object_locations": {"charger": {"kind": "person", "id": "neave"}}},
+  "4": {"goal": "Find the missing keys.", "conditions": [{"kind": "find_object", "object": "keys"}]}
+}

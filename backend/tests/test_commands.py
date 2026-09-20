@@ -9,6 +9,18 @@ from app.world.engine import WorldEngine
 from app.world.tools import WorldTools
 
 
+def test_unobserved_exits_do_not_hide_route_to_known_object():
+    tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
+    task = TaskContext(goal="Find who needs charger and deliver it.",
+                       conditions=[GoalCondition(kind="deliver", object="charger")])
+    for name, args in [("get_status", {}), ("move_to", {"room": "study"}), ("look", {}),
+                       ("move_to", {"room": "hall"}), ("look", {})]:
+        task.record(name, args, tools.execute(name, args))
+    commands, _ = observable_commands(task)
+    assert "move_to:study" in commands  # Known object, despite unknown recipient.
+    assert "move_to:kitchen" in commands  # Exploration remains a choice.
+
+
 def test_command_choices_use_only_observations_and_reconcile_ownership():
     tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
     task = TaskContext(goal="Arbitrary goal text is not parsed by the command builder.",
@@ -53,7 +65,7 @@ def test_command_choices_use_only_observations_and_reconcile_ownership():
     assert "pick_up:charger" not in observable_commands(task)[0]
 
 
-def test_delivery_does_not_allow_report_when_local_investigation_is_available():
+def test_local_investigation_does_not_hide_other_valid_actions():
     tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
     task = TaskContext(goal="Find who needs the charger and deliver it.",
                        conditions=[GoalCondition(kind="deliver", object="charger")])
@@ -61,10 +73,10 @@ def test_delivery_does_not_allow_report_when_local_investigation_is_available():
         task.record(name, args, tools.execute(name, args))
     choices, _ = observable_commands(task)
     assert "talk_to:mom" in choices
-    assert "report" not in choices
+    assert "report" in choices
 
 
-def test_delivery_requires_look_then_local_questions_before_navigation():
+def test_delivery_requires_observation_but_does_not_force_questions():
     tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
     task = TaskContext(goal="Find who needs the charger and deliver it.",
                        conditions=[GoalCondition(kind="deliver", object="charger")])
@@ -76,4 +88,26 @@ def test_delivery_requires_look_then_local_questions_before_navigation():
     for name, args in [("look", {}), ("move_to", {"room": "kitchen"}), ("look", {})]:
         task.record(name, args, tools.execute(name, args))
     choices, _ = observable_commands(task)
-    assert set(choices) == {"talk_to:mom"}
+    assert set(choices) == {"report", "move_to:hall", "talk_to:mom"}
+
+
+def test_pending_delivery_keeps_all_observed_exits_available():
+    tools = WorldTools(WorldEngine(), EventBus())
+    task = TaskContext(goal="Neave needs the charger. Find it and bring it to him.",
+                       conditions=[GoalCondition(kind="deliver", object="charger")])
+
+    def act(name, **args):
+        result = tools.execute(name, args)
+        assert result["success"]
+        task.record(name, args, result)
+
+    act("get_status")
+    act("look")
+    act("move_to", room="bedroom_corridor")
+    act("look")
+
+    choices, _ = observable_commands(task)
+    assert "report" in choices
+    assert "move_to:hall" in choices
+    assert "move_to:master_bedroom" in choices
+    assert "move_to:second_bedroom" in choices
