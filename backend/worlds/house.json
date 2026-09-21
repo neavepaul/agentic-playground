@@ -168,18 +168,18 @@
     }
   ],
   "people": {
-    "mom": {
-      "id": "mom",
-      "name": "Mom",
-      "room": "kitchen",
+    "moira": {
+      "id": "moira",
+      "name": "Moira",
+      "room": "hall",
       "messages": [],
       "dialogue": [
         {
           "topics": [
-            "keys",
-            "key"
+            "medicine",
+            "paul"
           ],
-          "response": "I saw the keys in the kitchen earlier."
+          "response": "Paul needs his medicine today. I'm not sure where he's got to."
         }
       ]
     },
@@ -191,34 +191,50 @@
       "dialogue": [
         {
           "topics": [
-            "charger"
+            "medicine",
+            "paul"
           ],
-          "response": "I need the charger for my laptop, please."
+          "response": "I haven't seen Paul or the medicine, sorry."
         }
       ]
     },
-    "dad": {
-      "id": "dad",
-      "name": "Dad",
+    "minu": {
+      "id": "minu",
+      "name": "Minu",
+      "room": "second_bedroom",
+      "messages": [],
+      "dialogue": [
+        {
+          "topics": [
+            "medicine",
+            "paul"
+          ],
+          "response": "The medicine is in this room. Paul mentioned he needed it."
+        }
+      ]
+    },
+    "paul": {
+      "id": "paul",
+      "name": "Paul",
       "room": "office",
       "messages": [],
       "dialogue": [
         {
           "topics": [
-            "charger"
+            "medicine"
           ],
-          "response": "Neave needs the charger for his laptop."
+          "response": "I need the medicine, please."
         }
       ]
     }
   },
   "objects": {
-    "keys": {
-      "id": "keys",
-      "name": "Keys",
+    "medicine": {
+      "id": "medicine",
+      "name": "Medicine",
       "location": {
         "kind": "room",
-        "id": "kitchen"
+        "id": "second_bedroom"
       },
       "portable": true
     },
@@ -231,12 +247,12 @@
       },
       "portable": true
     },
-    "charger": {
-      "id": "charger",
-      "name": "Charger",
+    "keys": {
+      "id": "keys",
+      "name": "Keys",
       "location": {
         "kind": "room",
-        "id": "office"
+        "id": "kitchen"
       },
       "portable": true
     }
