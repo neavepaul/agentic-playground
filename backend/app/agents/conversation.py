@@ -54,6 +54,8 @@ remain a concise description of the conversational objective rather than a trans
 async def classify_conversation_move(client, context, person: str, message: str) -> ConversationMove:
     known = context.memory.people.get(person)
     threads = known.conversation_threads if known else {}
+    if not threads:
+        return ConversationMove(existing_thread_id="", thread_summary=message[:300], advances_thread=True)
     payload_threads = {
         thread_id: {
             "summary": thread.summary,

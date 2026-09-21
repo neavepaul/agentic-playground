@@ -37,6 +37,45 @@ def test_structures():
         CriticReview.model_validate({"approved": "yes", "summary": "Invalid bool"})
 
 
+def test_model_entity_ids_are_canonical_without_rewriting_speech():
+    from app.agents.schemas import SpokenNeed
+
+    condition = GoalCondition(kind="place_object", object=" Sensor Pack ", room="Work Room")
+    assert (condition.object, condition.room) == ("sensor_pack", "work_room")
+    need = SpokenNeed(object="Sensor Pack", person=" BEA ", quote="Bea needs the Sensor Pack.")
+    assert (need.object, need.person) == ("sensor_pack", "bea")
+    assert need.quote == "Bea needs the Sensor Pack."
+    with pytest.raises(ValidationError):
+        SpokenNeed(object=" ", person="Bea", quote="Original speech")
+    with pytest.raises(ValidationError):
+        GoalCondition(kind="find_person", person=123)
+
+
+def test_mixed_case_goal_allows_observed_recipient_handoff():
+    tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
+    task = TaskContext(goal="Bring the charger to Neave.", conditions=[
+        GoalCondition(kind="deliver", object="Charger", person="Neave")])
+    for name, args in [("get_status", {}), ("move_to", {"room": "study"}),
+                       ("look", {}), ("pick_up", {"object": "charger"}),
+                       ("move_to", {"room": "hall"}), ("move_to", {"room": "bedroom"}),
+                       ("look", {})]:
+        result = tools.execute(name, args)
+        assert result["success"]
+        task.record(name, args, result)
+    delivery = task.delivery_state()[0]
+    assert delivery["recipient_last_seen"] == "bedroom"
+    assert delivery["missing_prerequisites"] == ["give_object"]
+    commands, _ = observable_commands(task)
+    assert "give:charger:neave" in commands
+    assert "move_to:hall" in commands  # The model still chooses the action.
+    args = {"object": "charger", "person": "neave"}
+    result = tools.execute("give", args)
+    assert result["success"]
+    task.record("give", args, result)
+    assert task.delivery_state()[0]["delivered"]
+    assert task.compact()["required_outcomes"][0]["satisfied"]
+
+
 async def test_invalid_json_repair_and_failure():
     client = ScriptedLLM(["<think>private</think>broken", {"approved": True, "summary": "Supported."}])
     result = await structured(client, CriticReview, "Review", {})
@@ -151,7 +190,7 @@ async def test_ready_handoff_context_survives_search_delegation(object_id, sourc
 
     tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
     task = TaskContext(goal=f"Deliver {object_id} to Neave.",
-                       conditions=[GoalCondition(kind="deliver", object=object_id, person="neave")])
+                       conditions=[GoalCondition(kind="deliver", object=object_id, person="neave"), GoalCondition(kind="find_person", person="neave")])
 
     def act(name, **args):
         result = tools.execute(name, args)
@@ -176,6 +215,9 @@ async def test_ready_handoff_context_survives_search_delegation(object_id, sourc
     act("look")
     payload = await payload_for(tool("give", object=object_id, person="neave"))
     assert payload["ready_handoffs"] == [f"give:{object_id}:neave"]
+    assert len(payload["recent_actions"]) <= 8
+    assert all("observation" not in entry for entry in payload["recent_actions"])
+    assert payload["task_memory"]["objects"][object_id]["location"] == {"kind": "robot", "id": "robot"}
     assert "move_to:hall" in payload["commands"]
     assert "talk_to:neave" in payload["commands"]  # Clarification stays possible.
     act("give", object=object_id, person="neave")
@@ -209,7 +251,7 @@ async def test_handoff_recovers_from_invalid_model_output(invalid_field, value, 
     ])
     engine, bus = WorldEngine(), EventBus()
     mgr = TaskManager(fake, WorldTools(engine, bus), bus, Settings(max_explorer_actions=20))
-    task = mgr.start("Neave needs the charger. Find it and bring it to him.")
+    task = mgr.start("Find out who needs the charger and deliver it.")
     await mgr.runner
     assert task.status == "completed", task.summary
     assert engine.snapshot()["objects"]["charger"]["location"] == {"kind": "person", "id": "neave"}
@@ -227,7 +269,7 @@ async def test_goal_planner_repairs_omitted_delivery_condition():
                    '{"kind":"identify_recipient","object":"charger"}]}'
 
     plan = await Coordinator(IncompletePlanner()).define_goal(
-        "Neave needs the charger. Find it and bring it to him.")
+        "Find out who needs the charger and deliver it.")
     assert [condition.kind for condition in plan.conditions] == ["identify_recipient", "deliver"]
     assert plan.conditions[-1].object == "charger"
 
@@ -239,7 +281,7 @@ async def test_goal_planner_cannot_invent_unknown_recipient():
                    '{"kind":"deliver","object":"charger","person":"neave"}]}'
 
     plan = await Coordinator(InventedRecipientPlanner()).define_goal(
-        "Neave needs the charger. Find it and bring it to him.")
+        "Find out who needs the charger and deliver it.")
     assert len(plan.conditions) == 1
     assert plan.conditions[0].kind == "deliver"
     assert plan.conditions[0].object == "charger"
@@ -260,7 +302,7 @@ async def test_delivery_end_to_end_with_mock_model():
                {"approved": True, "summary": "Delivery and need are evidenced."}]
     fake = ScriptedLLM(replies)
     mgr, engine, bus = manager(fake)
-    task = mgr.start("Neave needs the charger. Find it and bring it to him.")
+    task = mgr.start("Find out who needs the charger and deliver it.")
     await mgr.runner
     assert task.status == "completed"
     assert task.critic_count == 2
@@ -328,11 +370,12 @@ async def test_ollama_contract_and_thinking_exclusion():
     def respond(request):
         import json
         body = json.loads(request.content)
-        assert body["think"] is False and body["stream"] is False
+        assert body["think"] is True and body["stream"] is False
+        assert body["options"]["num_predict"] == 4096
         assert body["format"]["type"] == "object"
         return httpx.Response(200, json={"message": {"content": '{"approved":true,"summary":"OK"}',
                                                       "thinking": "private scratchpad"}})
-    client = OllamaClient(Settings())
+    client = OllamaClient(Settings(decision_thinking=True))
     await client.http.aclose()
     client.http = httpx.AsyncClient(transport=httpx.MockTransport(respond), base_url="http://test")
     result = await structured(client, CriticReview, "Review", {})
@@ -416,8 +459,7 @@ async def test_no_progress_report_is_reviewed_and_recovers():
         {"action": "delegate", "summary": "Search.", "task": "Find charger."},
         {"action": "report", "summary": "Charger found."},
         {"approved": False, "summary": "No observation supports finding it.", "suggestion": "Search the rooms."},
-        {"action": "delegate", "summary": "Continue search.",
-         "task": "Search unexplored rooms for the charger."},
+        {"action": "report", "summary": "I will search now."},
         tool("look"), tool("move_to", room="study"), tool("look"),
         {"action": "report", "summary": "Charger observed."}, complete,
         {"approved": True, "summary": "Observed charger."}])
@@ -426,8 +468,50 @@ async def test_no_progress_report_is_reviewed_and_recovers():
     await mgr.runner
     assert task.status == "completed"
     assert task.critic_count == 2
+    assert task.cycle_count == 2  # Recover inside the delegation, without another planning cycle.
+    assert any("Report rejected" in message for message in task.action_feedback)
     assert not any(e["type"] == "agent_message" and e["data"].get("summary") == "Charger found."
                    for e in bus.history)
+
+
+async def test_repeated_rejected_reports_stop_across_delegations():
+    delegate = {"action": "delegate", "summary": "Search.", "task": "Find requested object."}
+    report = {"action": "report", "summary": "Cannot find it."}
+    fake = ScriptedLLM([delegate, report,
+        {"approved": False, "summary": "No supporting observations."},
+        delegate, report, delegate, report])
+    mgr, _, _ = manager(fake, max_explorer_actions=1)
+    task = mgr.start("Find charger.")
+    await mgr.runner
+    assert task.status == "failed"
+    assert "unchanged decision loop" in task.summary
+    assert task.critic_count == 1
+    assert task.consecutive_report_rejections == 3
+    assert task.tool_count == 2  # Bootstrap only; no tool is chosen by recovery code.
+    assert TaskContext(goal="Another task").consecutive_report_rejections == 0
+    mgr.call_tool(task, "look", {})
+    assert task.consecutive_report_rejections == 0
+
+
+async def test_report_claims_do_not_override_observed_search_coverage():
+    import json
+    from app.agents.explorer import Explorer
+    tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
+    task = TaskContext(goal="Find requested object.")
+    for name in ["get_status", "get_map", "look"]:
+        task.record(name, {}, tools.execute(name, {}))
+    task.explorer_reports.append("All rooms were searched.")
+    task.critic_feedback.append({"kind": "delegation_report", "approved": False,
+                                "summary": "All rooms were searched.",
+                                "observed_action_count": len(task.action_history)})
+    fake = ScriptedLLM([tool("move_to", room="study")])
+    await Explorer(fake, tools.schemas()).decide(task, "Continue searching.")
+    payload = json.loads(fake.calls[0][0][1]["content"])
+    assert "All rooms were searched" not in str(payload)
+    assert payload["floor_plan"]["rooms"]["hall"]["observed"]
+    assert not payload["floor_plan"]["rooms"]["study"]["observed"]
+    assert "study" in payload["known_but_unobserved_rooms"]
+    assert task.explorer_reports and task.critic_feedback  # Audit remains intact.
 
 
 async def test_unobserved_room_report_forces_scan_before_coordinator_replan():
@@ -439,7 +523,7 @@ async def test_unobserved_room_report_forces_scan_before_coordinator_replan():
         {"action": "fail", "summary": "Stop test."},
     ])
     mgr, _, bus = manager(fake, max_coordinator_cycles=2)
-    task = mgr.start("Neave needs the charger. Find it and bring it to him.")
+    task = mgr.start("Find out who needs the charger and deliver it.")
     await mgr.runner
     assert task.status == "failed"
     assert [entry["tool"] for entry in task.action_history] == ["get_status", "get_map", "look", "move_to", "look", "talk_to"]
@@ -482,7 +566,7 @@ async def test_distinct_followup_can_be_spoken_without_critic_debate():
 def test_recipient_can_still_receive_other_messages():
     tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
     task = TaskContext(
-        goal="Neave needs the charger. Find it and bring it to him.",
+        goal="Find out who needs the charger and deliver it.",
         conditions=[GoalCondition(kind="deliver", object="charger", person="")],
     )
 
@@ -509,7 +593,7 @@ def test_recipient_can_still_receive_other_messages():
 def test_known_recipient_can_still_be_addressed_without_repeating_investigation():
     tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
     task = TaskContext(
-        goal="Neave needs the charger. Find it and bring it to him.",
+        goal="Find out who needs the charger and deliver it.",
         conditions=[GoalCondition(kind="deliver", object="charger")],
     )
 
@@ -529,7 +613,7 @@ def test_known_recipient_can_still_be_addressed_without_repeating_investigation(
 def test_conversation_preserves_local_navigation():
     tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
     task = TaskContext(
-        goal="Neave needs the charger. Find it and bring it to him.",
+        goal="Find out who needs the charger and deliver it.",
         conditions=[GoalCondition(kind="deliver", object="charger", person="")],
     )
 
@@ -560,7 +644,7 @@ async def test_valid_evidence_ids_cannot_substitute_for_required_outcomes():
         {"action": "report", "summary": "Neave needs it."}, complete,
         {"approved": True, "summary": "This model vote must never be consulted."}])
     mgr, _, _ = manager(fake, max_coordinator_cycles=2)
-    task = mgr.start("Neave needs the charger. Find it and bring it to him.")
+    task = mgr.start("Find out who needs the charger and deliver it.")
     await mgr.runner
     assert task.status == "failed" and task.critic_count == 0
     assert task.critic_feedback[-1]["unmet_conditions"][0]["kind"] == "deliver"
@@ -575,7 +659,7 @@ async def test_pickup_does_not_wait_for_critic_approval():
         {"action": "report", "summary": "Charger picked up."},
         {"action": "fail", "summary": "Stopping the test after pickup."}])
     mgr, engine, _ = manager(fake)
-    task = mgr.start("Neave needs the charger. Find it and bring it to him.")
+    task = mgr.start("Find out who needs the charger and deliver it.")
     await mgr.runner
     assert task.status == "failed" and task.critic_count == 0
     assert engine.snapshot()["objects"]["charger"]["location"] == {"kind": "robot", "id": "robot"}

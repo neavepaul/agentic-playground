@@ -29,6 +29,7 @@ class TaskContext(BaseModel):
     last_progress_signature: tuple | None = None
     action_feedback: list[str] = Field(default_factory=list)
     conversation_rejections: dict[str, int] = Field(default_factory=dict)
+    consecutive_report_rejections: int = 0
 
     def feedback(self, message: str) -> None:
         self.action_feedback.append(message)
@@ -185,6 +186,7 @@ class TaskContext(BaseModel):
         self.action_history.append(entry)
         if not result["success"]:
             return
+        self.consecutive_report_rejections = 0
         if tool in {"move_to", "pick_up", "drop", "give"}:
             self.conversation_rejections.clear()
         elif tool == "talk_to":
@@ -207,7 +209,8 @@ class TaskContext(BaseModel):
             room_view["objects_held_by_people"] = room_view.pop("held_objects")
             room_view["robot_inventory"] = self.memory.inventory()
         return deepcopy({"goal": self.goal, "current_plan": self.current_plan,
-                "floor_plan": {"rooms": {key: {"name": value["name"], "connections": value["connections"]}
+                "floor_plan": {"rooms": {key: {"name": value["name"], "connections": value["connections"],
+                                               "observed": key in self.memory.rooms}
                                            for key, value in self.floor_plan.get("rooms", {}).items()}},
                 "task_memory": memory,
                 "current_room_observation": room_view,
@@ -217,7 +220,8 @@ class TaskContext(BaseModel):
                 "known_but_unobserved_rooms": sorted(known_rooms - set(self.memory.rooms)),
                 "recent_actions": self.action_history[-8:],
                 "critic_feedback": [f for f in self.critic_feedback
-                                    if f.get("observed_action_count") == len(self.action_history)][-2:],
+                                    if f.get("observed_action_count") == len(self.action_history)
+                                    and f.get("kind") != "delegation_report"][-2:],
                 "explorer_reports_unverified": self.explorer_reports[-2:],
                 "cycle_count": self.cycle_count, "tool_count": self.tool_count})
 

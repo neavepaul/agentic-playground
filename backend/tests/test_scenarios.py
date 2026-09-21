@@ -284,3 +284,16 @@ async def test_semantic_conversation_threads_block_rephrasing_but_allow_new_purp
     )
     assert new_topic.existing_thread_id == ""
     assert new_topic.advances_thread is True
+
+
+async def test_first_conversation_cannot_be_rejected_as_repeated():
+    class NoClassificationExpected:
+        async def generate(self, messages, response_schema):
+            raise AssertionError("There is no prior conversation to classify a repeat against.")
+
+    task = TaskContext(goal="Ask the local person for directions.")
+    task.memory.set_person("witness", "entry", "observed", "Witness")
+    move = await classify_conversation_move(NoClassificationExpected(), task, "witness", "Where is the exit?")
+    assert move.advances_thread
+    assert move.existing_thread_id == ""
+    assert task.memory.people["witness"].conversation_threads == {}

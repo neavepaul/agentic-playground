@@ -93,6 +93,7 @@ class TaskManager:
         self.bus.emit("agent_active", "critic", task_id=context.id)
         review = await self.critic.review(context, proposal, kind, evidence, proposed_action)
         context.critic_feedback.append({"proposal": proposal, **review.model_dump(),
+                                       "kind": kind,
                                        "observed_action_count": len(context.action_history)})
         self.bus.emit("critic_review", "critic", task_id=context.id, **review.model_dump())
         return review.approved
@@ -165,14 +166,25 @@ class TaskManager:
                             self.message(context, "system", correction)
                             continue
                         if context.tool_count == starting_tool_count:
-                            approved = await self.review(context, action.summary, "delegation_report")
+                            previous_rejection = next((review for review in reversed(context.critic_feedback)
+                                if review.get("kind") == "delegation_report"
+                                and not review["approved"]
+                                and review.get("observed_action_count") == len(context.action_history)), None)
+                            approved = False if previous_rejection else await self.review(
+                                context, action.summary, "delegation_report")
                             if not approved:
-                                self.message(
-                                    context,
-                                    "system",
-                                    "Explorer report rejected; returning to Coordinator for replanning.",
-                                )
-                                break
+                                context.consecutive_report_rejections += 1
+                                if context.consecutive_report_rejections >= 3:
+                                    raise LimitReached("Explorer repeatedly reported without acting after feedback. "
+                                                       "Stopping the unchanged decision loop; task remains incomplete.")
+                                unexplored = context.compact()["known_but_unobserved_rooms"]
+                                correction = ("Report rejected: no new tool evidence supports progress. "
+                                              "Choose a tool action to continue the unfinished work; "
+                                              "an intention to search is not an executed search. "
+                                              f"Rooms without a look observation: {unexplored}.")
+                                context.feedback(correction)
+                                self.message(context, "system", correction)
+                                continue
                         context.explorer_reports.append(action.summary)
                         self.message(context, "explorer", "Returning observations to Coordinator.")
                         break

@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     task_timeout_seconds: float = Field(default=1800, gt=0)
     temperature: float = Field(default=0.1, ge=0, le=1)
     context_tokens: int = Field(default=8192, ge=2048, le=32768)
+    decision_thinking: bool = False
+    decision_output_tokens: int = Field(default=4096, ge=1024, le=16384)
     max_coordinator_cycles: int = Field(default=20, ge=1, le=100)
     max_explorer_actions: int = Field(default=8, ge=1, le=50)
     max_tool_calls: int = Field(default=50, ge=1, le=200)

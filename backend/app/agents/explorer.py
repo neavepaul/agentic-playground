@@ -1,4 +1,5 @@
 from typing import Literal
+import logging
 
 from pydantic import ConfigDict, Field, create_model
 
@@ -18,6 +19,11 @@ class Explorer:
         commands, _ = observable_commands(context)
         commands = {id: command for id, command in commands.items()
                     if id == "report" or command["tool"] in self.tool_names}
+        logging.getLogger("agentic_friend.decisions").info(
+            "Explorer context: task=%s room=%s inventory=%s commands=%s delivery=%s",
+            context.id, context.robot_status.get("room"), context.robot_status.get("inventory", []),
+            list(commands), context.delivery_state(),
+        )
         # Give commands already require a held goal object and an observed,
         # identified recipient. Surface this affordance without a second memory
         # store, simulator access, or taking action on the model's behalf.
@@ -47,12 +53,24 @@ class Explorer:
 
         schema = create_model("ExplorerCommand", __base__=CommandChoice,
                               __config__=ConfigDict(json_schema_extra=constrain_speech), **fields)
+        payload = context.compact()
+        # Reports are model claims, not observations. The Coordinator receives
+        # them as handoffs; replaying them to Explorer reinforces false discoveries.
+        payload.pop("explorer_reports_unverified", None)
+        # Current facts already live in task_memory. Retain the recent action
+        # sequence and failures without replaying maps and stale room snapshots.
+        payload["recent_actions"] = [
+            {key: action[key] for key in ("tool", "arguments", "success", "error") if key in action}
+            for action in context.action_history[-8:]
+        ]
         choice = await structured(self.client, schema, EXPLORER,
-                                  {**context.compact(), "delegated_task": task,
+                                  {**payload, "delegated_task": task,
                                    "ready_handoffs": ready_handoffs,
                                    "commands": commands},
                                   repair_hint="For talk_to, include message with the actual nonblank words to speak. "
                                               "Putting those words in summary does not supply message.")
+        logging.getLogger("agentic_friend.decisions").info(
+            "Explorer choice: task=%s command=%s summary=%s", context.id, choice.command_id, choice.summary)
         if choice.command_id == "report":
             return ExplorerDecision(action="report", summary=choice.summary)
         command = commands[choice.command_id]

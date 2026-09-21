@@ -11,12 +11,16 @@ class OllamaClient:
                                      timeout=settings.llm_timeout_seconds, trust_env=False)
 
     async def generate(self, messages: list[dict], response_schema: dict) -> str:
+        thinking = self.settings.decision_thinking and response_schema.get("title") in {
+            "ExplorerCommand", "CoordinatorDecision", "GoalPlan", "CriticReview"
+        }
         try:
             response = await self.http.post("/api/chat", json={
                 "model": self.settings.ollama_model, "messages": messages,
-                "format": response_schema, "stream": False, "think": False,
+                "format": response_schema, "stream": False, "think": thinking,
                 "options": {"temperature": self.settings.temperature,
-                            "num_ctx": self.settings.context_tokens, "num_predict": 1024},
+                            "num_ctx": self.settings.context_tokens,
+                            "num_predict": self.settings.decision_output_tokens if thinking else 1024},
             })
             response.raise_for_status()
             # The optional thinking field is deliberately ignored and never persisted.

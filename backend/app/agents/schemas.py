@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
 ShortText = Annotated[str, Field(min_length=1, max_length=300)]
@@ -72,6 +72,11 @@ class GoalCondition(StrictModel):
     room: str = Field(default="", max_length=40)
     message: str = Field(default="", max_length=500)
 
+    @field_validator("object", "person", "room")
+    @classmethod
+    def normalize_entity_id(cls, value: str) -> str:
+        return "_".join(value.strip().casefold().split())
+
     @model_validator(mode="after")
     def required_targets(self):
         if self.kind in {"find_object", "identify_recipient", "hold_object", "deliver", "place_object"} and not self.object:
@@ -94,6 +99,14 @@ class SpokenNeed(StrictModel):
     object: str = Field(min_length=1, max_length=40)
     person: str = Field(min_length=1, max_length=40)
     quote: str = Field(min_length=1, max_length=500)
+
+    @field_validator("object", "person")
+    @classmethod
+    def normalize_entity_id(cls, value: str) -> str:
+        normalized = "_".join(value.strip().casefold().split())
+        if not normalized:
+            raise ValueError("An entity ID must not be blank.")
+        return normalized
 
 
 class ConversationMove(StrictModel):
