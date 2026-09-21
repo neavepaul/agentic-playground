@@ -13,9 +13,9 @@ def observable_commands(context: TaskContext) -> tuple[dict, dict | None]:
     needs = known_recipients(context)
     deliveries = {(c.object, c.person or needs.get(c.object)) for c in context.conditions if c.kind == "deliver"}
     view = context.memory.room_view(room)
-    commands = {"report": {"description": "Return discoveries or a blockage to Coordinator."},
-                "look": {"tool": "look", "arguments": {},
-                         "description": "Scan the current room and refresh local visual observations."}}
+    commands: dict = {"report": {"description": "Return discoveries or a blockage to Coordinator."},
+                      "look": {"tool": "look", "arguments": {},
+                               "description": "Scan the current room and refresh local visual observations."}}
     if view is None:
         commands["look"] = {"tool": "look", "arguments": {},
                             "description": "Observe this room; its contents and exits are not yet known."}
@@ -28,15 +28,29 @@ def observable_commands(context: TaskContext) -> tuple[dict, dict | None]:
     if previous and previous["success"] and previous["tool"] == "look":
         commands.pop("look", None)
 
-    def add(tool: str, arguments: dict, description: str) -> None:
+    def add(tool: str, arguments: dict, description: str, priority: bool = False) -> None:
         id = ":".join([tool, *arguments.values()])
-        commands[id] = {"tool": tool, "arguments": arguments, "description": description}
+        entry: dict = {"tool": tool, "arguments": arguments, "description": description}
+        if priority:
+            entry["priority"] = True
+        commands[id] = entry
 
     for exit in view["connections"]:
         add("move_to", {"room": exit}, f"Move from {room} to the connected room {exit}.")
+
+    # Identify objects whose pick_up directly satisfies an unmet acquire_object prerequisite
+    # so the affordance layer can surface this as a priority action rather than one equal choice.
+    unmet_acquires = {d["object"] for d in context.delivery_state()
+                      if "acquire_object" in d.get("missing_prerequisites", [])}
+
     for item in view["objects"]:
         if item.get("portable", True) and item["id"] in movable:
-            add("pick_up", {"object": item["id"]}, f"Take visible {item['id']} into inventory.")
+            is_priority = item["id"] in unmet_acquires
+            desc = (f"PRIORITY — {item['id']} is the required object and is visible here. "
+                    "Pick it up to satisfy the acquire_object prerequisite."
+                    if is_priority else f"Take visible {item['id']} into inventory.")
+            add("pick_up", {"object": item["id"]}, desc, priority=is_priority)
+
     for person in view["people"]:
         if context.conversation_rejections.get(person["id"], 0) >= 1:
             continue

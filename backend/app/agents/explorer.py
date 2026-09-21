@@ -28,6 +28,10 @@ class Explorer:
         # identified recipient. Surface this affordance without a second memory
         # store, simulator access, or taking action on the model's behalf.
         ready_handoffs = [id for id, command in commands.items() if command.get("tool") == "give"]
+        # Priority actions directly satisfy an immediately actionable prerequisite
+        # (e.g. pick_up when the required object is visible and not yet held).
+        # Surface them explicitly so the LLM does not treat them as equal choices.
+        priority_actions = [id for id, command in commands.items() if command.get("priority")]
         fields = {"command_id": (Literal[tuple(commands)], ...)}
         if all(command.get("tool") == "talk_to" for command in commands.values()):
             fields["message"] = (str, Field(min_length=1, max_length=500, pattern=r"\S",
@@ -66,6 +70,7 @@ class Explorer:
         choice = await structured(self.client, schema, EXPLORER,
                                   {**payload, "delegated_task": task,
                                    "ready_handoffs": ready_handoffs,
+                                   "priority_actions": priority_actions,
                                    "commands": commands},
                                   repair_hint="For talk_to, include message with the actual nonblank words to speak. "
                                               "Putting those words in summary does not supply message.")

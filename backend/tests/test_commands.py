@@ -111,3 +111,77 @@ def test_pending_delivery_keeps_all_observed_exits_available():
     assert "move_to:hall" in choices
     assert "move_to:master_bedroom" in choices
     assert "move_to:second_bedroom" in choices
+
+
+def test_pick_up_of_required_object_is_marked_priority():
+    """pick_up is flagged priority when it directly satisfies an unmet acquire_object prerequisite."""
+    tools = WorldTools(WorldEngine(), EventBus())
+    task = TaskContext(goal="Deliver charger to neave.",
+                       conditions=[GoalCondition(kind="deliver", object="charger", person="neave")])
+
+    def act(name, **args):
+        result = tools.execute(name, args)
+        assert result["success"], f"{name} failed: {result}"
+        task.record(name, args, result)
+
+    act("get_status")
+    act("get_map")
+    # Robot starts in hall; move to office where charger lives.
+    act("look")
+    act("move_to", room="entrance")
+    act("look")
+    act("move_to", room="office")
+    act("look")
+
+    choices, _ = observable_commands(task)
+    # The charger is visible on the floor. Since it's not held, acquire_object is unmet.
+    assert "pick_up:charger" in choices
+    assert choices["pick_up:charger"].get("priority") is True, "pick_up:charger must be marked priority"
+
+
+def test_pick_up_is_not_priority_when_already_held():
+    """After picking up the required object, pick_up disappears from commands entirely."""
+    tools = WorldTools(WorldEngine(), EventBus())
+    task = TaskContext(goal="Deliver charger to neave.",
+                       conditions=[GoalCondition(kind="deliver", object="charger", person="neave")])
+
+    def act(name, **args):
+        result = tools.execute(name, args)
+        assert result["success"], f"{name} failed: {result}"
+        task.record(name, args, result)
+
+    act("get_status")
+    act("get_map")
+    act("look")
+    act("move_to", room="entrance")
+    act("look")
+    act("move_to", room="office")
+    act("look")
+    act("pick_up", object="charger")
+
+    choices, _ = observable_commands(task)
+    assert "pick_up:charger" not in choices
+
+
+def test_non_delivery_pick_up_is_not_marked_priority():
+    """pick_up commands for irrelevant objects carry no priority flag."""
+    tools = WorldTools(WorldEngine(), EventBus())
+    # Goal only cares about keys; charger is irrelevant.
+    task = TaskContext(goal="Deliver keys.",
+                       conditions=[GoalCondition(kind="hold_object", object="keys")])
+
+    def act(name, **args):
+        result = tools.execute(name, args)
+        task.record(name, args, result)
+
+    act("get_status")
+    act("get_map")
+    act("look")
+    act("move_to", room="entrance")
+    act("look")
+    act("move_to", room="office")
+    act("look")
+
+    choices, _ = observable_commands(task)
+    # charger is not in movable (keys are), so it won't appear at all.
+    assert "pick_up:charger" not in choices
