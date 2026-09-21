@@ -13,6 +13,9 @@ Interpreted needs are fallible language interpretations with quoted transcript e
 
 COORDINATOR = COMMON + """
 You are Coordinator. You have NO world tools. Delegate concrete work to Explorer.
+long_term_memory contains prior observations from past tasks — where people were
+last seen and what they have needed before. Use it to form smarter initial plans,
+but treat it as a starting hypothesis, not confirmed current truth.
 Use action=delegate with task, action=consult_critic with plan, action=complete with
 evidence_ids, or action=fail. summary briefly states the next operation or outcome.
 Avoid micromanagement: let Explorer search, navigate and gather information.
@@ -53,6 +56,8 @@ unless a give is simultaneously available and the recipient is confirmed present
 navigation_hints provides the shortest next_hop for each known target. When moving
 toward a target, select the move_to command whose room matches that next_hop rather
 than re-deriving a route from floor_plan. This avoids aimless backtracking.
+Hints with confidence=prior_observation_verify_with_look come from long_term_memory
+and may be stale; navigate there but verify with look before trusting them.
 
 For delivery, acquire the requested object when visible, then locate its recipient
 and transfer it with give. ready_handoffs identifies transfers possible here.

@@ -231,25 +231,23 @@ async def test_ready_handoff_context_survives_search_delegation(object_id, sourc
     ("command_id", "give:charger:dad", "literal_error"),
 ])
 async def test_handoff_recovers_from_invalid_model_output(invalid_field, value, error_code):
-    # Use the current house and the real manager/tool/critic path. An invalid
-    # handoff response must be repaired before any transfer is attempted.
+    # Uses LEGACY_WORLD so the scripted tool sequence is stable. The test
+    # exercises the repair mechanism for invalid Explorer output — the specific
+    # world entities are incidental.
     invalid = {"command_id": "give:charger:neave", "message": "", "summary": "Deliver charger."}
     invalid[invalid_field] = value
     fake = ScriptedLLM([
         {"action": "delegate", "summary": "Find and deliver.", "task": "Find charger and recipient, then deliver."},
-        tool("look"), tool("move_to", room="entrance"), tool("look"),
-        tool("move_to", room="office"), tool("look"),
+        tool("look"), tool("move_to", room="study"), tool("look"),
         tool("talk_to", person="dad", message="Who needs the charger?"),
         tool("pick_up", object="charger"),
-        tool("move_to", room="entrance"), tool("move_to", room="hall"),
-        tool("move_to", room="bedroom_corridor"), tool("look"),
-        tool("move_to", room="master_bedroom"), tool("look"),
+        tool("move_to", room="hall"), tool("move_to", room="bedroom"), tool("look"),
         invalid, tool("give", object="charger", person="neave"),
         {"approved": True, "summary": "Held charger and observed recipient."},
         {"action": "report", "summary": "Delivered."}, complete,
         {"approved": True, "summary": "Successful transfer evidenced."},
     ])
-    engine, bus = WorldEngine(), EventBus()
+    engine, bus = WorldEngine(LEGACY_WORLD), EventBus()
     mgr = TaskManager(fake, WorldTools(engine, bus), bus, Settings(max_explorer_actions=20))
     task = mgr.start("Find out who needs the charger and deliver it.")
     await mgr.runner

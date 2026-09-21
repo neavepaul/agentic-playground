@@ -85,18 +85,18 @@ class TestNavigationHints:
 
     def test_hints_include_last_seen_object_location(self):
         task, tools = _task_with_map()
-        task.conditions = [GoalCondition(kind="deliver", object="charger", person="neave")]
-        # Observe hall then move to entrance then office to observe charger.
-        for name, args in [("look", {}), ("move_to", {"room": "entrance"}),
-                           ("look", {}), ("move_to", {"room": "office"}), ("look", {})]:
+        task.conditions = [GoalCondition(kind="deliver", object="medicine", person="paul")]
+        # Observe hall then move to bedroom_corridor then second_bedroom where medicine lives.
+        for name, args in [("look", {}), ("move_to", {"room": "bedroom_corridor"}),
+                           ("look", {}), ("move_to", {"room": "second_bedroom"}), ("look", {})]:
             task.record(name, args, tools.execute(name, args))
-        # Robot is now in office where charger is. Move back to hall.
-        task.record("move_to", {"room": "entrance"}, tools.execute("move_to", {"room": "entrance"}))
+        # Robot is now in second_bedroom where medicine is. Move back to hall.
+        task.record("move_to", {"room": "bedroom_corridor"}, tools.execute("move_to", {"room": "bedroom_corridor"}))
         task.record("move_to", {"room": "hall"}, tools.execute("move_to", {"room": "hall"}))
         hints = task._navigation_hints()
-        # Charger was last seen in office; from hall the next hop is entrance.
-        assert "object:charger" in hints
-        assert hints["object:charger"]["next_hop"] == "entrance"
+        # Medicine was last seen in second_bedroom; from hall the next hop is bedroom_corridor.
+        assert "object:medicine" in hints
+        assert hints["object:medicine"]["next_hop"] == "bedroom_corridor"
 
     def test_hints_include_last_seen_recipient_location(self):
         task, tools = _task_with_map()

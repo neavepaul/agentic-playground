@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.config import Settings, get_settings
 from app.events.bus import EventBus
 from app.llm.ollama import OllamaClient
+from app.memory.store import PersistentMemory
 from app.tasks.manager import TaskBusy, TaskManager
 from app.world.engine import WorldEngine
 from app.world.tools import WorldTools
@@ -27,7 +28,8 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     bus, engine = EventBus(), WorldEngine(config.world_file)
     llm = client or OllamaClient(config)
-    manager = TaskManager(llm, WorldTools(engine, bus), bus, config)
+    persistent = PersistentMemory.load(config.memory_file)
+    manager = TaskManager(llm, WorldTools(engine, bus), bus, config, persistent)
     mutation_lock = asyncio.Lock()
 
     @asynccontextmanager

@@ -76,15 +76,17 @@ def test_sketch_topology_and_observation_boundary():
     assert "master_bedroom" not in plan["rooms"]["hall"]["connections"]
     assert len(plan["doors"]) == 6
     encoded = json.dumps(plan)
-    for secret in ["neave", "charger", "dialogue", "people", "objects", "messages"]:
+    for secret in ["neave", "minu", "moira", "paul", "medicine", "dialogue", "people", "objects", "messages"]:
         assert secret not in encoded
-    assert engine.look()["people"] == []
-    assert engine.look()["objects"] == []
-    assert "charger" not in json.dumps(engine.get_status())
+    hall_view = engine.look()
+    assert hall_view["people"][0]["id"] == "moira"
+    assert "dialogue" not in json.dumps(hall_view)
+    assert hall_view["objects"] == []
+    assert "medicine" not in json.dumps(engine.get_status())
     engine.move_to("entrance")
     engine.move_to("office")
-    response = engine.talk_to("dad", "Who needs the charger?")
-    assert "Neave" in response["response"]
+    response = engine.talk_to("paul", "Do you need the medicine?")
+    assert "medicine" in response["response"]
     assert "facts" not in response and "dialogue" not in response
 
 
@@ -114,7 +116,7 @@ def test_dialogue_matches_natural_words_for_multiword_identifiers(tmp_path):
 @pytest.mark.parametrize("mutate", [
     lambda w: w["robot"].update(room="missing"),
     lambda w: w["people"]["neave"].update(room="missing"),
-    lambda w: w["objects"]["charger"]["location"].update(id="missing"),
+    lambda w: w["objects"]["medicine"]["location"].update(id="missing"),
     lambda w: w["rooms"]["office"].update(connections=["hall"]),
     lambda w: w["rooms"]["hall"].update(id="different"),
     lambda w: w["doors"][0].update(rooms=["office", "master_bedroom"]),
@@ -201,12 +203,12 @@ def test_can_scan_again_after_returning_to_a_known_room(tmp_path):
     assert "look" in observable_commands(task)[0]
 
 
-def test_task_memory_preserves_charger_plan_after_recent_history_eviction():
+def test_task_memory_preserves_medicine_plan_after_recent_history_eviction():
     engine, bus = WorldEngine(), EventBus()
     tools = WorldTools(engine, bus)
     task = TaskContext(
-        goal="Find who needs the charger and deliver it.",
-        conditions=[GoalCondition(kind="deliver", object="charger")],
+        goal="Find who needs the medicine and deliver it.",
+        conditions=[GoalCondition(kind="deliver", object="medicine")],
     )
 
     def act(name, **args):
@@ -219,19 +221,19 @@ def test_task_memory_preserves_charger_plan_after_recent_history_eviction():
     act("move_to", room="entrance")
     act("move_to", room="office")
     act("look")
-    conversation = act("talk_to", person="dad", message="Who needs the charger?")
+    conversation = act("talk_to", person="paul", message="Do you need the medicine?")
     task.remember_meaning(conversation["evidence_id"], ConversationMeaning(needs=[
-        SpokenNeed(object="charger", person="neave", quote="Neave needs the charger for his laptop.")
+        SpokenNeed(object="medicine", person="paul", quote="I need the medicine, please.")
     ]))
     task.remember_conversation_thread(
-        "dad", "thread_1", "Determine who requested the item", True,
+        "paul", "thread_1", "Determine who requested the item", True,
         conversation["observation"]["message"], conversation["observation"]["response"],
         conversation["evidence_id"],
     )
     act("move_to", room="entrance")
     act("move_to", room="hall")
     act("move_to", room="bedroom_corridor")
-    act("move_to", room="master_bedroom")
+    act("move_to", room="second_bedroom")
     act("look")
     for room in ["bedroom_corridor", "hall", "kitchen", "hall", "entrance", "hall"]:
         act("move_to", room=room)
@@ -239,12 +241,12 @@ def test_task_memory_preserves_charger_plan_after_recent_history_eviction():
     payload = task.compact()
     memory = payload["task_memory"]
     assert len(payload["recent_actions"]) == 8
-    assert memory["objects"]["charger"]["location"] == {"kind": "room", "id": "office"}
-    assert memory["people"]["dad"]["location"] == "office"
-    assert memory["people"]["neave"]["location"] == "master_bedroom"
-    assert memory["people"]["dad"]["conversation_threads"]["thread_1"]["turns"][-1]["response"] == \
-        "Neave needs the charger for his laptop."
-    assert memory["reported_needs_unverified"][0]["person"] == "neave"
+    assert memory["objects"]["medicine"]["location"] == {"kind": "room", "id": "second_bedroom"}
+    assert memory["people"]["paul"]["location"] == "office"
+    assert memory["people"]["minu"]["location"] == "second_bedroom"
+    assert memory["people"]["paul"]["conversation_threads"]["thread_1"]["turns"][-1]["response"] == \
+        "I need the medicine, please."
+    assert memory["reported_needs_unverified"][0]["person"] == "paul"
     assert "office" in memory["visited_rooms"]
 
 

@@ -31,6 +31,7 @@ class TaskContext(BaseModel):
     action_feedback: list[str] = Field(default_factory=list)
     conversation_rejections: dict[str, int] = Field(default_factory=dict)
     consecutive_report_rejections: int = 0
+    long_term_memory: dict = Field(default_factory=dict)
 
     def feedback(self, message: str) -> None:
         self.action_feedback.append(message)
@@ -216,14 +217,28 @@ class TaskContext(BaseModel):
                 if path:
                     hints[f"explore:{room_id}"] = {"target": room_id, "reason": "unobserved",
                                                     "next_hop": path[0], "full_path": path}
+        ltm_people = self.long_term_memory.get("people", {})
+        ltm_objects = self.long_term_memory.get("objects", {})
         for delivery in self.delivery_state():
+            obj_id = delivery["object"]
             loc = delivery.get("last_observed_location")
             if loc and loc[0] == "room" and loc[1] != current:
                 path = self._find_path(current, loc[1])
                 if path:
-                    hints[f"object:{delivery['object']}"] = {
+                    hints[f"object:{obj_id}"] = {
                         "target": loc[1], "reason": "last_observed_object_location",
                         "next_hop": path[0], "full_path": path}
+            elif not loc:
+                # No task-scoped observation yet; fall back to long-term memory.
+                ltm_room = ltm_objects.get(obj_id, {}).get("last_seen_room")
+                if ltm_room and ltm_room != current:
+                    path = self._find_path(current, ltm_room)
+                    if path:
+                        hints[f"object:{obj_id}"] = {
+                            "target": ltm_room, "reason": "long_term_memory_last_seen",
+                            "next_hop": path[0], "full_path": path,
+                            "confidence": "prior_observation_verify_with_look"}
+
             recipient = delivery.get("recipient")
             recipient_loc = delivery.get("recipient_last_seen")
             if recipient and recipient_loc and recipient_loc != current:
@@ -232,6 +247,17 @@ class TaskContext(BaseModel):
                     hints[f"recipient:{recipient}"] = {
                         "target": recipient_loc, "reason": "last_seen_recipient",
                         "next_hop": path[0], "full_path": path}
+            elif recipient and not recipient_loc:
+                # Not seen this task; fall back to long-term memory.
+                ltm = ltm_people.get(recipient, {})
+                ltm_room = ltm.get("last_seen_room") or (ltm.get("typical_rooms") or [None])[0]
+                if ltm_room and ltm_room != current:
+                    path = self._find_path(current, ltm_room)
+                    if path:
+                        hints[f"recipient:{recipient}"] = {
+                            "target": ltm_room, "reason": "long_term_memory_last_seen",
+                            "next_hop": path[0], "full_path": path,
+                            "confidence": "prior_observation_verify_with_look"}
         return hints
 
     def progress_signature(self) -> tuple:
@@ -275,6 +301,7 @@ class TaskContext(BaseModel):
                 "current_room_observation": room_view,
                 "delivery_state_from_observations": self.delivery_state(),
                 "navigation_hints": self._navigation_hints(),
+                "long_term_memory": self.long_term_memory,
                 "action_feedback": self.action_feedback[-6:],
                 "required_outcomes": outcomes, "robot_status": self.robot_status,
                 "known_but_unobserved_rooms": sorted(known_rooms - set(self.memory.rooms)),

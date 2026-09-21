@@ -10,3 +10,4 @@ artifacts/
 graphify-out/
 .pnpm-store/
 venv/
+backend/memory/

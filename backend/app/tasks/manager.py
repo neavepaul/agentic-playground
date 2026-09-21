@@ -8,6 +8,7 @@ from app.agents.conversation import classify_conversation_move, interpret_conver
 from app.config import Settings
 from app.events.bus import EventBus
 from app.llm.base import LLMClient, ModelError
+from app.memory.store import PersistentMemory
 from app.world.tools import WorldTools
 from .models import TaskContext
 from .goals import check_conditions
@@ -22,9 +23,11 @@ class LimitReached(RuntimeError):
 
 
 class TaskManager:
-    def __init__(self, client: LLMClient, tools: WorldTools, bus: EventBus, settings: Settings) -> None:
+    def __init__(self, client: LLMClient, tools: WorldTools, bus: EventBus, settings: Settings,
+                 persistent: PersistentMemory | None = None) -> None:
         self.tools, self.bus, self.settings = tools, bus, settings
         self.client = client
+        self.persistent = persistent
         self.coordinator = Coordinator(client)
         self.explorer = Explorer(client, tools.schemas())
         self.critic = Critic(client)
@@ -36,6 +39,8 @@ class TaskManager:
         if self.active_id:
             raise TaskBusy("One task is already running. Cancel it or wait for completion.")
         context = TaskContext(goal=goal)
+        if self.persistent:
+            context.long_term_memory = self.persistent.prompt()
         # Keep recent tasks in memory only. Active task is never evicted.
         if len(self.tasks) >= 50:
             del self.tasks[next(iter(self.tasks))]
@@ -260,3 +265,9 @@ class TaskManager:
         finally:
             if self.active_id == context.id:
                 self.active_id = None
+            if self.persistent:
+                try:
+                    self.persistent.update_from_task(context)
+                    self.persistent.save(self.settings.memory_file)
+                except Exception:
+                    logging.getLogger("agentic_friend.tasks").exception("Failed to save persistent memory")
