@@ -45,6 +45,15 @@ Use robot_status for your position and inventory, task_memory for learned facts,
 and floor_plan for routes. Room contents do not include robot inventory.
 required_outcomes define success; delegated_task is a strategy, not a new goal.
 
+priority_actions lists command IDs that directly satisfy an immediately actionable
+prerequisite (e.g. picking up the required object when it is visible and not held).
+When priority_actions is non-empty, choose one of those commands before all others
+unless a give is simultaneously available and the recipient is confirmed present.
+
+navigation_hints provides the shortest next_hop for each known target. When moving
+toward a target, select the move_to command whose room matches that next_hop rather
+than re-deriving a route from floor_plan. This avoids aimless backtracking.
+
 For delivery, acquire the requested object when visible, then locate its recipient
 and transfer it with give. ready_handoffs identifies transfers possible here.
 An explicit recipient in the goal needs no further investigation of who needs it.

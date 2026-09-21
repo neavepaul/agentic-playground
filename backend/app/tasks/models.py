@@ -1,3 +1,4 @@
+from collections import deque
 from copy import deepcopy
 from uuid import uuid4
 from typing import Literal
@@ -175,6 +176,64 @@ class TaskContext(BaseModel):
             key = "|".join([obs["person"], need.object, need.person])
             self.memory.reported_needs[key] = ReportedNeed(**need.model_dump(), speaker=obs["person"], evidence_id=evidence_id)
 
+    def _find_path(self, start: str, target: str) -> list[str]:
+        """BFS shortest path over the floor_plan graph.
+
+        Returns the list of rooms from start (exclusive) to target (inclusive),
+        so result[0] is the immediate next hop. Returns [] when start == target
+        or either room is unknown or the target is unreachable.
+        """
+        rooms = self.floor_plan.get("rooms", {})
+        if not rooms or start == target or start not in rooms or target not in rooms:
+            return []
+        queue: deque[list[str]] = deque([[start]])
+        seen: set[str] = {start}
+        while queue:
+            path = queue.popleft()
+            for neighbor in rooms.get(path[-1], {}).get("connections", []):
+                if neighbor not in seen:
+                    if neighbor == target:
+                        return path[1:] + [neighbor]
+                    seen.add(neighbor)
+                    queue.append(path + [neighbor])
+        return []
+
+    def _navigation_hints(self) -> dict:
+        """Deterministic next-hop hints toward exploration and delivery targets.
+
+        Uses BFS over the floor_plan so the LLM never has to re-derive graph
+        traversal from natural language. Each hint gives the immediate next room
+        to enter on the shortest route to a target.
+        """
+        current = self.robot_status.get("room")
+        if not current or not self.floor_plan.get("rooms"):
+            return {}
+        observed = set(self.memory.rooms)
+        hints: dict = {}
+        for room_id in self.floor_plan["rooms"]:
+            if room_id not in observed:
+                path = self._find_path(current, room_id)
+                if path:
+                    hints[f"explore:{room_id}"] = {"target": room_id, "reason": "unobserved",
+                                                    "next_hop": path[0], "full_path": path}
+        for delivery in self.delivery_state():
+            loc = delivery.get("last_observed_location")
+            if loc and loc[0] == "room" and loc[1] != current:
+                path = self._find_path(current, loc[1])
+                if path:
+                    hints[f"object:{delivery['object']}"] = {
+                        "target": loc[1], "reason": "last_observed_object_location",
+                        "next_hop": path[0], "full_path": path}
+            recipient = delivery.get("recipient")
+            recipient_loc = delivery.get("recipient_last_seen")
+            if recipient and recipient_loc and recipient_loc != current:
+                path = self._find_path(current, recipient_loc)
+                if path:
+                    hints[f"recipient:{recipient}"] = {
+                        "target": recipient_loc, "reason": "last_seen_recipient",
+                        "next_hop": path[0], "full_path": path}
+        return hints
+
     def progress_signature(self) -> tuple:
         return (self.memory.robot_room, tuple(self.memory.inventory()),
                 tuple((k, v.revision) for k, v in sorted(self.memory.objects.items())),
@@ -215,6 +274,7 @@ class TaskContext(BaseModel):
                 "task_memory": memory,
                 "current_room_observation": room_view,
                 "delivery_state_from_observations": self.delivery_state(),
+                "navigation_hints": self._navigation_hints(),
                 "action_feedback": self.action_feedback[-6:],
                 "required_outcomes": outcomes, "robot_status": self.robot_status,
                 "known_but_unobserved_rooms": sorted(known_rooms - set(self.memory.rooms)),
