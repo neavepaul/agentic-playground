@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.config import Settings, get_settings
 from app.events.bus import EventBus
 from app.llm.ollama import OllamaClient
+from app.memory.graph import BeliefGraph
 from app.memory.store import PersistentMemory
 from app.mind.agent import AgentMind
 from app.tasks.manager import TaskBusy, TaskManager
@@ -30,8 +31,9 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
     bus, engine = EventBus(), WorldEngine(config.world_file)
     llm = client or OllamaClient(config)
     persistent = PersistentMemory.load(config.memory_file)
+    graph = BeliefGraph.load(config.graph_file)
     manager = TaskManager(llm, WorldTools(engine, bus), bus, config, persistent)
-    mind = AgentMind(llm, manager, engine, bus, config, persistent)
+    mind = AgentMind(llm, manager, engine, bus, config, graph)
     mutation_lock = asyncio.Lock()
 
     @asynccontextmanager

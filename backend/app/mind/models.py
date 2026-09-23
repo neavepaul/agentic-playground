@@ -3,6 +3,34 @@ from pydantic import BaseModel, Field
 from app.agents.schemas import GoalCondition
 
 
+class EdgeUpsert(BaseModel):
+    """A belief the agent wants to add or strengthen."""
+    subject: str = Field(description="Entity id (person or object).")
+    relation: str = Field(description="One of: located_in | needs | has | recurring_need.")
+    target: str = Field(description="Target entity id (room, object, or person).")
+    confidence: float = Field(ge=0.0, le=1.0,
+                              description="0.9=just observed; 0.7=recent; 0.5=inferred; 0.3=stale.")
+    reason: str = Field(default="", max_length=200,
+                        description="The specific observation that grounds this belief.")
+
+
+class EdgeRemove(BaseModel):
+    """A belief the agent wants to retract because it was directly contradicted."""
+    subject: str
+    relation: str
+    target: str
+
+
+class GraphConsolidation(BaseModel):
+    """Memory consolidation output — what the agent learned from recent experience."""
+    upsert_edges: list[EdgeUpsert] = Field(
+        default_factory=list,
+        description="Beliefs to add or update. Return empty when nothing meaningful changed.")
+    remove_edges: list[EdgeRemove] = Field(
+        default_factory=list,
+        description="Beliefs contradicted by direct observation and should be retracted.")
+
+
 class Intention(BaseModel):
     goal: str = Field(max_length=200,
                       description="A specific goal the robot should pursue right now.")

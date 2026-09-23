@@ -8,8 +8,9 @@ import pytest
 
 from app.config import Settings
 from app.events.bus import EventBus
+from app.memory.graph import BeliefGraph
 from app.mind.agent import AgentMind
-from app.mind.models import IntentionOrIdle, Intention
+from app.mind.models import GraphConsolidation, IntentionOrIdle, Intention
 from app.tasks.manager import TaskBusy, TaskManager
 from app.world.engine import WorldEngine
 from app.world.tools import WorldTools
@@ -39,8 +40,11 @@ class _IntentionLLM:
 
     async def generate(self, messages, response_schema):
         self._calls += 1
-        if response_schema.get("title") == "IntentionOrIdle":
+        title = response_schema.get("title", "")
+        if title == "IntentionOrIdle":
             return self._response
+        if title == "GraphConsolidation":
+            return '{"upsert_edges": [], "remove_edges": []}'
         # Stall any subsequent calls (task execution) so the test can assert before they run.
         await asyncio.sleep(60)
         return "{}"
@@ -110,6 +114,45 @@ async def test_mind_emits_agent_intention_event():
     events = [e for e in bus.history if e["type"] == "agent_intention"]
     assert len(events) >= 1
     assert events[0]["data"]["summary"] == "Deliver medicine to paul"
+
+
+async def test_mind_consolidates_events_into_belief_graph():
+    """When new events arrive, the mind consolidates them into its belief graph."""
+
+    class _ConsolidatingLLM:
+        """Returns a graph diff for consolidation, stays idle on intention."""
+        async def generate(self, messages, response_schema):
+            title = response_schema.get("title", "")
+            if title == "GraphConsolidation":
+                return json.dumps({"upsert_edges": [
+                    {"subject": "paul", "relation": "located_in", "target": "office",
+                     "confidence": 0.8, "reason": "Saw paul in office."}
+                ], "remove_edges": []})
+            if title == "IntentionOrIdle":
+                return '{"intention": null}'
+            await asyncio.sleep(60)
+            return "{}"
+
+    graph = BeliefGraph()
+    engine, bus = WorldEngine(LEGACY_WORLD), EventBus()
+    manager = TaskManager(_ConsolidatingLLM(), WorldTools(engine, bus), bus,
+                          Settings(max_explorer_actions=1))
+    settings = Settings(intention_threshold=0.6, idle_reflection_interval=0.001,
+                        idle_tick_seconds=0.05)
+    mind = AgentMind(_ConsolidatingLLM(), manager, engine, bus, settings, graph)
+
+    # Emit a real event so the consolidation branch fires.
+    bus.emit("look_result", summary="Saw paul in the office.")
+
+    mind.start()
+    await asyncio.sleep(0.15)
+    await mind.close()
+
+    beliefs = graph.edges
+    assert any(
+        e["subject"] == "paul" and e["relation"] == "located_in" and e["target"] == "office"
+        for e in beliefs
+    ), f"Expected paul→located_in→office in graph, got: {beliefs}"
 
 
 async def test_mind_handles_task_busy_gracefully():
