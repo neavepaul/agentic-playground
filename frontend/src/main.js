@@ -16,12 +16,8 @@ const beliefsPanel = document.getElementById('beliefs-panel');
 async function fetchAndRenderBeliefs() {
   try {
     const [data, worldData] = await Promise.all([api('/beliefs'), api('/world')]);
-    const people = new Set();
-    const rooms = new Set();
-    for (const [id, room] of Object.entries(worldData?.world?.rooms ?? {})) {
-      rooms.add(id);
-      for (const pid of room?.people ?? []) people.add(pid);
-    }
+    const people = new Set(Object.keys(worldData?.world?.people ?? {}));
+    const rooms = new Set(Object.keys(worldData?.world?.rooms ?? {}));
     renderBeliefs(beliefsPanel, data, people, rooms);
   } catch {
     beliefsPanel.innerHTML = '<p class="beliefs-empty">Could not load beliefs.</p>';
