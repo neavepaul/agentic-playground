@@ -1,6 +1,7 @@
 """Tests for the autonomous idle loop (AgentMind)."""
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -8,7 +9,7 @@ import pytest
 
 from app.config import Settings
 from app.events.bus import EventBus
-from app.memory.graph import BeliefGraph
+from app.memory.graph import BeliefGraph, _effective
 from app.mind.agent import AgentMind
 from app.mind.models import GraphConsolidation, IntentionOrIdle, Intention
 from app.tasks.manager import TaskBusy, TaskManager
@@ -52,6 +53,36 @@ class _IntentionLLM:
     @property
     def calls(self):
         return self._calls
+
+
+def test_belief_confidence_decays_over_time():
+    """effective_confidence falls as time passes; stored_confidence is unchanged."""
+    fresh = datetime.now(timezone.utc).isoformat()
+    stale = (datetime.now(timezone.utc) - timedelta(hours=8)).isoformat()
+
+    # Fresh observation: effective should be close to stored.
+    assert _effective(0.9, "located_in", fresh) > 0.85
+
+    # 8 hours old with 4h half-life → two half-lives → 0.9 × 0.25 ≈ 0.225
+    effective_stale = _effective(0.9, "located_in", stale)
+    assert effective_stale < 0.25
+
+    # recurring_need has a 7-day half-life — 8 hours barely moves it.
+    assert _effective(0.9, "recurring_need", stale) > 0.85
+
+
+def test_belief_graph_prompt_shows_both_confidences():
+    graph = BeliefGraph()
+    stale_ts = (datetime.now(timezone.utc) - timedelta(hours=8)).isoformat()
+    graph.edges.append({
+        "subject": "paul", "relation": "located_in", "target": "office",
+        "confidence": 0.9, "last_observed": stale_ts, "observation_count": 1,
+    })
+    beliefs = graph.prompt()["beliefs"]
+    assert len(beliefs) == 1
+    b = beliefs[0]
+    assert b["stored_confidence"] == 0.9
+    assert b["effective_confidence"] < 0.25  # two half-lives elapsed
 
 
 async def test_mind_stays_idle_when_null_intention():

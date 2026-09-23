@@ -25,6 +25,10 @@ Rules:
 - A failed task should lower (not remove) confidence on beliefs you acted on.
 - A successful delivery is evidence of a recurring_need — record it.
 - Use entity ids from the world, not display names.
+- Beliefs show both stored_confidence and effective_confidence (time-decayed floor).
+  Act on effective_confidence. If it is below 0.3 and you have no new evidence,
+  you may lower the stored confidence to reflect genuine uncertainty — or leave it
+  for the next time you can verify it in person.
 """
 
 INTENTION_GENERATOR = """You are the autonomous mind of a household robot.
