@@ -50,6 +50,17 @@ def observable_commands(context: TaskContext) -> tuple[dict, dict | None]:
     # so the affordance layer can surface this as a priority action rather than one equal choice.
     unmet_acquires = {d["object"] for d in context.delivery_state()
                       if "acquire_object" in d.get("missing_prerequisites", [])}
+    # When a delivery recipient still needs to be located, promote look to priority so the
+    # robot scans the current room before moving away. This prevents hall↔room loops where
+    # the model moves without ever verifying whether the recipient has arrived here.
+    needs_recipient_scan = any("locate_recipient" in d.get("missing_prerequisites", [])
+                               for d in context.delivery_state())
+    if needs_recipient_scan and "look" in commands:
+        commands["look"]["priority"] = True
+        commands["look"]["description"] = (
+            "PRIORITY — Recipient location unknown. Scan this room first to check "
+            "whether they are present before navigating elsewhere."
+        )
 
     for item in view["objects"]:
         if item.get("portable", True) and item["id"] in movable:

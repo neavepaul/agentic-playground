@@ -245,7 +245,10 @@ class TaskContext(BaseModel):
                 # Not seen this task; fall back to long-term memory.
                 ltm = ltm_people.get(recipient, {})
                 ltm_room = ltm.get("last_seen_room") or (ltm.get("typical_rooms") or [None])[0]
-                if ltm_room and ltm_room != current:
+                # Skip rooms already observed this task without finding the recipient —
+                # they have moved; redirect exploration toward unvisited rooms instead.
+                already_checked = ltm_room in self.memory.rooms
+                if ltm_room and ltm_room != current and not already_checked:
                     path = self._find_path(current, ltm_room)
                     if path:
                         hints[f"recipient:{recipient}"] = {
