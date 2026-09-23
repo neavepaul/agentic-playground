@@ -40,8 +40,15 @@
             <p id="budget" class="budget">0 cycles · 0 tool calls</p>
           </section>
           <section class="activity-panel" aria-label="Agent activity">
-            <div class="section-title"><h2>Agent activity</h2><span id="event-count" class="subtle">0 events</span></div>
+            <div class="section-title">
+              <div class="activity-tabs" role="tablist">
+                <button type="button" class="tab-btn active" id="tab-activity" role="tab" aria-selected="true" aria-controls="feed">Activity</button>
+                <button type="button" class="tab-btn" id="tab-beliefs" role="tab" aria-selected="false" aria-controls="beliefs-panel">Beliefs</button>
+              </div>
+              <span id="event-count" class="subtle">0 events</span>
+            </div>
             <div id="feed" role="log" aria-live="polite"><div id="feed-empty" class="empty-feed"><span class="empty-icon">↳</span><p>The next move starts here.</p><span>Submit a goal to see actions and discoveries.</span></div></div>
+            <div id="beliefs-panel" class="beliefs-panel" role="tabpanel" hidden></div>
           </section>
           <footer>Ollama on your machine <span>·</span> No cloud models</footer>
         </aside>

@@ -521,12 +521,62 @@ textarea {
   flex:1;
 }
 
+.activity-tabs {
+  display:flex;
+  gap:2px;
+  background:#edf1eb;
+  border-radius:7px;
+  padding:3px;
+}
+
+.activity-tabs .tab-btn {
+  background:none;
+  border:none;
+  border-radius:5px;
+  padding:5px 12px;
+  font-size:11px;
+  font-weight:500;
+  color:#7a8a72;
+  transition:background .12s,color .12s;
+}
+
+.activity-tabs .tab-btn:hover {
+  background:#e2e8de;
+  color:#4a5e44;
+}
+
+.activity-tabs .tab-btn.active {
+  background:#fff;
+  color:#344b3e;
+  box-shadow:0 1px 3px #24352d18;
+}
+
 #feed {
   overflow-y:auto;
   flex:1;
   padding:13px 0 5px;
   scrollbar-width:thin;
   scrollbar-color:#d4ddcd transparent;
+}
+
+.beliefs-panel {
+  flex:1;
+  overflow:hidden;
+  display:flex;
+  flex-direction:column;
+}
+
+.beliefs-empty {
+  color:#84937b;
+  font-size:12px;
+  text-align:center;
+  padding:32px 16px;
+  line-height:1.6;
+  margin:0;
+}
+
+.belief-svg {
+  display:block;
 }
 
 .empty-feed {

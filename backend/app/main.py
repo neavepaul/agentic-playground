@@ -55,6 +55,10 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
         return {"world": engine.snapshot(), "sequence": bus.sequence,
                 "task": manager.active() or (latest.public() if latest else None)}
 
+    @app.get("/api/beliefs")
+    async def get_beliefs():
+        return graph.prompt()
+
     @app.get("/api/health")
     async def health():
         model = await llm.health() if isinstance(llm, OllamaClient) else {"mode": "test"}

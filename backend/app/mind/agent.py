@@ -260,6 +260,7 @@ class AgentMind:
 
         if diff.upsert_edges or diff.remove_edges:
             self._graph.save()
+            self._bus.emit("beliefs_updated", summary="Belief graph updated.")
 
     async def _maybe_distill(self) -> None:
         if self._persistent is None:
@@ -316,3 +317,4 @@ class AgentMind:
 
         if diff.upsert_edges or diff.remove_edges:
             self._graph.save()
+            self._bus.emit("beliefs_updated", summary="Belief graph distilled.")
