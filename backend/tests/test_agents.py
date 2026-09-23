@@ -7,7 +7,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from app.agents.commands import observable_commands
+from app.agents.explorer import observable_commands
 from app.agents.schemas import CoordinatorDecision, CriticReview, GoalCondition
 from app.agents.coordinator import Coordinator
 from app.config import Settings
@@ -155,7 +155,7 @@ async def test_new_observations_expire_advice_without_losing_inventory():
 
 async def test_critic_reviews_current_transfer_without_replaying_old_verdict():
     import json
-    from app.agents.critic import Critic
+    from app.tasks.manager import critic_review
 
     tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
     task = TaskContext(goal="Deliver charger to Neave.",
@@ -167,13 +167,12 @@ async def test_critic_reviews_current_transfer_without_replaying_old_verdict():
     task.critic_feedback.append(stale)
     action = {"tool": "give", "arguments": {"object": "charger", "person": "neave"}}
     fake = ScriptedLLM([stale, {"approved": True, "summary": "Recipient now visible and item held."}])
-    critic = Critic(fake)
-    await critic.review(task, "Transfer charger.", "object_transfer", proposed_action=action)
+    await critic_review(fake, task, "Transfer charger.", "object_transfer", proposed_action=action)
     before = json.loads(fake.calls[0][0][1]["content"])
     assert all(p["id"] != "neave" for p in before["current_room_observation"]["people"])
     for name, args in [("move_to", {"room": "hall"}), ("move_to", {"room": "bedroom"}), ("look", {})]:
         task.record(name, args, tools.execute(name, args))
-    await critic.review(task, "Transfer charger.", "object_transfer", proposed_action=action)
+    await critic_review(fake, task, "Transfer charger.", "object_transfer", proposed_action=action)
     after = json.loads(fake.calls[1][0][1]["content"])
     assert after["proposed_action"] == action
     assert after["robot_status"] == {"room": "bedroom", "inventory": ["charger"]}
@@ -577,7 +576,7 @@ def test_recipient_can_still_receive_other_messages():
     act("look")
     act("talk_to", person="neave", message="Who needs the charger?")
     talk = task.action_history[-1]
-    task.remember_conversation_thread(
+    task.memory.remember_conversation(
         "neave", "thread_1", "Determine who requested the item", True,
         talk["observation"]["message"], talk["observation"]["response"], talk["evidence_id"],
     )
@@ -624,7 +623,7 @@ def test_conversation_preserves_local_navigation():
     act("look")
     act("talk_to", person="neave", message="Who needs the charger?")
     talk = task.action_history[-1]
-    task.remember_conversation_thread(
+    task.memory.remember_conversation(
         "neave", "thread_1", "Determine who requested the item", True,
         talk["observation"]["message"], talk["observation"]["response"], talk["evidence_id"],
     )

@@ -7,7 +7,6 @@ a confidence score that reflects how recently and directly it was observed.
 from __future__ import annotations
 
 import json
-import math
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -125,7 +124,7 @@ def _effective(stored: float, relation: str, last_observed: str) -> float:
     except (ValueError, TypeError):
         return round(stored, 3)
     half_life = _HALF_LIFE_SECONDS.get(relation, _DEFAULT_HALF_LIFE)
-    factor = math.pow(0.5, elapsed / half_life)
+    factor = 0.5 ** (elapsed / half_life)
     return round(stored * factor, 3)
 
 

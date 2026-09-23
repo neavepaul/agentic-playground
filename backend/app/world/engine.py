@@ -1,5 +1,13 @@
-from .initial_state import initial_world
-from .models import Location
+import re
+from pathlib import Path
+
+from .models import Location, World
+
+_DEFAULT_WORLD = Path(__file__).resolve().parents[2] / "worlds" / "house.json"
+
+
+def _load_world(path) -> World:
+    return World.model_validate_json(Path(path or _DEFAULT_WORLD).read_text(encoding="utf-8"))
 
 
 class WorldError(ValueError):
@@ -11,13 +19,13 @@ class WorldEngine:
 
     def __init__(self, world_file=None) -> None:
         self.world_file = world_file
-        self._world = initial_world(world_file)
+        self._world = _load_world(world_file)
 
     def snapshot(self) -> dict:
         return self._world.snapshot()
 
     def reset(self) -> None:
-        self._world = initial_world(self.world_file)
+        self._world = _load_world(self.world_file)
 
     def get_map(self) -> dict:
         return self._world.floor_plan()
@@ -81,7 +89,6 @@ class WorldEngine:
         npc.messages.append(message)
         npc.messages[:] = npc.messages[-50:]
         text = message.lower()
-        import re
         words = set(re.findall(r"\w+", text.replace("_", " ")))
         response = "I heard your message. I don't have any more information about that."
         for dialogue in npc.dialogue:

@@ -106,7 +106,7 @@ async def interpret_conversation(client, context, result, thread_id: str,
     )
     context.remember_meaning(result["evidence_id"], meaning)
     observation = result["observation"]
-    context.remember_conversation_thread(
+    context.memory.remember_conversation(
         observation["person"],
         thread_id,
         meaning.thread_summary or thread_summary,

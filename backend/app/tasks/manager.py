@@ -2,12 +2,13 @@ import asyncio
 import logging
 
 from app.agents.coordinator import Coordinator
-from app.agents.critic import Critic
 from app.agents.explorer import Explorer
 from app.agents.conversation import classify_conversation_move, interpret_conversation
+from app.agents.prompts import CRITIC
+from app.agents.schemas import CriticReview
 from app.config import Settings
 from app.events.bus import EventBus
-from app.llm.base import LLMClient, ModelError
+from app.llm.base import LLMClient, ModelError, structured
 from app.memory.store import PersistentMemory
 from app.world.tools import WorldTools
 from .models import TaskContext
@@ -16,6 +17,18 @@ from .goals import check_conditions
 
 class TaskBusy(ValueError):
     pass
+
+
+async def critic_review(client: LLMClient, context: TaskContext, proposal: str, kind: str,
+                        evidence: list[dict] | None = None,
+                        proposed_action: dict | None = None) -> CriticReview:
+    """Run one independent critic review. Strips prior verdicts so each review is unbiased."""
+    state = context.compact()
+    state.pop("critic_feedback", None)
+    return await structured(client, CriticReview, CRITIC,
+                            {**state, "proposal": proposal,
+                             "proposed_action": proposed_action,
+                             "review_type": kind, "cited_evidence": evidence or []})
 
 
 class LimitReached(RuntimeError):
@@ -30,7 +43,6 @@ class TaskManager:
         self.persistent = persistent
         self.coordinator = Coordinator(client)
         self.explorer = Explorer(client, tools.schemas())
-        self.critic = Critic(client)
         self.tasks: dict[str, TaskContext] = {}
         self.active_id: str | None = None
         self.runner: asyncio.Task | None = None
@@ -96,7 +108,7 @@ class TaskManager:
             raise LimitReached("Maximum Critic reviews reached; stopping repeated debate.")
         context.critic_count += 1
         self.bus.emit("agent_active", "critic", task_id=context.id)
-        review = await self.critic.review(context, proposal, kind, evidence, proposed_action)
+        review = await critic_review(self.client, context, proposal, kind, evidence, proposed_action)
         context.critic_feedback.append({"proposal": proposal, **review.model_dump(),
                                        "kind": kind,
                                        "observed_action_count": len(context.action_history)})

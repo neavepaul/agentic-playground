@@ -147,13 +147,6 @@ class TaskContext(BaseModel):
         return any(c.kind in {"notify", "notify_everyone"} and (c.kind == "notify_everyone" or c.person == person)
                    and normalize(c.message) in normalize(message) for c in self.conditions)
 
-    def remember_conversation_thread(self, person: str, thread_id: str, summary: str,
-                                     resolved: bool, message: str, response: str,
-                                     evidence_id: str) -> None:
-        self.memory.remember_conversation(
-            person, thread_id, summary, resolved, message, response, evidence_id
-        )
-
     def remember_meaning(self, evidence_id: str, meaning: ConversationMeaning) -> None:
         source = next((a for a in self.action_history if a["evidence_id"] == evidence_id
                        and a["success"] and a["tool"] == "talk_to"), None)

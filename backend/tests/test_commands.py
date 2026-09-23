@@ -1,7 +1,7 @@
 from pathlib import Path
 LEGACY_WORLD = Path(__file__).parent / "fixtures" / "legacy_house.json"
 
-from app.agents.commands import observable_commands
+from app.agents.explorer import observable_commands
 from app.events.bus import EventBus
 from app.tasks.models import TaskContext
 from app.agents.schemas import GoalCondition

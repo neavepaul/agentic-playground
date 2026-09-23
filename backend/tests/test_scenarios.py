@@ -3,7 +3,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from app.agents.commands import observable_commands
+from app.agents.explorer import observable_commands
 from app.agents.conversation import classify_conversation_move
 from app.agents.schemas import ConversationMeaning, GoalCondition, SpokenNeed
 from app.config import Settings
@@ -11,7 +11,7 @@ from app.events.bus import EventBus
 from app.tasks.manager import TaskManager
 from app.tasks.models import TaskContext
 from app.world.engine import WorldEngine
-from app.world.initial_state import DEFAULT_WORLD
+from app.world.engine import _DEFAULT_WORLD as DEFAULT_WORLD
 from app.world.models import World
 from app.world.tools import WorldTools
 from tests.fakes import ScriptedLLM, complete, tool
@@ -225,7 +225,7 @@ def test_task_memory_preserves_medicine_plan_after_recent_history_eviction():
     task.remember_meaning(conversation["evidence_id"], ConversationMeaning(needs=[
         SpokenNeed(object="medicine", person="paul", quote="I need the medicine, please.")
     ]))
-    task.remember_conversation_thread(
+    task.memory.remember_conversation(
         "paul", "thread_1", "Determine who requested the item", True,
         conversation["observation"]["message"], conversation["observation"]["response"],
         conversation["evidence_id"],
@@ -270,7 +270,7 @@ async def test_semantic_conversation_threads_block_rephrasing_but_allow_new_purp
 
     task = TaskContext(goal="Coordinate a visit.")
     task.memory.set_person("dad", "office", "person-evidence", "Dad")
-    task.remember_conversation_thread(
+    task.memory.remember_conversation(
         "dad", "thread_1", "Determine arrival time", True,
         "What time should I arrive?", "Come at six.", "conversation-evidence",
     )
