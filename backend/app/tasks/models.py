@@ -32,6 +32,7 @@ class TaskContext(BaseModel):
     conversation_rejections: dict[str, int] = Field(default_factory=dict)
     consecutive_report_rejections: int = 0
     long_term_memory: dict = Field(default_factory=dict)
+    self_model: dict = Field(default_factory=dict)
 
     def feedback(self, message: str) -> None:
         self.action_feedback.append(message)
@@ -295,6 +296,7 @@ class TaskContext(BaseModel):
                 "delivery_state_from_observations": self.delivery_state(),
                 "navigation_hints": self._navigation_hints(),
                 "long_term_memory": self.long_term_memory,
+                "self_model": self.self_model,
                 "action_feedback": self.action_feedback[-6:],
                 "required_outcomes": outcomes, "robot_status": self.robot_status,
                 "known_but_unobserved_rooms": sorted(known_rooms - set(self.memory.rooms)),

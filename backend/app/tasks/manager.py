@@ -53,6 +53,7 @@ class TaskManager:
         context = TaskContext(goal=goal)
         if self.persistent:
             context.long_term_memory = self.persistent.prompt()
+            context.self_model = self.persistent.self_model_prompt()
         # Keep recent tasks in memory only. Active task is never evicted.
         if len(self.tasks) >= 50:
             del self.tasks[next(iter(self.tasks))]

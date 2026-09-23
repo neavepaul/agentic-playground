@@ -13,6 +13,13 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 
+class SelfModel(BaseModel):
+    """The robot's record of its own performance across tasks."""
+    room_visit_counts: dict[str, int] = Field(default_factory=dict)
+    tool_failure_counts: dict[str, int] = Field(default_factory=dict)
+    entity_search_failures: dict[str, int] = Field(default_factory=dict)
+
+
 class PersonMemory(BaseModel):
     name: str
     location_tally: dict[str, int] = Field(default_factory=dict)
@@ -39,6 +46,7 @@ class PersistentMemory(BaseModel):
     people: dict[str, PersonMemory] = Field(default_factory=dict)
     objects: dict[str, ObjectMemory] = Field(default_factory=dict)
     recent_tasks: list[TaskRecord] = Field(default_factory=list)
+    self_model: SelfModel = Field(default_factory=SelfModel)
 
     @classmethod
     def load(cls, path: Path) -> PersistentMemory:
@@ -85,6 +93,34 @@ class PersistentMemory(BaseModel):
                     pm.known_needs.append(obj)
                 pm.delivery_counts[obj] = pm.delivery_counts.get(obj, 0) + 1
 
+        # Room visits and tool failures from action history.
+        _info_tools = {"get_status", "get_map"}
+        for entry in context.action_history:
+            if entry["tool"] == "move_to" and entry["success"]:
+                room = entry["observation"]["room"]
+                self.self_model.room_visit_counts[room] = (
+                    self.self_model.room_visit_counts.get(room, 0) + 1
+                )
+            if not entry["success"] and entry["tool"] not in _info_tools:
+                self.self_model.tool_failure_counts[entry["tool"]] = (
+                    self.self_model.tool_failure_counts.get(entry["tool"], 0) + 1
+                )
+
+        # Entity search failures: entities the robot could not find in a failed task.
+        if context.status in {"failed", "cancelled"}:
+            for delivery in context.delivery_state():
+                if not delivery["delivered"]:
+                    if delivery["last_observed_location"] is None:
+                        obj_id = delivery["object"]
+                        self.self_model.entity_search_failures[obj_id] = (
+                            self.self_model.entity_search_failures.get(obj_id, 0) + 1
+                        )
+                    recipient = delivery.get("recipient")
+                    if recipient and delivery.get("recipient_last_seen") is None:
+                        self.self_model.entity_search_failures[recipient] = (
+                            self.self_model.entity_search_failures.get(recipient, 0) + 1
+                        )
+
         self.recent_tasks.append(TaskRecord(
             task_id=context.id,
             goal=context.goal,
@@ -93,6 +129,33 @@ class PersistentMemory(BaseModel):
             summary=context.summary,
         ))
         self.recent_tasks[:] = self.recent_tasks[-20:]
+
+    def self_model_prompt(self) -> dict:
+        """Compact self-model payload for the Coordinator. Empty when no task history exists."""
+        if not self.recent_tasks:
+            return {}
+        by_outcome: dict[str, int] = {}
+        for t in self.recent_tasks:
+            by_outcome[t.outcome] = by_outcome.get(t.outcome, 0) + 1
+        sm = self.self_model
+        return {
+            "note": "The robot's own performance history — use to plan more honestly.",
+            "task_summary": {
+                "total": len(self.recent_tasks),
+                "completed": by_outcome.get("completed", 0),
+                "failed": by_outcome.get("failed", 0),
+                "cancelled": by_outcome.get("cancelled", 0),
+            },
+            "rooms_visited_by_frequency": sorted(
+                sm.room_visit_counts, key=lambda r: -sm.room_visit_counts[r]
+            ),
+            "tool_failures": dict(
+                sorted(sm.tool_failure_counts.items(), key=lambda x: -x[1])[:5]
+            ),
+            "entity_search_failures": dict(
+                sorted(sm.entity_search_failures.items(), key=lambda x: -x[1])[:5]
+            ),
+        }
 
     def prompt(self) -> dict:
         """Compact payload for the LLM. Advisory only — stale by definition."""
