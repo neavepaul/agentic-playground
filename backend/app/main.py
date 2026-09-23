@@ -9,6 +9,7 @@ from app.config import Settings, get_settings
 from app.events.bus import EventBus
 from app.llm.ollama import OllamaClient
 from app.memory.store import PersistentMemory
+from app.mind.agent import AgentMind
 from app.tasks.manager import TaskBusy, TaskManager
 from app.world.engine import WorldEngine
 from app.world.tools import WorldTools
@@ -30,11 +31,14 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
     llm = client or OllamaClient(config)
     persistent = PersistentMemory.load(config.memory_file)
     manager = TaskManager(llm, WorldTools(engine, bus), bus, config, persistent)
+    mind = AgentMind(llm, manager, engine, bus, config, persistent)
     mutation_lock = asyncio.Lock()
 
     @asynccontextmanager
     async def lifespan(app):
+        mind.start()
         yield
+        await mind.close()
         await manager.close()
         if client is None:
             await llm.close()

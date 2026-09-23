@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     max_tool_calls: int = Field(default=50, ge=1, le=200)
     max_critic_reviews: int = Field(default=8, ge=1, le=20)
     log_level: str = "INFO"
+    # Idle autonomous loop
+    idle_tick_seconds: float = Field(default=5.0, gt=0)
+    idle_reflection_interval: float = Field(default=120.0, gt=0)
+    intention_threshold: float = Field(default=0.6, ge=0, le=1)
+    drive_helpfulness: float = Field(default=0.8, ge=0, le=1)
+    drive_curiosity: float = Field(default=0.3, ge=0, le=1)
 
 
 @lru_cache
