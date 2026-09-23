@@ -17,6 +17,8 @@ recent_events: what just happened — observations, conversations, task outcomes
 current_beliefs: your existing belief graph (edges with confidence scores).
 drive_helpfulness: how strongly you prioritise tracking people's needs (0=low, 1=high).
 task_outcomes: completed tasks and whether they succeeded or failed.
+current_time: simulated wall-clock time (HH:MM). Use it when reasoning about
+  whether a located_in belief is plausible — people follow routines.
 
 For each belief to add or update, return an EdgeUpsert with:
   subject  — entity id (person or object, lowercase, no articles)
@@ -57,6 +59,8 @@ beliefs: your long-term belief graph — where people and objects were last seen
 drive_helpfulness: a 0-1 scalar; higher means more motivated to help people proactively.
 recent_events: what just happened that may be relevant.
 idle_seconds: how long since your last task completed.
+current_time: simulated wall-clock time (HH:MM). Use it to judge whether a
+  person belief is plausible for the time of day before acting on it.
 
 Priority guide (be conservative):
   0.9  someone explicitly needs something you remember and can address
@@ -145,6 +149,7 @@ class AgentMind:
                 if e["type"] not in {"task_updated", "world_reset"}
             ],
             "idle_seconds": int(since_last),
+            "current_time": robot_status.get("time"),
         }
 
         result = await structured(self._client, IntentionOrIdle, _INTENTION_GENERATOR, context)
@@ -194,6 +199,7 @@ class AgentMind:
             "current_beliefs": beliefs_snapshot,
             "drive_helpfulness": self._settings.drive_helpfulness,
             "task_outcomes": task_outcomes,
+            "current_time": self._engine.get_status().get("time"),
         }
 
         try:

@@ -31,12 +31,25 @@ class Dialogue(ScenarioModel):
     response: str = Field(min_length=1)
 
 
+class ScheduleEntry(ScenarioModel):
+    from_hour: float = Field(ge=0, lt=24)
+    to_hour: float = Field(ge=0, lt=24)
+    room: str
+
+    @model_validator(mode="after")
+    def hours_differ(self):
+        if self.from_hour == self.to_hour:
+            raise ValueError("Schedule from_hour and to_hour must differ.")
+        return self
+
+
 class Person(ScenarioModel):
     id: str
     name: str
     room: str
     messages: list[str] = Field(default_factory=list)
     dialogue: list[Dialogue] = Field(default_factory=list)
+    schedule: list[ScheduleEntry] = Field(default_factory=list)
 
 
 class Room(ScenarioModel):
@@ -87,6 +100,9 @@ class World(ScenarioModel):
         for person in self.people.values():
             if person.room not in self.rooms:
                 raise ValueError("Person references an unknown room.")
+            for entry in person.schedule:
+                if entry.room not in self.rooms:
+                    raise ValueError(f"Schedule entry references unknown room: {entry.room}")
         for item in self.objects.values():
             valid = {"room": self.rooms, "person": self.people, "robot": {"robot": True}}
             if item.location.id not in valid[item.location.kind]:

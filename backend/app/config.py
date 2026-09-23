@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     max_tool_calls: int = Field(default=50, ge=1, le=200)
     max_critic_reviews: int = Field(default=8, ge=1, le=20)
     log_level: str = "INFO"
+    # Simulated world clock
+    clock_speed: float = Field(default=60.0, gt=0)   # 1 real second = 1 simulated minute
+    clock_start_hour: float = Field(default=8.0, ge=0, lt=24)
     # Idle autonomous loop
     idle_tick_seconds: float = Field(default=5.0, gt=0)
     idle_reflection_interval: float = Field(default=120.0, gt=0)

@@ -181,6 +181,11 @@
           ],
           "response": "Paul needs his medicine today. I'm not sure where he's got to."
         }
+      ],
+      "schedule": [
+        {"from_hour": 8, "to_hour": 12, "room": "hall"},
+        {"from_hour": 12, "to_hour": 18, "room": "kitchen"},
+        {"from_hour": 18, "to_hour": 8, "room": "master_bedroom"}
       ]
     },
     "neave": {
@@ -225,6 +230,11 @@
           ],
           "response": "I need the medicine, please."
         }
+      ],
+      "schedule": [
+        {"from_hour": 9, "to_hour": 17, "room": "office"},
+        {"from_hour": 17, "to_hour": 22, "room": "kitchen"},
+        {"from_hour": 22, "to_hour": 9, "room": "master_bedroom"}
       ]
     }
   },

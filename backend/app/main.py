@@ -12,6 +12,7 @@ from app.memory.graph import BeliefGraph
 from app.memory.store import PersistentMemory
 from app.mind.agent import AgentMind
 from app.tasks.manager import TaskBusy, TaskManager
+from app.world.clock import WorldClock
 from app.world.engine import WorldEngine
 from app.world.tools import WorldTools
 
@@ -28,7 +29,8 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
     # Never enable HTTP wire-body logging, even with application DEBUG.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-    bus, engine = EventBus(), WorldEngine(config.world_file)
+    clock = WorldClock(speed=config.clock_speed, start_hour=config.clock_start_hour)
+    bus, engine = EventBus(), WorldEngine(config.world_file, clock=clock)
     llm = client or OllamaClient(config)
     persistent = PersistentMemory.load(config.memory_file)
     graph = BeliefGraph.load(config.graph_file)

@@ -1,6 +1,7 @@
 import re
 from pathlib import Path
 
+from .clock import WorldClock
 from .models import Location, World
 
 _DEFAULT_WORLD = Path(__file__).resolve().parents[2] / "worlds" / "house.json"
@@ -10,6 +11,13 @@ def _load_world(path) -> World:
     return World.model_validate_json(Path(path or _DEFAULT_WORLD).read_text(encoding="utf-8"))
 
 
+def _in_range(from_hour: float, to_hour: float, hour: float) -> bool:
+    """True when hour falls in [from_hour, to_hour), wrapping midnight."""
+    if from_hour < to_hour:
+        return from_hour <= hour < to_hour
+    return hour >= from_hour or hour < to_hour
+
+
 class WorldError(ValueError):
     pass
 
@@ -17,9 +25,20 @@ class WorldError(ValueError):
 class WorldEngine:
     """Deterministic simulator. Only the tool service calls these operations."""
 
-    def __init__(self, world_file=None) -> None:
+    def __init__(self, world_file=None, clock: WorldClock | None = None) -> None:
         self.world_file = world_file
         self._world = _load_world(world_file)
+        self._clock = clock
+
+    def _effective_room(self, person) -> str:
+        """Return the room a person is in, applying their schedule if a clock is present."""
+        if self._clock is None or not person.schedule:
+            return person.room
+        hour = self._clock.hour()
+        for entry in person.schedule:
+            if _in_range(entry.from_hour, entry.to_hour, hour):
+                return entry.room
+        return person.room
 
     def snapshot(self) -> dict:
         return self._world.snapshot()
@@ -31,19 +50,22 @@ class WorldEngine:
         return self._world.floor_plan()
 
     def get_status(self) -> dict:
-        return {"room": self._world.robot.room,
-                "inventory": self.snapshot()["robot"]["inventory"]}
+        result = {"room": self._world.robot.room, "inventory": self.snapshot()["robot"]["inventory"]}
+        if self._clock:
+            result["time"] = self._clock.time_str()
+        return result
 
     def look(self) -> dict:
         w = self._world
         room = w.robot.room
         return {"room": room, "connections": w.rooms[room].connections[:],
-                "people": [{"id": p.id, "name": p.name} for p in w.people.values() if p.room == room],
+                "people": [{"id": p.id, "name": p.name} for p in w.people.values()
+                           if self._effective_room(p) == room],
                 "objects": [{"id": o.id, "name": o.name, "portable": o.portable}
                             for o in w.objects.values() if o.location == Location(kind="room", id=room)],
                 "held_objects": [{"object": o.id, "person": o.location.id}
                                  for o in w.objects.values() if o.location.kind == "person"
-                                 and w.people[o.location.id].room == room]}
+                                 and self._effective_room(w.people[o.location.id]) == room]}
 
     def move_to(self, room: str) -> dict:
         w = self._world
@@ -70,7 +92,7 @@ class WorldEngine:
 
     def _nearby(self, person: str):
         npc = self._world.people.get(person)
-        if npc is None or npc.room != self._world.robot.room:
+        if npc is None or self._effective_room(npc) != self._world.robot.room:
             raise WorldError(f"{person} is not in the current room.")
         return npc
 
