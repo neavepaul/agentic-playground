@@ -22,8 +22,8 @@ class Settings(BaseSettings):
     decision_thinking: bool = False
     decision_output_tokens: int = Field(default=4096, ge=1024, le=16384)
     max_coordinator_cycles: int = Field(default=20, ge=1, le=100)
-    max_explorer_actions: int = Field(default=8, ge=1, le=50)
-    max_tool_calls: int = Field(default=50, ge=1, le=200)
+    max_explorer_actions: int = Field(default=15, ge=1, le=50)
+    max_tool_calls: int = Field(default=80, ge=1, le=200)
     max_critic_reviews: int = Field(default=8, ge=1, le=20)
     log_level: str = "INFO"
     # Simulated world clock

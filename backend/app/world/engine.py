@@ -63,6 +63,15 @@ class WorldEngine:
                     delay = min((boundary - now) % 86400 or 86400 for boundary in boundaries)
                     self._initial_rooms_until[person.id] = now + delay
 
+    def people_schedules(self) -> dict:
+        """Return each person's schedule as serialisable dicts, keyed by person id."""
+        return {
+            pid: [{"from_hour": e.from_hour, "to_hour": e.to_hour, "room": e.room}
+                  for e in person.schedule]
+            for pid, person in self._world.people.items()
+            if person.schedule
+        }
+
     def get_map(self) -> dict:
         return self._world.floor_plan()
 

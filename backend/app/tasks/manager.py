@@ -54,6 +54,8 @@ class TaskManager:
         if self.persistent:
             context.long_term_memory = self.persistent.prompt()
             context.self_model = self.persistent.self_model_prompt()
+        # Inject NPC schedules so navigation hints can predict current room from clock time.
+        context.long_term_memory["_schedules"] = self.tools._engine.people_schedules()
         # Keep recent tasks in memory only. Active task is never evicted.
         if len(self.tasks) >= 50:
             del self.tasks[next(iter(self.tasks))]

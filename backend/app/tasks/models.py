@@ -271,6 +271,33 @@ class TaskContext(BaseModel):
                             "target": ltm_room, "reason": "long_term_memory_last_seen",
                             "next_hop": path[0], "full_path": path,
                             "confidence": "prior_observation_verify_with_look"}
+                # LTM room already verified empty — fall back to schedule prediction.
+                if f"recipient:{recipient}" not in hints:
+                    schedules = self.long_term_memory.get("_schedules", {})
+                    rec_schedule = schedules.get(recipient, [])
+                    time_str = self.robot_status.get("time", "")
+                    if rec_schedule and time_str:
+                        try:
+                            h, m = time_str.split(":")
+                            hour = float(h) + float(m) / 60.0
+                            predicted_room = None
+                            for entry in rec_schedule:
+                                fh, th = entry["from_hour"], entry["to_hour"]
+                                in_range = (fh <= hour < th) if fh < th else (hour >= fh or hour < th)
+                                if in_range:
+                                    predicted_room = entry["room"]
+                                    break
+                            if (predicted_room and predicted_room != current
+                                    and predicted_room not in rooms_scanned_post_pickup):
+                                path = self._find_path(current, predicted_room)
+                                if path:
+                                    hints[f"recipient:{recipient}"] = {
+                                        "target": predicted_room,
+                                        "reason": "schedule_predicted_location",
+                                        "next_hop": path[0], "full_path": path,
+                                        "confidence": "schedule_prediction_verify_with_look"}
+                        except (ValueError, TypeError, AttributeError):
+                            pass
         return hints
 
     def progress_signature(self) -> tuple:
