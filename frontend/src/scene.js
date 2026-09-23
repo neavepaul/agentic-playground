@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { CSS2DObject, CSS2DRenderer } from 'three/addons/renderers/CSS2DRenderer.js';
 import { MovementQueue } from './animations.js';
+import { occupantPositions, roomEntities } from './occupants.js';
+import { createCharacter } from './characters.js';
 
 
 export function createScene(container) {
@@ -151,11 +153,13 @@ export function createScene(container) {
     return group;
   }
   const avatar = person('#e89a58', true);
-  const movement = new MovementQueue(avatar.position, matchMedia('(prefers-reduced-motion: reduce)').matches ? 1 : 850);
+  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+  const movement = new MovementQueue(avatar.position, reducedMotion.matches ? 1 : 850);
   const people = new Map();
   const objects = new Map();
   let lastRoom = null;
   let world = null;
+  let roomOccupants = {};
 
   function update(nextWorld, snap = false) {
     world = nextWorld;
@@ -170,21 +174,14 @@ export function createScene(container) {
     for (const [id, mesh] of people) if (!world.people[id]) { disposeTree(mesh); people.delete(id); }
     for (const [id, mesh] of objects) if (!world.objects[id]) { disposeTree(mesh); objects.delete(id); }
     // Group by room so we can spread occupants instead of stacking them.
-    const roomOccupants = {};
-    for (const npc of Object.values(world.people)) {
-      (roomOccupants[npc.room] ??= []).push(npc.id);
-    }
+    roomOccupants = roomEntities(world);
     for (const npc of Object.values(world.people)) {
       if (!people.has(npc.id)) {
-        const mesh = person('#748caa');
+        const mesh = createCharacter(npc.id);
+        scene.add(mesh);
         label(mesh, npc.name, [0, 1.48, 0]);
         people.set(npc.id, mesh);
       }
-      const occupants = roomOccupants[npc.room];
-      const idx = occupants.indexOf(npc.id);
-      const n = occupants.length;
-      const spreadX = (idx - (n - 1) / 2) * 0.6;
-      people.get(npc.id).position.copy(roomPosition(npc.room)).add(new THREE.Vector3(spreadX, 0, -.3));
     }
     for (const item of Object.values(world.objects)) {
       if (!objects.has(item.id)) {
@@ -195,19 +192,33 @@ export function createScene(container) {
         objects.set(item.id, group);
       }
     }
+    placePeople();
     placeObjects();
+  }
+  function placePeople() {
+    for (const [room, occupants] of Object.entries(roomOccupants)) {
+      const positions = occupantPositions(occupants.length, camera, roomDefinitions[room]);
+      occupants.forEach(({ kind, id }, index) => {
+        const position = point([positions[index].x, positions[index].z]);
+        if (kind === 'robot') movement.retargetDestination(position);
+        else (kind === 'person' ? people : objects).get(id).position.copy(position);
+      });
+    }
   }
   function placeObjects() {
     if (!world) return;
-    let carried = 0;
+    const carried = new Map();
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+    right.y = 0;
+    right.normalize();
     for (const item of Object.values(world.objects)) {
       const mesh = objects.get(item.id);
-      if (item.location.kind === 'robot') {
-        mesh.position.copy(avatar.position).add(new THREE.Vector3(.55 + carried++ * .3, .65, .15));
-      } else if (item.location.kind === 'person') {
-        mesh.position.copy(people.get(item.location.id).position).add(new THREE.Vector3(.5, .6, 0));
-      } else {
-        mesh.position.copy(roomPosition(item.location.id)).add(new THREE.Vector3(.35, 0, .25));
+      if (item.location.kind !== 'room') {
+        const owner = item.location.kind === 'robot' ? avatar : people.get(item.location.id);
+        const index = carried.get(owner) ?? 0;
+        carried.set(owner, index + 1);
+        mesh.position.copy(owner.position).addScaledVector(right, .4)
+          .add(new THREE.Vector3(0, .35 + index * .35, 0));
       }
     }
   }
@@ -221,8 +232,10 @@ export function createScene(container) {
   resize.observe(container);
   renderer.setAnimationLoop((time) => {
     movement.update(time);
-    placeObjects();
     controls.update();
+    placePeople();
+    for (const mesh of people.values()) mesh.userData.animate(time, camera, reducedMotion.matches);
+    placeObjects();
     renderer.render(scene, camera);
     labels.render(scene, camera);
   });

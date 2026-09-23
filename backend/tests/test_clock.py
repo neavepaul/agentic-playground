@@ -10,6 +10,41 @@ from app.world.models import World
 
 # ── WorldClock unit tests ──────────────────────────────────────────────────────
 
+def test_reset_restores_json_and_clock_until_next_schedule_boundary(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr("app.world.clock.time.monotonic", lambda: now[0])
+    clock = WorldClock(speed=60, start_hour=8)
+    engine = WorldEngine(clock=clock)
+    now[0] += 600
+    engine.move_to("kitchen")
+    engine.pick_up("keys")
+    engine.reset()
+    assert engine.snapshot() == WorldEngine().snapshot()
+    assert clock.time_str() == "08:00"
+    now[0] += 30
+    assert engine.snapshot()["people"]["paul"]["room"] == "office"
+    now[0] += 570
+    assert clock.time_str() == "18:00"
+    assert engine.snapshot()["people"]["paul"]["room"] == "kitchen"
+    assert engine.snapshot()["people"]["moira"]["room"] == "master_bedroom"
+
+
+def test_failed_reset_preserves_clock_and_world(monkeypatch, tmp_path):
+    from app.world.engine import _DEFAULT_WORLD
+    now = [100.0]
+    monkeypatch.setattr("app.world.clock.time.monotonic", lambda: now[0])
+    path = tmp_path / "house.json"
+    path.write_text(_DEFAULT_WORLD.read_text())
+    clock = WorldClock(speed=60, start_hour=8)
+    engine = WorldEngine(path, clock)
+    now[0] += 300
+    before = engine.snapshot()
+    path.write_text('{}')
+    with pytest.raises(ValueError):
+        engine.reset()
+    assert engine.snapshot() == before
+    assert clock.time_str() == "13:00"
+
 def test_clock_starts_at_configured_hour():
     clock = WorldClock(speed=0, start_hour=14.5)
     assert abs(clock.hour() - 14.5) < 0.01

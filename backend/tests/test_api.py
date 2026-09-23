@@ -1,7 +1,9 @@
 from fastapi.testclient import TestClient
+from fastapi.encoders import jsonable_encoder
 
 from app.main import create_app
 from tests.fakes import WaitingLLM
+from app.world.engine import WorldEngine
 
 
 def test_api_lifecycle_and_websocket():
@@ -24,11 +26,12 @@ def test_api_lifecycle_and_websocket():
             assert client.post(f"/api/tasks/{id}/cancel").json()["status"] == "cancelled"
             assert client.post(f"/api/tasks/{id}/cancel").json()["status"] == "cancelled"
         client.post("/api/tasks", json={"goal": "Try again."})
-        assert client.post("/api/world/reset").json()["world"] == initial
+        restored = jsonable_encoder(WorldEngine().snapshot())
+        assert client.post("/api/world/reset").json()["world"] == restored
         assert app.state.manager.active_id is None
         assert client.get(f"/api/tasks/{id}").status_code == 404
         with client.websocket_connect("/ws") as socket:
-            assert socket.receive_json()["data"]["world"] == initial
+            assert socket.receive_json()["data"]["world"] == restored
 
 
 def test_event_queue_overflow_requests_resync():

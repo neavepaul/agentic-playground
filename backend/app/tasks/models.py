@@ -225,7 +225,10 @@ class TaskContext(BaseModel):
             elif not loc:
                 # No task-scoped observation yet; fall back to long-term memory.
                 ltm_room = ltm_objects.get(obj_id, {}).get("last_seen_room")
-                if ltm_room and ltm_room != current:
+                already_scanned = any(a["success"] and a["tool"] == "look"
+                                      and a["observation"]["room"] == ltm_room
+                                      for a in self.action_history)
+                if ltm_room and ltm_room != current and not already_scanned:
                     path = self._find_path(current, ltm_room)
                     if path:
                         hints[f"object:{obj_id}"] = {
@@ -280,6 +283,10 @@ class TaskContext(BaseModel):
         entry = deepcopy({"tool": tool, "arguments": arguments, **result})
         self.action_history.append(entry)
         if not result["success"]:
+            person = arguments.get("person")
+            if tool in {"talk_to", "give"} and person and result.get("error") == f"{person} is not in the current room.":
+                self.memory.set_person(person, None, result["evidence_id"])
+                self.memory.rooms.pop(self.memory.robot_room, None)
             return
         self.consecutive_report_rejections = 0
         if tool in {"move_to", "pick_up", "drop", "give"}:
@@ -298,6 +305,12 @@ class TaskContext(BaseModel):
         known_rooms |= {exit for room in self.memory.rooms.values() for exit in room.connections}
         outcomes = check_conditions(self)
         memory = self.memory.prompt()
+        long_term_memory = deepcopy(self.long_term_memory)
+        scanned_rooms = {a["observation"]["room"] for a in self.action_history
+                         if a["success"] and a["tool"] == "look"}
+        for item in long_term_memory.get("objects", {}).values():
+            if item.get("last_seen_room") in scanned_rooms:
+                item.pop("last_seen_room", None)
         memory["completed_outcomes"] = [c for c in outcomes if c["satisfied"]]
         room_view = self.memory.room_view(self.robot_status.get("room"))
         if room_view is not None:
@@ -311,7 +324,7 @@ class TaskContext(BaseModel):
                 "current_room_observation": room_view,
                 "delivery_state_from_observations": self.delivery_state(),
                 "navigation_hints": self._navigation_hints(),
-                "long_term_memory": self.long_term_memory,
+                "long_term_memory": long_term_memory,
                 "self_model": self.self_model,
                 "action_feedback": self.action_feedback[-6:],
                 "required_outcomes": outcomes, "robot_status": self.robot_status,

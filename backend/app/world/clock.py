@@ -16,6 +16,9 @@ class WorldClock:
     def simulated_seconds(self) -> float:
         return self._origin_sim + (time.monotonic() - self._origin_real) * self._speed
 
+    def reset(self) -> None:
+        self._origin_real = time.monotonic()
+
     def hour(self) -> float:
         """Hour of day as a float in [0, 24)."""
         return (self.simulated_seconds() % 86400.0) / 3600.0

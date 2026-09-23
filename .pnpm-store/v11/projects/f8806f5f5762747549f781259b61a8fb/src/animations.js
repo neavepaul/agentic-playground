@@ -14,6 +14,11 @@ export class MovementQueue {
   move(target) {
     this.queue.push(target.clone());
   }
+  retargetDestination(target) {
+    if (this.queue.length) this.queue[this.queue.length - 1].copy(target);
+    else if (this.active) this.active.to.copy(target);
+    else this.position.copy(target);
+  }
   update(now) {
     if (!this.active && this.queue.length) {
       this.active = { from: this.position.clone(), to: this.queue.shift(), start: now };

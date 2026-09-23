@@ -12,6 +12,26 @@ from app.world.tools import WorldTools
 #                              <-> second_bedroom
 #   hall <-> entrance <-> office
 
+def test_empty_scan_suppresses_stale_object_hint_and_prompt():
+    task, tools = _task_with_map()
+    task.conditions = [GoalCondition(kind="deliver", object="medicine", person="paul")]
+    task.long_term_memory = {"objects": {"medicine": {"last_seen_room": "kitchen"}}}
+    for tool, args in [("move_to", {"room": "kitchen"}), ("look", {}), ("move_to", {"room": "hall"})]:
+        task.record(tool, args, tools.execute(tool, args))
+    assert "object:medicine" not in task._navigation_hints()
+    assert "last_seen_room" not in task.compact()["long_term_memory"]["objects"]["medicine"]
+    assert task.long_term_memory["objects"]["medicine"]["last_seen_room"] == "kitchen"
+
+
+def test_failed_conversation_invalidates_person_and_requires_new_scan():
+    task, tools = _task_with_map()
+    task.record("look", {}, tools.execute("look", {}))
+    assert task.memory.people["moira"].location == "hall"
+    task.record("talk_to", {"person": "moira", "message": "Hello"},
+                {"success": False, "error": "moira is not in the current room.", "evidence_id": "failed"})
+    assert task.memory.people["moira"].location is None
+    assert "hall" not in task.memory.rooms
+
 
 def _task_with_map() -> TaskContext:
     """Create a TaskContext bootstrapped with floor plan from house.json."""
