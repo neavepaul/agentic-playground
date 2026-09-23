@@ -10,18 +10,13 @@ try { scene = createScene(document.getElementById('scene')); }
 catch { showError('The 3D view requires WebGL. Enable hardware acceleration or try another browser.'); }
 let sequence = -1;
 let activeTab = 'activity';
-let beliefsDirty = false;
 const beliefsPanel = document.getElementById('beliefs-panel');
 
 async function fetchAndRenderBeliefs() {
   try {
     const [data, worldData] = await Promise.all([api('/beliefs'), api('/world')]);
-    const people = new Set();
-    const rooms = new Set();
-    for (const [id, room] of Object.entries(worldData?.world?.rooms ?? {})) {
-      rooms.add(id);
-      for (const pid of room?.people ?? []) people.add(pid);
-    }
+    const people = new Set(Object.keys(worldData?.world?.people ?? {}));
+    const rooms = new Set(Object.keys(worldData?.world?.rooms ?? {}));
     renderBeliefs(beliefsPanel, data, people, rooms);
   } catch {
     beliefsPanel.innerHTML = '<p class="beliefs-empty">Could not load beliefs.</p>';
@@ -46,7 +41,6 @@ document.getElementById('tab-beliefs').addEventListener('click', () => {
   document.getElementById('feed').hidden = true;
   beliefsPanel.hidden = false;
   requestAnimationFrame(fetchAndRenderBeliefs);
-  beliefsDirty = false;
 });
 
 function snapshot(data, events) {
@@ -69,7 +63,6 @@ connectEvents({ snapshot, connection: setConnection, error: showError, event(eve
   if (event.type === 'beliefs_updated') {
     if (activeTab === 'beliefs') requestAnimationFrame(fetchAndRenderBeliefs);
     else {
-      beliefsDirty = true;
       document.getElementById('tab-beliefs').classList.add('has-update');
     }
     return;
