@@ -3,11 +3,51 @@ import { api } from './api.js';
 import { createScene } from './scene.js';
 import { connectEvents } from './websocket.js';
 import { addEvent, clearFeed, getTask, setAgent, setConnection, setMemoryOpen, setTask, setWorld, showError } from './ui.js';
+import { renderBeliefs } from './beliefs.js';
 
 let scene;
 try { scene = createScene(document.getElementById('scene')); }
 catch { showError('The 3D view requires WebGL. Enable hardware acceleration or try another browser.'); }
 let sequence = -1;
+let activeTab = 'activity';
+let beliefsDirty = false;
+const beliefsPanel = document.getElementById('beliefs-panel');
+
+async function fetchAndRenderBeliefs() {
+  try {
+    const [data, worldData] = await Promise.all([api('/beliefs'), api('/world')]);
+    const people = new Set();
+    const rooms = new Set();
+    for (const [id, room] of Object.entries(worldData?.world?.rooms ?? {})) {
+      rooms.add(id);
+      for (const pid of room?.people ?? []) people.add(pid);
+    }
+    renderBeliefs(beliefsPanel, data, people, rooms);
+  } catch {
+    beliefsPanel.innerHTML = '<p class="beliefs-empty">Could not load beliefs.</p>';
+  }
+}
+
+document.getElementById('tab-activity').addEventListener('click', () => {
+  if (activeTab === 'activity') return;
+  activeTab = 'activity';
+  document.getElementById('tab-activity').classList.add('active');
+  document.getElementById('tab-beliefs').classList.remove('active');
+  document.getElementById('feed').hidden = false;
+  beliefsPanel.hidden = true;
+});
+
+document.getElementById('tab-beliefs').addEventListener('click', () => {
+  if (activeTab === 'beliefs') return;
+  activeTab = 'beliefs';
+  document.getElementById('tab-beliefs').classList.add('active');
+  document.getElementById('tab-activity').classList.remove('active');
+  document.getElementById('feed').hidden = true;
+  beliefsPanel.hidden = false;
+  requestAnimationFrame(fetchAndRenderBeliefs);
+  beliefsDirty = false;
+});
+
 function snapshot(data, events) {
   sequence = data.sequence;
   scene?.update(data.world, true);
@@ -24,6 +64,11 @@ connectEvents({ snapshot, connection: setConnection, error: showError, event(eve
   if (d.task) setTask(d.task);
   if (event.type === 'agent_active' || event.type === 'agent_message' || event.type === 'critic_review') setAgent(event.agent);
   if (event.type === 'agent_message') document.getElementById('task-summary').textContent = d.summary;
+  if (event.type === 'beliefs_updated') {
+    if (activeTab === 'beliefs') requestAnimationFrame(fetchAndRenderBeliefs);
+    else beliefsDirty = true;
+    return;
+  }
   addEvent(event);
 } });
 
