@@ -169,13 +169,22 @@ export function createScene(container) {
     lastRoom = world.robot.room;
     for (const [id, mesh] of people) if (!world.people[id]) { disposeTree(mesh); people.delete(id); }
     for (const [id, mesh] of objects) if (!world.objects[id]) { disposeTree(mesh); objects.delete(id); }
+    // Group by room so we can spread occupants instead of stacking them.
+    const roomOccupants = {};
+    for (const npc of Object.values(world.people)) {
+      (roomOccupants[npc.room] ??= []).push(npc.id);
+    }
     for (const npc of Object.values(world.people)) {
       if (!people.has(npc.id)) {
         const mesh = person('#748caa');
         label(mesh, npc.name, [0, 1.48, 0]);
         people.set(npc.id, mesh);
       }
-      people.get(npc.id).position.copy(roomPosition(npc.room)).add(new THREE.Vector3(-.35, 0, -.3));
+      const occupants = roomOccupants[npc.room];
+      const idx = occupants.indexOf(npc.id);
+      const n = occupants.length;
+      const spreadX = (idx - (n - 1) / 2) * 0.6;
+      people.get(npc.id).position.copy(roomPosition(npc.room)).add(new THREE.Vector3(spreadX, 0, -.3));
     }
     for (const item of Object.values(world.objects)) {
       if (!objects.has(item.id)) {
