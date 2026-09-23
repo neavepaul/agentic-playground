@@ -41,7 +41,11 @@ class WorldEngine:
         return person.room
 
     def snapshot(self) -> dict:
-        return self._world.snapshot()
+        result = self._world.snapshot()
+        if self._clock:
+            for pid, person in self._world.people.items():
+                result["people"][pid]["room"] = self._effective_room(person)
+        return result
 
     def reset(self) -> None:
         self._world = _load_world(self.world_file)

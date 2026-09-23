@@ -137,6 +137,7 @@ class AgentMind:
         self._last_seen_sequence: int = 0
         self._last_reflection: float = 0.0
         self._last_distilled_task_count: int = 0
+        self._last_world_push: float = 0.0
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._loop(), name="agent-mind")
@@ -149,6 +150,10 @@ class AgentMind:
     async def _loop(self) -> None:
         while True:
             try:
+                now = time.monotonic()
+                if now - self._last_world_push >= 10.0:
+                    self._bus.emit("world_tick", world=self._engine.snapshot())
+                    self._last_world_push = now
                 if not self._manager.active_id:
                     await self._tick()
             except asyncio.CancelledError:
