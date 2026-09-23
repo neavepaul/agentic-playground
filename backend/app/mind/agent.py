@@ -6,6 +6,7 @@ from app.config import Settings
 from app.events.bus import EventBus
 from app.llm.base import LLMClient, structured
 from app.memory.graph import BeliefGraph
+from app.memory.store import PersistentMemory
 from app.tasks.manager import TaskBusy, TaskManager
 from app.world.engine import WorldEngine
 from .models import GraphConsolidation, IntentionOrIdle
@@ -74,6 +75,40 @@ conditions is optional — leave empty and the Coordinator will derive them from
 If you set conditions, use lowercase entity IDs from beliefs without articles.
 """
 
+_DISTILLATION = """You are the long-term memory system of a household robot.
+Review episodic history — patterns across many past tasks — and distil them
+into durable semantic beliefs. This is a batch pass over time, not a reaction
+to a single event. Look for recurring patterns strong enough to become stable,
+high-confidence beliefs.
+
+episode_history: recent task records — goals, outcomes, summaries.
+people_tallies: for each person: how many times they were observed in each room,
+  their last-seen room, known needs, and delivery_counts (object → n deliveries).
+objects_history: where objects were last found.
+current_beliefs: existing belief graph (do not duplicate high-confidence beliefs).
+drive_helpfulness: 0–1 scalar — higher means prioritise needs-based beliefs.
+
+Output GraphConsolidation with upsert_edges and remove_edges.
+
+When to add a recurring_need edge:
+  delivery_counts gives the exact number of confirmed deliveries.
+  2 deliveries → confidence 0.65  |  3–4 → 0.8  |  5+ → 0.9
+  reason must name the count: "Delivered medicine to paul 3 times."
+
+When to add a located_in edge:
+  Only when a person has a strong tally concentration — at least 3 total
+  observations and ≥60% in one room.
+  confidence: 60% → 0.5  |  75% → 0.65  |  90%+ → 0.8
+  Do not emit a location belief based on a single observation.
+
+Rules:
+  - Do not re-emit edges already stored at confidence > 0.7 unless you have
+    stronger evidence that raises them further.
+  - Return empty lists when history is too thin to support a pattern.
+  - Prefer fewer, stronger beliefs over many weak ones.
+  - Use lowercase entity IDs from the data, never display names.
+"""
+
 _log = logging.getLogger("agentic_friend.mind")
 
 
@@ -88,17 +123,20 @@ class AgentMind:
 
     def __init__(self, client: LLMClient, manager: TaskManager, engine: WorldEngine,
                  bus: EventBus, settings: Settings,
-                 graph: BeliefGraph | None = None) -> None:
+                 graph: BeliefGraph | None = None,
+                 persistent: PersistentMemory | None = None) -> None:
         self._client = client
         self._manager = manager
         self._engine = engine
         self._bus = bus
         self._settings = settings
         self._graph = graph if graph is not None else BeliefGraph()
+        self._persistent = persistent
         self._task: asyncio.Task | None = None
         # Track by monotonic sequence number — safe when the deque wraps at maxlen.
         self._last_seen_sequence: int = 0
         self._last_reflection: float = 0.0
+        self._last_distilled_task_count: int = 0
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._loop(), name="agent-mind")
@@ -132,6 +170,8 @@ class AgentMind:
         beliefs_snapshot = self._graph.prompt()
         if new_events:
             await self._consolidate(new_events, beliefs_snapshot)
+
+        await self._maybe_distill()
 
         if not new_events and since_last < self._settings.idle_reflection_interval:
             return
@@ -217,6 +257,62 @@ class AgentMind:
             self._graph.remove_edge(edge.subject, edge.relation, edge.target)
             _log.debug("belief remove: %s -[%s]-> %s",
                        edge.subject, edge.relation, edge.target)
+
+        if diff.upsert_edges or diff.remove_edges:
+            self._graph.save()
+
+    async def _maybe_distill(self) -> None:
+        if self._persistent is None:
+            return
+        task_count = len(self._persistent.recent_tasks)
+        new_since_last = task_count - self._last_distilled_task_count
+        if new_since_last < self._settings.distillation_task_interval:
+            return
+        self._last_distilled_task_count = task_count
+        await self._distill()
+
+    async def _distill(self) -> None:
+        """Batch distillation: promote recurring patterns from episodic history into semantic beliefs."""
+        p = self._persistent
+        people_tallies = {}
+        for pid, person in p.people.items():
+            total = sum(person.location_tally.values())
+            people_tallies[pid] = {
+                "name": person.name,
+                "location_tally": person.location_tally,
+                "total_observations": total,
+                "last_seen_room": person.last_seen_room,
+                "known_needs": person.known_needs,
+                "delivery_counts": person.delivery_counts,
+            }
+        context = {
+            "episode_history": [
+                {"goal": t.goal, "outcome": t.outcome, "summary": t.summary}
+                for t in p.recent_tasks[-20:]
+            ],
+            "people_tallies": people_tallies,
+            "objects_history": {
+                oid: {"last_seen_room": o.last_seen_room}
+                for oid, o in p.objects.items()
+            },
+            "current_beliefs": self._graph.prompt(),
+            "drive_helpfulness": self._settings.drive_helpfulness,
+        }
+        try:
+            diff = await structured(self._client, GraphConsolidation, _DISTILLATION, context)
+        except Exception:
+            _log.exception("AgentMind distillation failed")
+            return
+
+        for edge in diff.upsert_edges:
+            self._graph.upsert_edge(edge.subject, edge.relation, edge.target,
+                                    edge.confidence, edge.reason)
+            _log.info("distillation upsert: %s -[%s]-> %s (%.2f)",
+                      edge.subject, edge.relation, edge.target, edge.confidence)
+        for edge in diff.remove_edges:
+            self._graph.remove_edge(edge.subject, edge.relation, edge.target)
+            _log.info("distillation remove: %s -[%s]-> %s",
+                      edge.subject, edge.relation, edge.target)
 
         if diff.upsert_edges or diff.remove_edges:
             self._graph.save()

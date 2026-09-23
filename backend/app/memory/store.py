@@ -18,6 +18,7 @@ class PersonMemory(BaseModel):
     location_tally: dict[str, int] = Field(default_factory=dict)
     last_seen_room: str | None = None
     known_needs: list[str] = Field(default_factory=list)
+    delivery_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class ObjectMemory(BaseModel):
@@ -79,8 +80,10 @@ class PersistentMemory(BaseModel):
             if delivery.get("delivered") and delivery.get("recipient"):
                 pm = self.people.setdefault(delivery["recipient"],
                                             PersonMemory(name=delivery["recipient"]))
-                if delivery["object"] not in pm.known_needs:
-                    pm.known_needs.append(delivery["object"])
+                obj = delivery["object"]
+                if obj not in pm.known_needs:
+                    pm.known_needs.append(obj)
+                pm.delivery_counts[obj] = pm.delivery_counts.get(obj, 0) + 1
 
         self.recent_tasks.append(TaskRecord(
             task_id=context.id,

@@ -35,7 +35,7 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
     persistent = PersistentMemory.load(config.memory_file)
     graph = BeliefGraph.load(config.graph_file)
     manager = TaskManager(llm, WorldTools(engine, bus), bus, config, persistent)
-    mind = AgentMind(llm, manager, engine, bus, config, graph)
+    mind = AgentMind(llm, manager, engine, bus, config, graph, persistent)
     mutation_lock = asyncio.Lock()
 
     @asynccontextmanager
