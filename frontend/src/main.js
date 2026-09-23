@@ -10,7 +10,6 @@ try { scene = createScene(document.getElementById('scene')); }
 catch { showError('The 3D view requires WebGL. Enable hardware acceleration or try another browser.'); }
 let sequence = -1;
 let activeTab = 'activity';
-let beliefsDirty = false;
 const beliefsPanel = document.getElementById('beliefs-panel');
 
 async function fetchAndRenderBeliefs() {
@@ -42,7 +41,6 @@ document.getElementById('tab-beliefs').addEventListener('click', () => {
   document.getElementById('feed').hidden = true;
   beliefsPanel.hidden = false;
   requestAnimationFrame(fetchAndRenderBeliefs);
-  beliefsDirty = false;
 });
 
 function snapshot(data, events) {
@@ -65,7 +63,6 @@ connectEvents({ snapshot, connection: setConnection, error: showError, event(eve
   if (event.type === 'beliefs_updated') {
     if (activeTab === 'beliefs') requestAnimationFrame(fetchAndRenderBeliefs);
     else {
-      beliefsDirty = true;
       document.getElementById('tab-beliefs').classList.add('has-update');
     }
     return;

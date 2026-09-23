@@ -54,6 +54,7 @@ def observable_commands(context: TaskContext) -> tuple[dict, dict | None]:
     # robot scans the current room before moving away. This prevents hall↔room loops where
     # the model moves without ever verifying whether the recipient has arrived here.
     needs_recipient_scan = any("locate_recipient" in d.get("missing_prerequisites", [])
+                               and d.get("held", False)
                                for d in context.delivery_state())
     if needs_recipient_scan and "look" in commands:
         commands["look"]["priority"] = True

@@ -111,6 +111,9 @@ Rules:
 
 _log = logging.getLogger("agentic_friend.mind")
 
+_TASK_OUTCOME_TYPES = {"task_completed", "task_failed", "task_cancelled"}
+_TASK_REPORTABLE = {"task_completed", "task_failed"}
+
 
 class AgentMind:
     """Persistent autonomous loop that generates goals when the robot is idle.
@@ -220,7 +223,9 @@ class AgentMind:
 
     async def _consolidate(self, new_events: list[dict], beliefs_snapshot: dict) -> None:
         """Ask the LLM to distil recent events into belief graph updates."""
-        _TASK_OUTCOME_TYPES = {"task_completed", "task_failed", "task_cancelled"}
+        # Only completed/failed tasks carry meaningful evidence for belief updates.
+        # Cancelled tasks reflect user intent, not robot success or failure, so
+        # they are excluded from task_outcomes to avoid misattributing confidence drops.
         task_outcomes = [
             {
                 "goal": e["data"]["task"].get("goal", ""),
@@ -228,9 +233,9 @@ class AgentMind:
                 "summary": e["data"].get("summary", ""),
             }
             for e in new_events
-            if e["type"] in _TASK_OUTCOME_TYPES
+            if e["type"] in _TASK_REPORTABLE
         ]
-        # Exclude task outcomes (handled above), bookkeeping events, and self-referential
+        # Exclude all task lifecycle events, bookkeeping events, and self-referential
         # events that would cause consolidation to trigger itself.
         _EXCLUDE = {"task_updated", "world_reset", "agent_intention", "world_updated",
                     "world_tick", "beliefs_updated", "status_observed", "map_observed"}

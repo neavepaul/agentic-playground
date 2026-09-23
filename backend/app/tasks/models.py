@@ -245,9 +245,22 @@ class TaskContext(BaseModel):
                 # Not seen this task; fall back to long-term memory.
                 ltm = ltm_people.get(recipient, {})
                 ltm_room = ltm.get("last_seen_room") or (ltm.get("typical_rooms") or [None])[0]
-                # Skip rooms already observed this task without finding the recipient —
-                # they have moved; redirect exploration toward unvisited rooms instead.
-                already_checked = ltm_room in self.memory.rooms
+                # Suppress the hint only for rooms scanned AFTER the object was picked up.
+                # Pre-pickup looks are stale by the time delivery starts — the recipient
+                # may have moved in the interim, so we should not exclude those rooms.
+                last_pickup = next(
+                    (i for i in range(len(self.action_history) - 1, -1, -1)
+                     if self.action_history[i]["success"]
+                     and self.action_history[i]["tool"] == "pick_up"
+                     and self.action_history[i]["arguments"].get("object") == obj_id),
+                    -1
+                )
+                rooms_scanned_post_pickup = {
+                    a["observation"]["room"]
+                    for a in self.action_history[last_pickup + 1:]
+                    if a["success"] and a["tool"] == "look"
+                }
+                already_checked = ltm_room in rooms_scanned_post_pickup
                 if ltm_room and ltm_room != current and not already_checked:
                     path = self._find_path(current, ltm_room)
                     if path:
