@@ -152,7 +152,7 @@ class AgentMind:
             try:
                 now = time.monotonic()
                 if now - self._last_world_push >= 10.0:
-                    self._bus.emit("world_tick", world=self._engine.snapshot())
+                    self._bus.emit("world_tick", world=self._engine.snapshot(), skip_history=True)
                     self._last_world_push = now
                 if not self._manager.active_id:
                     await self._tick()
@@ -220,6 +220,7 @@ class AgentMind:
 
     async def _consolidate(self, new_events: list[dict], beliefs_snapshot: dict) -> None:
         """Ask the LLM to distil recent events into belief graph updates."""
+        _TASK_OUTCOME_TYPES = {"task_completed", "task_failed", "task_cancelled"}
         task_outcomes = [
             {
                 "goal": e["data"]["task"].get("goal", ""),
@@ -227,14 +228,18 @@ class AgentMind:
                 "summary": e["data"].get("summary", ""),
             }
             for e in new_events
-            if e["type"] == "task_completed"
+            if e["type"] in _TASK_OUTCOME_TYPES
         ]
-        # Exclude task_completed — already captured in task_outcomes above.
+        # Exclude task outcomes (handled above), bookkeeping events, and self-referential
+        # events that would cause consolidation to trigger itself.
+        _EXCLUDE = {"task_updated", "world_reset", "agent_intention", "world_updated",
+                    "world_tick", "beliefs_updated", "status_observed", "map_observed"}
+        _EXCLUDE |= _TASK_OUTCOME_TYPES
         relevant = [
             {"type": e["type"], "summary": e.get("data", {}).get("summary", ""),
              "observation": e.get("data", {}).get("observation", "")}
             for e in new_events
-            if e["type"] not in {"task_updated", "world_reset", "agent_intention", "task_completed"}
+            if e["type"] not in _EXCLUDE
         ]
         if not relevant and not task_outcomes:
             return

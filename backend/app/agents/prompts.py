@@ -114,10 +114,13 @@ Return conditions that match the ORIGINAL goal, without inventing extra tasks.
 Use room IDs from the floor plan and lowercase IDs for named objects/people. Do not guess locations.
 find_object: locate the requested object. find_person: locate the named person.
 hold_object: pick up the requested object and keep it in the avatar inventory.
-identify_recipient: find who needs the requested object.
-deliver: transfer the requested object to a person. If the goal names the recipient,
-set person to that ID. If it says 'who needs it' or similar, leave person empty;
-the checker will require conversation evidence identifying the actual recipient.
+identify_recipient: find who needs the requested object. ONLY add this when the goal
+  gives NO name at all — e.g. "deliver it to whoever needs it". Do NOT add it when
+  the goal names a person (even via pronoun — "bring it to him/her" where a name
+  was mentioned earlier in the same goal refers to that named person).
+deliver: transfer the requested object to a person. If the goal names the recipient
+  anywhere (including via pronoun reference to an earlier name), set person to that ID.
+  If truly no name is given, leave person empty; conversation evidence will identify them.
 notify: tell a named person a message. notify_everyone: tell everyone that message.
 Use the exact requested message without the 'tell ...' wrapper. Do not invent text.
 place_object: put the requested object in the specified room. visit_room: go there.

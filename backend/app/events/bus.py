@@ -13,12 +13,13 @@ class EventBus:
         self.history: deque[dict] = deque(maxlen=300)
         self.subscribers: set[asyncio.Queue] = set()
 
-    def emit(self, type: str, agent: str = "system", **data) -> dict:
+    def emit(self, type: str, agent: str = "system", skip_history: bool = False, **data) -> dict:
         self.sequence += 1
         event = {"id": str(uuid4()), "sequence": self.sequence,
                  "timestamp": datetime.now(timezone.utc).isoformat(),
                  "type": type, "agent": agent, "data": data}
-        self.history.append(event)
+        if not skip_history:
+            self.history.append(event)
         logger.info("%s [%s] %s", type, agent,
                     data.get("summary", data.get("observation", data.get("error", ""))))
         for queue in tuple(self.subscribers):

@@ -49,7 +49,14 @@ def check_conditions(context: "TaskContext") -> list[dict]:
         elif kind == "find_person":
             met = any(p["id"] == condition.person for view in looks for p in view["people"])
         elif kind == "identify_recipient":
-            met = condition.object in needs
+            # Satisfied by conversation evidence OR by a completed named deliver condition
+            # (the identity is proven by the successful handoff itself).
+            delivered_to = any(
+                c.kind == "deliver" and c.object == condition.object and c.person
+                and location(c.object) == ("person", c.person)
+                for c in context.conditions
+            )
+            met = condition.object in needs or delivered_to
         elif kind == "hold_object":
             met = location(condition.object) == ("robot", "robot")
         elif kind == "deliver":

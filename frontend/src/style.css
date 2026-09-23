@@ -551,6 +551,17 @@ textarea {
   box-shadow:0 1px 3px #24352d18;
 }
 
+.activity-tabs .tab-btn.has-update::after {
+  content:'';
+  display:inline-block;
+  width:5px;
+  height:5px;
+  border-radius:50%;
+  background:#52795e;
+  margin-left:5px;
+  vertical-align:middle;
+}
+
 #feed {
   overflow-y:auto;
   flex:1;

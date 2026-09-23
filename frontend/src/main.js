@@ -41,6 +41,7 @@ document.getElementById('tab-beliefs').addEventListener('click', () => {
   if (activeTab === 'beliefs') return;
   activeTab = 'beliefs';
   document.getElementById('tab-beliefs').classList.add('active');
+  document.getElementById('tab-beliefs').classList.remove('has-update');
   document.getElementById('tab-activity').classList.remove('active');
   document.getElementById('feed').hidden = true;
   beliefsPanel.hidden = false;
@@ -64,9 +65,13 @@ connectEvents({ snapshot, connection: setConnection, error: showError, event(eve
   if (d.task) setTask(d.task);
   if (event.type === 'agent_active' || event.type === 'agent_message' || event.type === 'critic_review') setAgent(event.agent);
   if (event.type === 'agent_message') document.getElementById('task-summary').textContent = d.summary;
+  if (event.type === 'world_tick') return;
   if (event.type === 'beliefs_updated') {
     if (activeTab === 'beliefs') requestAnimationFrame(fetchAndRenderBeliefs);
-    else beliefsDirty = true;
+    else {
+      beliefsDirty = true;
+      document.getElementById('tab-beliefs').classList.add('has-update');
+    }
     return;
   }
   addEvent(event);
