@@ -75,6 +75,7 @@ async def classify_conversation_move(client, context, person: str, message: str)
             "existing_threads": payload_threads,
             "recent_actions": context.action_history[-6:],
         },
+        metrics=context.metrics, role="conversation",
     )
     if move.existing_thread_id and move.existing_thread_id not in threads:
         # Never let a hallucinated thread identifier poison memory. Treat a useful
@@ -103,6 +104,7 @@ async def interpret_conversation(client, context, result, thread_id: str,
             ],
             "requested_objects": sorted({c.object for c in context.conditions if c.object}),
         },
+        metrics=context.metrics, role="conversation",
     )
     context.remember_meaning(result["evidence_id"], meaning)
     observation = result["observation"]

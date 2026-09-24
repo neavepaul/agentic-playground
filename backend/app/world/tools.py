@@ -61,6 +61,10 @@ class WorldTools:
             args = schema.model_validate(arguments)
             observation = operation(self._engine, **args.model_dump())
             result = {"success": True, "observation": observation}
+            # One successful embodied action is one turn of world time. Bootstrap
+            # introspection (get_map/get_status) costs the robot nothing.
+            if tool not in {"get_map", "get_status"}:
+                self._engine.advance_clock()
         except (ValidationError, WorldError) as exc:
             error = ("Invalid arguments: " + "; ".join(
                 f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors())

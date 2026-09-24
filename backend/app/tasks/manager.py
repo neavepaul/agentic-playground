@@ -12,11 +12,14 @@ from app.llm.base import LLMClient, ModelError, structured
 from app.memory.store import PersistentMemory
 from app.world.tools import WorldTools
 from .models import TaskContext
-from .goals import check_conditions
+from .goals import check_conditions, normalize
 
 
 class TaskBusy(ValueError):
     pass
+
+
+_log = logging.getLogger("agentic_friend.tasks")
 
 
 async def critic_review(client: LLMClient, context: TaskContext, proposal: str, kind: str,
@@ -28,7 +31,22 @@ async def critic_review(client: LLMClient, context: TaskContext, proposal: str, 
     return await structured(client, CriticReview, CRITIC,
                             {**state, "proposal": proposal,
                              "proposed_action": proposed_action,
-                             "review_type": kind, "cited_evidence": evidence or []})
+                             "review_type": kind, "cited_evidence": evidence or []},
+                            metrics=context.metrics, role="critic")
+
+
+def _repeats_previous_message(context: TaskContext, person: str, message: str) -> bool:
+    """Cheap local check for an already-asked question.
+
+    Catches the common repeat without spending an inference call on the
+    conversation classifier; genuinely new wording still goes to the model.
+    """
+    known = context.memory.people.get(person)
+    if not known:
+        return False
+    current = normalize(message)
+    return any(normalize(turn.message) == current
+               for thread in known.conversation_threads.values() for turn in thread.turns)
 
 
 class LimitReached(RuntimeError):
@@ -50,12 +68,13 @@ class TaskManager:
     def start(self, goal: str) -> TaskContext:
         if self.active_id:
             raise TaskBusy("One task is already running. Cancel it or wait for completion.")
-        context = TaskContext(goal=goal)
+        context = TaskContext(goal=goal, search_stale_after=self.settings.search_stale_after)
         if self.persistent:
             context.long_term_memory = self.persistent.prompt()
             context.self_model = self.persistent.self_model_prompt()
-        # Inject NPC schedules so navigation hints can predict current room from clock time.
+        # Inject NPC schedules so location evidence can be predicted from clock time.
         context.long_term_memory["_schedules"] = self.tools._engine.people_schedules()
+        context.metrics.simulated_start = self.tools._engine.simulated_time() or ""
         # Keep recent tasks in memory only. Active task is never evicted.
         if len(self.tasks) >= 50:
             del self.tasks[next(iter(self.tasks))]
@@ -75,7 +94,12 @@ class TaskManager:
     def finish(self, context: TaskContext, status: str, summary: str) -> None:
         context.status = status
         context.summary = summary
-        self.bus.emit(f"task_{status}", task=context.public(), summary=summary)
+        context.metrics.tool_actions = context.tool_count
+        context.metrics.simulated_end = self.tools._engine.simulated_time() or ""
+        report = context.metrics.model_dump()
+        _log.info("task_metrics task=%s status=%s %s", context.id, status,
+                  " ".join(f"{key}={value}" for key, value in report.items() if value not in ("", 0, 0.0)))
+        self.bus.emit(f"task_{status}", task=context.public(), summary=summary, metrics=report)
 
     async def cancel(self, task_id: str) -> TaskContext:
         context = self.tasks[task_id]
@@ -175,7 +199,13 @@ class TaskManager:
             elif decision.action == "delegate":
                 context.current_plan = decision.task
                 starting_tool_count = context.tool_count
-                for _ in range(self.settings.max_explorer_actions):
+                context.stall_count = 0
+                for step in range(self.settings.max_explorer_actions):
+                    # A healthy delegation ends here, not at the action ceiling.
+                    if step and not [c for c in check_conditions(context) if not c["satisfied"]]:
+                        self.message(context, "system",
+                                     "Delegated objective satisfied; returning to Coordinator.")
+                        break
                     self.bus.emit("agent_active", "explorer", task_id=context.id)
                     action = await self.explorer.decide(context, decision.task)
                     if action.action == "report":
@@ -219,14 +249,16 @@ class TaskManager:
                     conversation_move = None
                     conversation_thread_id = None
                     if action.tool == "talk_to":
-                        conversation_move = await classify_conversation_move(
-                            self.client, context,
-                            action.arguments["person"], action.arguments["message"],
+                        person = action.arguments["person"]
+                        verbatim_repeat = _repeats_previous_message(
+                            context, person, action.arguments["message"])
+                        conversation_move = None if verbatim_repeat else await classify_conversation_move(
+                            self.client, context, person, action.arguments["message"],
                         )
-                        if not conversation_move.advances_thread:
-                            person = action.arguments["person"]
+                        if verbatim_repeat or not conversation_move.advances_thread:
                             context.conversation_rejections[person] = context.conversation_rejections.get(person, 0) + 1
-                            target = conversation_move.existing_thread_id or "an existing discussion"
+                            target = ("a question already put to this person" if verbatim_repeat
+                                      else conversation_move.existing_thread_id or "an existing discussion")
                             correction = (
                                 f"Conversation move rejected: it repeats or does not advance {target}. "
                                 "Choose a movement or object action next; speech resumes after successful physical action."
@@ -247,22 +279,59 @@ class TaskManager:
                             self.message(context, "system", "Object action rejected by Critic; revising the plan.")
                             break
                     previous_signature = context.progress_signature()
+                    # Travelling to unscanned ground is purposeful even before the
+                    # scan proves it; only re-entering cleared rooms can be a loop.
+                    on_route = (action.source == "route_executor"
+                                or (action.tool == "move_to"
+                                    and action.arguments.get("room") not in context.memory.rooms))
+                    revisit = action.arguments.get("room") in context.memory.visited_rooms
                     result = self.call_tool(context, action.tool, action.arguments)
                     if result.get("success") and action.tool == "talk_to":
                         await interpret_conversation(
                             self.client, context, result, conversation_thread_id,
                             conversation_move.thread_summary,
                         )
-                    if (result.get("success") and action.tool in {"move_to", "pick_up", "drop", "give"}
-                            and not self._progress_changed(context, previous_signature)):
-                        self.message(context, "system", "No measurable progress; forcing replan.")
+                    if self._stalled(context, action, result, previous_signature, on_route, revisit):
+                        self.message(context, "system",
+                                     "No semantic progress after repeated actions; replanning with the Coordinator.")
                         break
                     # Let cancellation, sockets and other API requests run between tools.
                     await asyncio.sleep(0)
                 else:
-                    self.message(context, "system", "Delegation action limit reached; returning to Coordinator.")
+                    self.message(context, "system",
+                                 "Delegation safety ceiling reached; returning to Coordinator.")
+                context.metrics.coordinator_handoffs += 1
             self.bus.emit("task_updated", task=context.public())
         raise LimitReached("Maximum Coordinator cycles reached.")
+
+    def _stalled(self, context: TaskContext, action, result: dict,
+                 previous: tuple, on_route: bool, revisit: bool = False) -> bool:
+        """Track semantic progress and report when the current strategy is spent.
+
+        Travelling along a committed route is purposeful even though it changes
+        no task state, so hops are exempt. A leg that ends with the destination
+        scanned and the target still missing counts once, which is what turns
+        repeated fruitless room visits into a replan instead of a loop.
+        """
+        if not result.get("success"):
+            return False
+        if action.tool == "move_to" and revisit:
+            context.metrics.repeat_room_visits += 1
+        advanced = self._progress_changed(context, previous)
+        if advanced:
+            context.metrics.useful_observations += 1
+            context.stall_count = 0
+            return False
+        if on_route:
+            return False
+        context.stall_count += 1
+        if context.stall_count < self.settings.max_semantic_stall:
+            return False
+        context.metrics.stall_events += 1
+        context.stall_count = 0
+        # The committed destination produced nothing; let the planner pick another.
+        context.intention = None
+        return True
 
     async def _run(self, context: TaskContext) -> None:
         try:

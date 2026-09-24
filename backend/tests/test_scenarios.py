@@ -49,13 +49,12 @@ async def test_delivery_generalizes_after_unhelpful_source(tmp_path, item, recip
 
     model = ScenarioLLM([
         {"action": "delegate", "summary": "Explore and deliver.", "task": "Find the requested item and its recipient."},
-        tool("look"), tool("talk_to", person="witness", message=f"Who needs the {item}?"),
         tool("talk_to", person="witness", message=f"Who needs the {item}?"),
-        tool("move_to", room="workshop"), tool("look"),
+        tool("talk_to", person="witness", message=f"Who needs the {item}?"),
+        tool("move_to", room="workshop"),
         tool("talk_to", person=recipient, message=f"Do you need the {item}?"),
-        tool("pick_up", object=item), tool("give", object=item, person=recipient),
         {"approved": True, "summary": "Observed item held and recipient present."},
-        {"action": "report", "summary": "Delivered."}, complete,
+        complete,
         {"approved": True, "summary": "Transfer evidenced."},
     ], conditions=[{"kind": "deliver", "object": item}])
     engine, bus = WorldEngine(path), EventBus()
@@ -140,12 +139,11 @@ async def test_new_names_delivery_and_followup_notification(tmp_path):
             return await super().generate(messages, response_schema)
     fake = WorkshopLLM([
         {"action": "delegate", "summary": "Explore and help.", "task": "Find who needs medicine and deliver it."},
-        tool("look"), tool("move_to", room="workshop"), tool("look"),
+        tool("move_to", room="workshop"),
         tool("talk_to", person="alice", message="Who needs the medicine?"),
-        tool("pick_up", object="medicine"), {"approved": True, "summary": "Requested item."},
-        tool("give", object="medicine", person="alice"), {"approved": True, "summary": "Spoken request."},
+        {"approved": True, "summary": "Requested item."},
         tool("talk_to", person="alice", message="The taxi is here."),
-        {"action": "report", "summary": "Delivered and notified."}, complete,
+        complete,
         {"approved": True, "summary": "Evidence supports both outcomes."},
     ], conditions=[{"kind": "deliver", "object": "medicine"},
                    {"kind": "notify", "person": "alice", "message": "The taxi is here"}])

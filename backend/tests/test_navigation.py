@@ -18,7 +18,11 @@ def test_empty_scan_suppresses_stale_object_hint_and_prompt():
     task.long_term_memory = {"objects": {"medicine": {"last_seen_room": "kitchen"}}}
     for tool, args in [("move_to", {"room": "kitchen"}), ("look", {}), ("move_to", {"room": "hall"})]:
         task.record(tool, args, tools.execute(tool, args))
-    assert "object:medicine" not in task._navigation_hints()
+    # The scan disproved the remembered location, so the hint must move on to
+    # unsearched ground rather than sending the robot back to the empty kitchen.
+    hint = task._navigation_hints()["object:medicine"]
+    assert hint["target"] != "kitchen"
+    assert hint["reason"] == "search_frontier"
     assert "last_seen_room" not in task.compact()["long_term_memory"]["objects"]["medicine"]
     assert task.long_term_memory["objects"]["medicine"]["last_seen_room"] == "kitchen"
 

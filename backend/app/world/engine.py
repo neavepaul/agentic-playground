@@ -63,6 +63,14 @@ class WorldEngine:
                     delay = min((boundary - now) % 86400 or 86400 for boundary in boundaries)
                     self._initial_rooms_until[person.id] = now + delay
 
+    def advance_clock(self, steps: int = 1) -> None:
+        """Signal that one agent turn elapsed. Only action-driven clocks react."""
+        if self._clock is not None:
+            self._clock.advance(steps)
+
+    def simulated_time(self) -> str | None:
+        return self._clock.time_str() if self._clock else None
+
     def people_schedules(self) -> dict:
         """Return each person's schedule as serialisable dicts, keyed by person id."""
         return {

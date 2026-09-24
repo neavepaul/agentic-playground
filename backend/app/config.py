@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -22,13 +23,21 @@ class Settings(BaseSettings):
     decision_thinking: bool = False
     decision_output_tokens: int = Field(default=4096, ge=1024, le=16384)
     max_coordinator_cycles: int = Field(default=20, ge=1, le=100)
-    max_explorer_actions: int = Field(default=15, ge=1, le=50)
-    max_tool_calls: int = Field(default=80, ge=1, le=200)
+    # A hard safety ceiling, not the normal way a delegation ends. Healthy work
+    # stops on completion, blockage or semantic stall long before this.
+    max_explorer_actions: int = Field(default=40, ge=1, le=200)
+    max_tool_calls: int = Field(default=80, ge=1, le=400)
     max_critic_reviews: int = Field(default=8, ge=1, le=20)
+    # Physical actions yielding no semantic progress before the strategy is replanned.
+    max_semantic_stall: int = Field(default=3, ge=1, le=20)
+    # Actions after which a room scan is treated as stale and worth repeating.
+    search_stale_after: int = Field(default=12, ge=1, le=200)
     log_level: str = "INFO"
     # Simulated world clock
+    simulation_mode: Literal["realtime", "action_driven"] = "realtime"
     clock_speed: float = Field(default=60.0, gt=0)   # 1 real second = 1 simulated minute
     clock_start_hour: float = Field(default=8.0, ge=0, lt=24)
+    action_seconds: float = Field(default=60.0, gt=0)  # simulated seconds per action
     # Idle autonomous loop
     idle_tick_seconds: float = Field(default=5.0, gt=0)
     idle_reflection_interval: float = Field(default=120.0, gt=0)

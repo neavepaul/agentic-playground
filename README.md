@@ -226,10 +226,36 @@ Copy `backend/.env.example` to `backend/.env`. Environment variables override it
 | `TEMPERATURE` | `0.1` | Conservative structured generation |
 | `CONTEXT_TOKENS` | `8192` | Ollama context size |
 | `MAX_COORDINATOR_CYCLES` | `20` | Maximum planning iterations |
-| `MAX_EXPLORER_ACTIONS` | `8` | Maximum decisions per delegation |
-| `MAX_TOOL_CALLS` | `50` | Includes bootstrap status/map and failed calls |
+| `MAX_EXPLORER_ACTIONS` | `40` | Hard safety ceiling per delegation, not the normal exit |
+| `MAX_TOOL_CALLS` | `80` | Includes bootstrap status/map and failed calls |
 | `MAX_CRITIC_REVIEWS` | `8` | Bounds transfer/completion reviews and recovery |
+| `MAX_SEMANTIC_STALL` | `3` | Barren physical actions before the strategy is replanned |
+| `SEARCH_STALE_AFTER` | `12` | Actions after which a room scan is worth repeating |
+| `SIMULATION_MODE` | `realtime` | `realtime` or `action_driven` (see below) |
+| `CLOCK_SPEED` | `60` | Simulated seconds per real second in `realtime` |
+| `CLOCK_START_HOUR` | `8` | Simulated hour at startup |
+| `ACTION_SECONDS` | `60` | Simulated seconds per action in `action_driven` |
 | `LOG_LEVEL` | `INFO` | Use `DEBUG` for application diagnostics |
+
+### Simulation modes
+
+In `realtime` the world advances with wall-clock time, so a slow local model
+costs simulated minutes while it thinks — NPCs move during inference. In
+`action_driven` the clock advances only on successful robot actions, so
+inference latency cannot move the world. Use `action_driven` for evaluation and
+regression runs: results become reproducible and comparable across machines and
+model speeds.
+
+### Execution layers
+
+Not every step reaches the model. A reflex layer executes the action when intent
+and preconditions leave exactly one correct choice — scanning a room the robot has
+just entered, picking up the goal object when it is visible and unheld, handing the
+goal object to a recipient standing right there — and a route executor walks the
+remaining hops of a destination the model already committed to. Speech, drops and
+reports are never reflexive. Each decision is logged with `decision_source=reflex`,
+`decision_source=route_executor` or `decision_source=llm`, and every task ends with
+a `task_metrics` line so `llm_calls` per completed task can be compared between runs.
 
 The application uses in-process memory; use **one Uvicorn worker**. Bind it to
 loopback as shown. There is intentionally no authentication or remote deployment setup.

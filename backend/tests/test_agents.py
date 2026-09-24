@@ -185,7 +185,7 @@ async def test_critic_reviews_current_transfer_without_replaying_old_verdict():
 @pytest.mark.parametrize("object_id,source_room", [("charger", "study"), ("laptop", "bedroom")])
 async def test_ready_handoff_context_survives_search_delegation(object_id, source_room):
     import json
-    from app.agents.explorer import Explorer
+    from app.agents.explorer import Explorer, reflex_action
 
     tools = WorldTools(WorldEngine(LEGACY_WORLD), EventBus())
     task = TaskContext(goal=f"Deliver {object_id} to Neave.",
@@ -196,32 +196,46 @@ async def test_ready_handoff_context_survives_search_delegation(object_id, sourc
         assert result["success"]
         task.record(name, args, result)
 
+    def handoffs() -> list[str]:
+        commands, _ = observable_commands(task)
+        return [id for id, command in commands.items() if command.get("tool") == "give"]
+
     async def payload_for(reply):
         fake = ScriptedLLM([reply])
         await Explorer(fake, tools.schemas()).decide(task, "Search bedroom and kitchen for Neave")
+        assert fake.calls, "this decision was expected to need the model"
         return json.loads(fake.calls[0][0][1]["content"])
 
     act("get_status")
+    act("look")
+    payload = await payload_for(tool("move_to", room=source_room))
+    assert payload["ready_handoffs"] == []  # Nothing held and no recipient here.
+
     act("move_to", room=source_room)
     act("look")
-    payload = await payload_for(tool("pick_up", object=object_id))
-    assert payload["ready_handoffs"] == []  # Seeing an item is not holding it.
+    assert handoffs() == []  # Seeing an item is not holding it.
+    commands, view = observable_commands(task)
+    assert reflex_action(task, commands, view).tool == "pick_up"
+
     act("pick_up", object=object_id)
     act("move_to", room="hall")
-    payload = await payload_for(tool("look"))
+    payload = await payload_for(tool("move_to", room="bedroom"))
     assert payload["ready_handoffs"] == []  # Recipient is not here.
-    act("move_to", room="bedroom")
-    act("look")
-    payload = await payload_for(tool("give", object=object_id, person="neave"))
-    assert payload["ready_handoffs"] == [f"give:{object_id}:neave"]
     assert len(payload["recent_actions"]) <= 8
     assert all("observation" not in entry for entry in payload["recent_actions"])
     assert payload["task_memory"]["objects"][object_id]["location"] == {"kind": "robot", "id": "robot"}
-    assert "move_to:hall" in payload["commands"]
-    assert "talk_to:neave" in payload["commands"]  # Clarification stays possible.
+    assert "move_to:bedroom" in payload["commands"]
+
+    act("move_to", room="bedroom")
+    act("look")
+    assert handoffs() == [f"give:{object_id}:neave"]
+    commands, view = observable_commands(task)
+    assert "talk_to:neave" in commands  # Clarification stays possible.
+    handoff = reflex_action(task, commands, view)
+    assert handoff.tool == "give" and handoff.source == "reflex"
+
     act("give", object=object_id, person="neave")
-    payload = await payload_for({"action": "report", "summary": "Delivered."})
-    assert payload["ready_handoffs"] == []
+    assert handoffs() == []
 
 
 @pytest.mark.parametrize("invalid_field,value,error_code", [
@@ -232,18 +246,17 @@ async def test_ready_handoff_context_survives_search_delegation(object_id, sourc
 async def test_handoff_recovers_from_invalid_model_output(invalid_field, value, error_code):
     # Uses LEGACY_WORLD so the scripted tool sequence is stable. The test
     # exercises the repair mechanism for invalid Explorer output — the specific
-    # world entities are incidental.
-    invalid = {"command_id": "give:charger:neave", "message": "", "summary": "Deliver charger."}
+    # world entities are incidental. The corrupted reply lands on a navigation
+    # decision, which is the kind of step that still requires the model.
+    invalid = {"command_id": "move_to:hall", "message": "", "summary": "Head back toward Neave."}
     invalid[invalid_field] = value
     fake = ScriptedLLM([
         {"action": "delegate", "summary": "Find and deliver.", "task": "Find charger and recipient, then deliver."},
-        tool("look"), tool("move_to", room="study"), tool("look"),
+        tool("move_to", room="study"),
         tool("talk_to", person="dad", message="Who needs the charger?"),
-        tool("pick_up", object="charger"),
-        tool("move_to", room="hall"), tool("move_to", room="bedroom"), tool("look"),
-        invalid, tool("give", object="charger", person="neave"),
+        invalid, tool("move_to", room="hall"),
         {"approved": True, "summary": "Held charger and observed recipient."},
-        {"action": "report", "summary": "Delivered."}, complete,
+        complete,
         {"approved": True, "summary": "Successful transfer evidenced."},
     ])
     engine, bus = WorldEngine(LEGACY_WORLD), EventBus()
@@ -286,16 +299,15 @@ async def test_goal_planner_cannot_invent_unknown_recipient():
 
 
 async def test_delivery_end_to_end_with_mock_model():
+    # Only genuinely ambiguous steps are scripted. Scanning an unseen room,
+    # acquiring the visible required object, walking a committed route and
+    # handing over to a present recipient are all executed without inference.
     replies = [{"action": "delegate", "summary": "Locate the charger and recipient.", "task": "Search study."},
-               tool("look"), tool("move_to", room="study"), tool("look"),
+               tool("move_to", room="study"),
                tool("talk_to", person="dad", message="Who needs the charger?"),
-               tool("pick_up", object="charger"),
                tool("move_to", room="hall"),
-               tool("move_to", room="bedroom"), tool("look"),
-               {"action": "delegate", "summary": "Deliver charger.", "task": "Give charger to Neave."},
-               tool("give", object="charger", person="neave"),
                {"approved": True, "summary": "Neave is the confirmed recipient."},
-               {"action": "report", "summary": "Delivery action succeeded."}, complete,
+               complete,
                {"approved": True, "summary": "Delivery and need are evidenced."}]
     fake = ScriptedLLM(replies)
     mgr, engine, bus = manager(fake)
@@ -307,6 +319,13 @@ async def test_delivery_end_to_end_with_mock_model():
     assert mission_satisfied(3, task, engine.snapshot())
     assert mgr.active_id is None
     assert any(e["type"] == "object_given" for e in bus.history)
+    assert [a["tool"] for a in task.action_history] == [
+        "get_status", "get_map", "look", "move_to", "look", "pick_up",
+        "talk_to", "move_to", "move_to", "look", "give"]
+    # Nine embodied actions cost three Explorer inferences, not nine.
+    assert task.metrics.explorer_llm_calls == 3
+    assert task.metrics.reflex_actions == 5 and task.metrics.route_actions == 1
+    assert task.metrics.coordinator_handoffs == 1
     # Initial Coordinator and Explorer inputs do not reveal hidden occupants/items.
     for messages, _ in fake.calls[:2]:
         payload = messages[1]["content"]
@@ -382,9 +401,8 @@ async def test_ollama_contract_and_thinking_exclusion():
 
 async def test_critic_rejection_returns_to_coordinator():
     fake = ScriptedLLM([
-        {"action": "delegate", "summary": "Observe.", "task": "Find charger."}, tool("look"),
-        tool("move_to", room="study"), tool("look"),
-        {"action": "report", "summary": "Charger observed."}, complete,
+        {"action": "delegate", "summary": "Observe.", "task": "Find charger."},
+        tool("move_to", room="study"), complete,
         {"approved": False, "summary": "Charger has not been observed.", "suggestion": "Search rooms."},
         {"action": "fail", "summary": "Cannot establish completion within this test."}])
     mgr, _, _ = manager(fake)
@@ -398,10 +416,10 @@ async def test_critic_rejection_returns_to_coordinator():
 async def test_empty_speech_is_repaired_before_tool_execution():
     fake = ScriptedLLM([
         {"action": "delegate", "summary": "Notify Neave.", "task": "Tell Neave dinner is ready."},
-        tool("look"), tool("move_to", room="bedroom"), tool("look"),
+        tool("move_to", room="bedroom"),
         tool("talk_to", person="neave", message=""),
         tool("talk_to", person="neave", message="Dinner is ready."),
-        {"action": "report", "summary": "Neave notified."}, complete,
+        complete,
         {"approved": True, "summary": "Message delivery was observed."}])
     mgr, engine, _ = manager(fake)
     task = mgr.start("Find Neave and tell him dinner is ready.")
@@ -409,27 +427,29 @@ async def test_empty_speech_is_repaired_before_tool_execution():
     assert task.status == "completed"
     assert all(entry["success"] for entry in task.action_history)
     assert sum(entry["tool"] == "talk_to" for entry in task.action_history) == 1
-    assert "actual nonblank words" in fake.calls[5][0][-1]["content"]
+    assert any("actual nonblank words" in messages[-1]["content"] for messages, _ in fake.calls)
     assert mission_satisfied(2, task, engine.snapshot())
 
 
 @pytest.mark.parametrize("number,actions", [
-    (1, [tool("move_to", room="study"), tool("look")]),
-    (2, [tool("move_to", room="bedroom"), tool("look"),
+    (1, [tool("move_to", room="study")]),
+    (2, [tool("move_to", room="bedroom"),
          tool("talk_to", person="neave", message="Dinner is ready.")]),
-    (4, [tool("move_to", room="kitchen"), tool("look")]),
+    (4, [tool("move_to", room="kitchen")]),
 ])
 async def test_other_evaluation_missions(number, actions):
     from app.evaluate import MISSIONS
     fake = ScriptedLLM([
         {"action": "delegate", "summary": "Carry out mission.", "task": MISSIONS[number]},
-        tool("look"), *actions, {"action": "report", "summary": "Mission actions performed."}, complete,
+        *actions, complete,
         {"approved": True, "summary": "Evidence matches the goal."}])
     mgr, engine, _ = manager(fake)
     task = mgr.start(MISSIONS[number])
     await mgr.runner
     assert task.status == "completed"
     assert mission_satisfied(number, task, engine.snapshot())
+    # Arrival scans are reflexive, so each mission needs one navigation inference.
+    assert task.metrics.explorer_llm_calls == len(actions)
 
 
 @pytest.mark.parametrize("mode", ["offline", "timeout", "missing", "envelope"])
@@ -452,20 +472,25 @@ async def test_ollama_errors_are_safe(mode):
 
 
 async def test_no_progress_report_is_reviewed_and_recovers():
+    # The first delegation scans the start room reflexively, so its report rests on
+    # real evidence. The second reports having found the charger without acting at
+    # all: that claim must be challenged and recovered from inside the delegation.
     fake = ScriptedLLM([
         {"action": "delegate", "summary": "Search.", "task": "Find charger."},
+        {"action": "report", "summary": "Start room scanned."},
+        {"action": "delegate", "summary": "Keep searching.", "task": "Find charger."},
         {"action": "report", "summary": "Charger found."},
         {"approved": False, "summary": "No observation supports finding it.", "suggestion": "Search the rooms."},
         {"action": "report", "summary": "I will search now."},
-        tool("look"), tool("move_to", room="study"), tool("look"),
-        {"action": "report", "summary": "Charger observed."}, complete,
-        {"approved": True, "summary": "Observed charger."}])
+        tool("move_to", room="study"),
+        complete, {"approved": True, "summary": "Observed charger."}])
     mgr, _, bus = manager(fake)
     task = mgr.start("Find charger.")
     await mgr.runner
     assert task.status == "completed"
     assert task.critic_count == 2
-    assert task.cycle_count == 2  # Recover inside the delegation, without another planning cycle.
+    # Recovery happened inside the second delegation: no extra planning cycle.
+    assert task.cycle_count == 3
     assert any("Report rejected" in message for message in task.action_feedback)
     assert not any(e["type"] == "agent_message" and e["data"].get("summary") == "Charger found."
                    for e in bus.history)
@@ -474,7 +499,7 @@ async def test_no_progress_report_is_reviewed_and_recovers():
 async def test_repeated_rejected_reports_stop_across_delegations():
     delegate = {"action": "delegate", "summary": "Search.", "task": "Find requested object."}
     report = {"action": "report", "summary": "Cannot find it."}
-    fake = ScriptedLLM([delegate, report,
+    fake = ScriptedLLM([delegate, delegate, delegate, report,
         {"approved": False, "summary": "No supporting observations."},
         delegate, report, delegate, report])
     mgr, _, _ = manager(fake, max_explorer_actions=1)
@@ -484,7 +509,8 @@ async def test_repeated_rejected_reports_stop_across_delegations():
     assert "unchanged decision loop" in task.summary
     assert task.critic_count == 1
     assert task.consecutive_report_rejections == 3
-    assert task.tool_count == 2  # Bootstrap only; no tool is chosen by recovery code.
+    # Bootstrap plus the one reflex scan of the start room; recovery chooses no tool.
+    assert task.tool_count == 3
     assert TaskContext(goal="Another task").consecutive_report_rejections == 0
     mgr.call_tool(task, "look", {})
     assert task.consecutive_report_rejections == 0
@@ -512,10 +538,12 @@ async def test_report_claims_do_not_override_observed_search_coverage():
 
 
 async def test_unobserved_room_report_forces_scan_before_coordinator_replan():
+    # Entering a room now scans it reflexively, so a report can never be raised
+    # from an unperceived room in the first place. The guard stays as a backstop.
     fake = ScriptedLLM([
         {"action": "delegate", "summary": "Search the house.", "task": "Find the charger and its recipient."},
-        tool("look"), tool("move_to", room="kitchen"), {"action": "report", "summary": "Kitchen checked."},
-        tool("look"), tool("talk_to", person="mom", message="Where are the keys?"),
+        tool("move_to", room="kitchen"),
+        tool("talk_to", person="mom", message="Where are the keys?"),
         {"action": "report", "summary": "Kitchen investigated."},
         {"action": "fail", "summary": "Stop test."},
     ])
@@ -544,19 +572,22 @@ async def test_explorer_rejects_repeated_read_without_new_information():
 
 
 async def test_distinct_followup_can_be_spoken_without_critic_debate():
+    # Two questions to the same person that pursue different information are both
+    # allowed: only rephrasings of an answered question are rejected.
     fake = ScriptedLLM([
-        {"action": "delegate", "summary": "Search.", "task": "Find keys."},
-        tool("look"), tool("move_to", room="kitchen"), tool("look"),
-        tool("talk_to", person="mom", message="Where are the keys?"),
-        tool("talk_to", person="mom", message="When did you last see them?"),
-        {"action": "report", "summary": "The keys were already observed."},
-        complete, {"approved": True, "summary": "Keys observed."}])
+        {"action": "delegate", "summary": "Search.", "task": "Find Neave and notify him."},
+        tool("move_to", room="kitchen"),
+        tool("talk_to", person="mom", message="Where is Neave?"),
+        tool("talk_to", person="mom", message="When did you last see him?"),
+        tool("move_to", room="hall"),
+        tool("talk_to", person="neave", message="Dinner is ready."),
+        complete, {"approved": True, "summary": "Neave was notified."}])
     mgr, _, bus = manager(fake)
-    task = mgr.start("Find keys.")
+    task = mgr.start("Find Neave and tell him dinner is ready.")
     await mgr.runner
-    assert task.status == "completed"
-    assert task.tool_count == 7 and task.critic_count == 1
-    assert sum(a["tool"] == "talk_to" for a in task.action_history) == 2
+    assert task.status == "completed", task.summary
+    assert task.critic_count == 1
+    assert sum(a["tool"] == "talk_to" for a in task.action_history) == 3
     assert not task.action_feedback
 
 
@@ -663,20 +694,18 @@ async def test_pickup_does_not_wait_for_critic_approval():
 
 
 async def test_delivery_search_rejects_rephrased_recipient_question_and_continues():
+    # Each scripted move only names the next hop; intermediate rooms, arrival
+    # scans, the pickup and the final handoff are all executed without inference.
     fake = ScriptedLLM([
         {"action": "delegate", "summary": "Find item and recipient.", "task": "Find charger and who needs it."},
-        tool("look"), tool("move_to", room="bedroom"), tool("look"),
+        tool("move_to", room="bedroom"),
         tool("talk_to", person="neave", message="Who needs the charger?"),
         tool("talk_to", person="neave", message="WHO needs the charger?!"),
-        tool("move_to", room="hall"), tool("move_to", room="study"), tool("look"),
-        tool("pick_up", object="charger"),
-        {"action": "delegate", "summary": "Handoff.", "task": "Take held charger to Neave."},
-        tool("move_to", room="hall"), tool("move_to", room="bedroom"),
-        tool("give", object="charger", person="neave"), {"approved": True, "summary": "Held and nearby."},
-        {"action": "report", "summary": "Transferred."}, complete,
+        tool("move_to", room="hall"), tool("move_to", room="hall"), tool("move_to", room="hall"),
+        {"approved": True, "summary": "Held and nearby."}, complete,
         {"approved": True, "summary": "Delivery evidenced."},
     ])
-    mgr, engine, _ = manager(fake, max_explorer_actions=9)
+    mgr, engine, _ = manager(fake, max_explorer_actions=20)
     task = mgr.start("Find who needs the charger and deliver it.")
     await mgr.runner
     assert task.status == "completed", task.summary
@@ -684,6 +713,9 @@ async def test_delivery_search_rejects_rephrased_recipient_question_and_continue
     assert sum(a["tool"] == "talk_to" for a in task.action_history) == 1
     assert task.critic_count == 2  # give and completion; pickup is deterministic
     assert any("Conversation move rejected" in message for message in task.action_feedback)
+    # The rephrasing was caught locally, so it cost no conversation inference.
+    assert task.metrics.conversation_llm_calls == 1
+    assert task.metrics.reflex_actions + task.metrics.route_actions > task.metrics.explorer_llm_calls
 
 
 async def test_conversation_remains_bounded_by_task_limits():
@@ -712,18 +744,15 @@ async def test_conversation_recovery_survives_redelegation_and_preserves_followu
 
     fake = ScriptedLLM([
         {"action": "delegate", "summary": "Search.", "task": "Find recipient."},
-        tool("look"), tool("move_to", room="kitchen"), tool("look"),
+        tool("move_to", room="kitchen"),
         tool("talk_to", person="mom", message="Do you need the charger?"),
         tool("talk_to", person="mom", message="Do you need the charger?"),
-
-        {"action": "delegate", "summary": "Continue.", "task": "Find recipient."},
-        leave, tool("move_to", room="study"), tool("look"),
+        leave, tool("move_to", room="hall"),
         tool("talk_to", person="dad", message="Who needs the charger?"),
-        tool("pick_up", object="charger"),
-
+        {"action": "report", "summary": "Recipient identified."},
         {"action": "fail", "summary": "End test."},
     ])
-    mgr, _, _ = manager(fake, max_explorer_actions=5)
+    mgr, _, _ = manager(fake, max_explorer_actions=20)
     task = mgr.start("Find who needs the charger and deliver it.")
     await mgr.runner
     assert task.summary == "End test."

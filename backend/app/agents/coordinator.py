@@ -11,7 +11,8 @@ class Coordinator:
         self.client = client
 
     async def decide(self, context: TaskContext) -> CoordinatorDecision:
-        return await structured(self.client, CoordinatorDecision, COORDINATOR, context.compact())
+        return await structured(self.client, CoordinatorDecision, COORDINATOR, context.compact(),
+                                metrics=context.metrics, role="coordinator")
 
     @staticmethod
     def _requires_recipient_discovery(goal: str) -> bool:

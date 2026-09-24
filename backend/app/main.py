@@ -29,7 +29,8 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
     # Never enable HTTP wire-body logging, even with application DEBUG.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-    clock = WorldClock(speed=config.clock_speed, start_hour=config.clock_start_hour)
+    clock = WorldClock(speed=config.clock_speed, start_hour=config.clock_start_hour,
+                       mode=config.simulation_mode, action_seconds=config.action_seconds)
     bus, engine = EventBus(), WorldEngine(config.world_file, clock=clock)
     llm = client or OllamaClient(config)
     persistent = PersistentMemory.load(config.memory_file)

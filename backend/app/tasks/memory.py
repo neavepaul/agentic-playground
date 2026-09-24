@@ -53,6 +53,7 @@ class ReportedNeed(BaseModel):
 
 class TaskMemory(BaseModel):
     robot_room: str | None = None
+    simulated_time: str | None = None
     visited_rooms: set[str] = Field(default_factory=set)
     rooms: dict[str, RememberedRoom] = Field(default_factory=dict)
     people: dict[str, RememberedPerson] = Field(default_factory=dict)
@@ -118,6 +119,8 @@ class TaskMemory(BaseModel):
                 notification: bool) -> None:
         if tool == "get_status":
             self.robot_room = obs["room"]
+            if obs.get("time"):
+                self.simulated_time = obs["time"]
             self.visited_rooms.add(obs["room"])
             for key in self.inventory():
                 if key not in obs["inventory"]:

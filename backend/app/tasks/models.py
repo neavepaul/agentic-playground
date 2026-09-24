@@ -10,6 +10,41 @@ from .goals import check_conditions, known_recipients, normalize
 from .memory import ReportedNeed, TaskMemory
 
 
+class Intention(BaseModel):
+    """A committed short-lived subgoal that survives routine execution steps.
+
+    Routine hops toward `destination` are executed without re-deriving strategy.
+    The intention is dropped when the target is found, the destination is
+    reached and scanned, evidence contradicts it, or progress stalls.
+    """
+    kind: Literal["search_person", "search_object", "explore", "goto"] = "goto"
+    target: str = ""
+    destination: str = ""
+    route: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
+class TaskMetrics(BaseModel):
+    """Per-task execution counters used to compare inference cost across runs."""
+    llm_calls: int = 0
+    coordinator_llm_calls: int = 0
+    explorer_llm_calls: int = 0
+    critic_llm_calls: int = 0
+    conversation_llm_calls: int = 0
+    llm_seconds: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    reflex_actions: int = 0
+    route_actions: int = 0
+    tool_actions: int = 0
+    useful_observations: int = 0
+    repeat_room_visits: int = 0
+    stall_events: int = 0
+    coordinator_handoffs: int = 0
+    simulated_start: str = ""
+    simulated_end: str = ""
+
+
 class TaskContext(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     goal: str
@@ -33,6 +68,11 @@ class TaskContext(BaseModel):
     consecutive_report_rejections: int = 0
     long_term_memory: dict = Field(default_factory=dict)
     self_model: dict = Field(default_factory=dict)
+    intention: Intention | None = None
+    stall_count: int = 0
+    # A room scanned this many actions ago is eligible for re-search: occupants move.
+    search_stale_after: int = 12
+    metrics: TaskMetrics = Field(default_factory=TaskMetrics)
 
     def feedback(self, message: str) -> None:
         self.action_feedback.append(message)
@@ -41,8 +81,13 @@ class TaskContext(BaseModel):
     @computed_field
     @property
     def robot_status(self) -> dict:
-        return ({"room": self.memory.robot_room, "inventory": self.memory.inventory()}
-                if self.memory.robot_room is not None else {})
+        if self.memory.robot_room is None:
+            return {}
+        status = {"room": self.memory.robot_room, "inventory": self.memory.inventory()}
+        # Only worlds with a clock report a time; unclocked worlds stay timeless.
+        if self.memory.simulated_time:
+            status["time"] = self.memory.simulated_time
+        return status
 
     @computed_field
     @property
@@ -140,6 +185,123 @@ class TaskContext(BaseModel):
                            "missing_prerequisites": missing, "delivered": delivered})
         return result
 
+    def scan_log(self) -> dict[str, int]:
+        """Room -> action index of its most recent successful scan.
+
+        The action index is the task's logical clock: deterministic, monotonic and
+        independent of inference latency, so evidence age is reproducible.
+        """
+        log: dict[str, int] = {}
+        for index, entry in enumerate(self.action_history):
+            if entry["success"] and entry["tool"] == "look":
+                log[entry["observation"]["room"]] = index
+        return log
+
+    def _clock_index(self) -> int:
+        """Index of the latest action: the task's logical 'now'."""
+        return max(len(self.action_history) - 1, 0)
+
+    def _entity_room(self, kind: str, target: str) -> str | None:
+        return (self._person_location(target) if kind == "person"
+                else (lambda loc: loc[1] if loc and loc[0] == "room" else None)(self._object_location(target)))
+
+    def locate_evidence(self, kind: str, target: str) -> dict:
+        """Resolve where a target is, ranking evidence by kind and freshness.
+
+        Priority: fresh direct sighting > fresh empty scan (contradiction) >
+        reported speech > older direct sighting > historical tendency. Rooms whose
+        last scan is older than `search_stale_after` stop counting as searched, so
+        historical priors revive once search evidence expires.
+        """
+        now = self._clock_index()
+        scans = self.scan_log()
+        fresh = {room for room, index in scans.items() if now - index <= self.search_stale_after}
+        observed = self._entity_room(kind, target)
+        if observed:
+            return {"room": observed, "source": "direct_observation",
+                    "age_actions": now - scans.get(observed, now), "confidence": "observed"}
+        store = self.long_term_memory.get("people" if kind == "person" else "objects", {}).get(target, {})
+        historical = store.get("last_seen_room") or next(iter(store.get("typical_rooms") or []), None)
+        scheduled = self._scheduled_room(target) if kind == "person" else None
+        for room, source in ((scheduled, "schedule_prediction"), (historical, "long_term_memory")):
+            # A fresh empty scan outranks any prior: we looked, and nobody was there.
+            if room and room not in fresh:
+                return {"room": room, "source": source,
+                        "age_actions": now - scans.get(room, 0) if room in scans else None,
+                        "confidence": "prior_verify_with_look"}
+        return {"room": None, "source": "unknown", "age_actions": None, "confidence": "unknown"}
+
+    def _scheduled_room(self, person: str) -> str | None:
+        """Room this person is expected in at the current simulated hour, if known."""
+        schedule = self.long_term_memory.get("_schedules", {}).get(person) or []
+        time_str = self.robot_status.get("time") or ""
+        if not schedule or ":" not in time_str:
+            return None
+        try:
+            hours, minutes = time_str.split(":")
+            hour = float(hours) + float(minutes) / 60.0
+        except (ValueError, TypeError):
+            return None
+        for entry in schedule:
+            start, end = entry["from_hour"], entry["to_hour"]
+            if (start <= hour < end) if start < end else (hour >= start or hour < end):
+                return entry["room"]
+        return None
+
+    def pursuit_targets(self) -> list[tuple[str, str]]:
+        """(kind, id) pairs the robot must still travel to, located or not.
+
+        A target whose room is already known is still pursued: knowing where the
+        object is does not put it in the robot's hands.
+        """
+        targets: list[tuple[str, str]] = []
+        for delivery in self.delivery_state():
+            if delivery["delivered"]:
+                continue
+            if not delivery["held"]:
+                targets.append(("object", delivery["object"]))
+            if delivery.get("recipient"):
+                targets.append(("person", delivery["recipient"]))
+        for condition in self.conditions:
+            if condition.kind == "find_object" and not self._object_location(condition.object):
+                targets.append(("object", condition.object))
+            if condition.kind in {"find_person", "notify"} and not self._person_location(condition.person):
+                targets.append(("person", condition.person))
+        return list(dict.fromkeys(targets))
+
+    def unresolved_targets(self) -> list[tuple[str, str]]:
+        """Pursuit targets whose current room is still unknown, so search applies."""
+        return [(kind, target) for kind, target in self.pursuit_targets()
+                if not self._entity_room(kind, target)]
+
+    def search_state(self) -> list[dict]:
+        """Explicit search coverage per unresolved target.
+
+        Makes 'which rooms have I already cleared, and how stale is that' a
+        first-class fact instead of something the model must recall from history.
+        """
+        current = self.robot_status.get("room")
+        rooms = self.floor_plan.get("rooms", {})
+        now = self._clock_index()
+        scans = self.scan_log()
+        result = []
+        for kind, target in self.unresolved_targets():
+            searched = {room: {"age_actions": now - index, "stale": now - index > self.search_stale_after}
+                        for room, index in scans.items()}
+            frontier = [room for room in rooms
+                        if room not in scans or now - scans[room] > self.search_stale_after]
+            if current:
+                frontier.sort(key=lambda room: (len(self._find_path(current, room) or [99]), room))
+            evidence = self.locate_evidence(kind, target)
+            result.append({"target": target, "kind": kind,
+                           "best_location_guess": evidence["room"],
+                           "evidence_source": evidence["source"],
+                           "searched_rooms": searched,
+                           "unsearched_or_stale_rooms": frontier,
+                           "active_destination": self.intention.destination
+                           if self.intention and self.intention.target == target else None})
+        return result
+
     @staticmethod
     def _mentions(text: str, alias: str) -> bool:
         return bool(alias) and " " + normalize(alias.replace("_", " ")) + " " in " " + normalize(text.replace("_", " ")) + " "
@@ -194,117 +356,59 @@ class TaskContext(BaseModel):
         return []
 
     def _navigation_hints(self) -> dict:
-        """Deterministic next-hop hints toward exploration and delivery targets.
+        """Deterministic next-hop hints toward exploration and task targets.
 
         Uses BFS over the floor_plan so the LLM never has to re-derive graph
         traversal from natural language. Each hint gives the immediate next room
-        to enter on the shortest route to a target.
+        to enter on the shortest route, plus the evidence it rests on so stale
+        priors are visibly weaker than fresh sightings.
         """
         current = self.robot_status.get("room")
         if not current or not self.floor_plan.get("rooms"):
             return {}
-        observed = set(self.memory.rooms)
         hints: dict = {}
         for room_id in self.floor_plan["rooms"]:
-            if room_id not in observed:
+            if room_id not in self.memory.rooms:
                 path = self._find_path(current, room_id)
                 if path:
                     hints[f"explore:{room_id}"] = {"target": room_id, "reason": "unobserved",
                                                     "next_hop": path[0], "full_path": path}
-        ltm_people = self.long_term_memory.get("people", {})
-        ltm_objects = self.long_term_memory.get("objects", {})
-        for delivery in self.delivery_state():
-            obj_id = delivery["object"]
-            loc = delivery.get("last_observed_location")
-            if loc and loc[0] == "room" and loc[1] != current:
-                path = self._find_path(current, loc[1])
-                if path:
-                    hints[f"object:{obj_id}"] = {
-                        "target": loc[1], "reason": "last_observed_object_location",
-                        "next_hop": path[0], "full_path": path}
-            elif not loc:
-                # No task-scoped observation yet; fall back to long-term memory.
-                ltm_room = ltm_objects.get(obj_id, {}).get("last_seen_room")
-                already_scanned = any(a["success"] and a["tool"] == "look"
-                                      and a["observation"]["room"] == ltm_room
-                                      for a in self.action_history)
-                if ltm_room and ltm_room != current and not already_scanned:
-                    path = self._find_path(current, ltm_room)
-                    if path:
-                        hints[f"object:{obj_id}"] = {
-                            "target": ltm_room, "reason": "long_term_memory_last_seen",
-                            "next_hop": path[0], "full_path": path,
-                            "confidence": "prior_observation_verify_with_look"}
-
-            recipient = delivery.get("recipient")
-            recipient_loc = delivery.get("recipient_last_seen")
-            if recipient and recipient_loc and recipient_loc != current:
-                path = self._find_path(current, recipient_loc)
-                if path:
-                    hints[f"recipient:{recipient}"] = {
-                        "target": recipient_loc, "reason": "last_seen_recipient",
-                        "next_hop": path[0], "full_path": path}
-            elif recipient and not recipient_loc:
-                # Not seen this task; fall back to long-term memory.
-                ltm = ltm_people.get(recipient, {})
-                ltm_room = ltm.get("last_seen_room") or (ltm.get("typical_rooms") or [None])[0]
-                # Suppress the hint only for rooms scanned AFTER the object was picked up.
-                # Pre-pickup looks are stale by the time delivery starts — the recipient
-                # may have moved in the interim, so we should not exclude those rooms.
-                last_pickup = next(
-                    (i for i in range(len(self.action_history) - 1, -1, -1)
-                     if self.action_history[i]["success"]
-                     and self.action_history[i]["tool"] == "pick_up"
-                     and self.action_history[i]["arguments"].get("object") == obj_id),
-                    -1
-                )
-                rooms_scanned_post_pickup = {
-                    a["observation"]["room"]
-                    for a in self.action_history[last_pickup + 1:]
-                    if a["success"] and a["tool"] == "look"
-                }
-                already_checked = ltm_room in rooms_scanned_post_pickup
-                if ltm_room and ltm_room != current and not already_checked:
-                    path = self._find_path(current, ltm_room)
-                    if path:
-                        hints[f"recipient:{recipient}"] = {
-                            "target": ltm_room, "reason": "long_term_memory_last_seen",
-                            "next_hop": path[0], "full_path": path,
-                            "confidence": "prior_observation_verify_with_look"}
-                # LTM room already verified empty — fall back to schedule prediction.
-                if f"recipient:{recipient}" not in hints:
-                    schedules = self.long_term_memory.get("_schedules", {})
-                    rec_schedule = schedules.get(recipient, [])
-                    time_str = self.robot_status.get("time", "")
-                    if rec_schedule and time_str:
-                        try:
-                            h, m = time_str.split(":")
-                            hour = float(h) + float(m) / 60.0
-                            predicted_room = None
-                            for entry in rec_schedule:
-                                fh, th = entry["from_hour"], entry["to_hour"]
-                                in_range = (fh <= hour < th) if fh < th else (hour >= fh or hour < th)
-                                if in_range:
-                                    predicted_room = entry["room"]
-                                    break
-                            if (predicted_room and predicted_room != current
-                                    and predicted_room not in rooms_scanned_post_pickup):
-                                path = self._find_path(current, predicted_room)
-                                if path:
-                                    hints[f"recipient:{recipient}"] = {
-                                        "target": predicted_room,
-                                        "reason": "schedule_predicted_location",
-                                        "next_hop": path[0], "full_path": path,
-                                        "confidence": "schedule_prediction_verify_with_look"}
-                        except (ValueError, TypeError, AttributeError):
-                            pass
+        prefix = {"object": "object", "person": "recipient"}
+        for kind, target in self.pursuit_targets():
+            evidence = self.locate_evidence(kind, target)
+            room = evidence["room"]
+            # Nothing credible left to aim at: fall back to the nearest room whose
+            # search coverage is missing or expired, so search never stalls silently.
+            if not room or room == current:
+                coverage = next((s for s in self.search_state() if s["target"] == target), None)
+                candidates = (coverage or {}).get("unsearched_or_stale_rooms", [])
+                room = next((r for r in candidates if r != current), None)
+                evidence = {"source": "search_frontier", "confidence": "unsearched_or_stale"}
+            if not room or room == current:
+                continue
+            path = self._find_path(current, room)
+            if path:
+                hints[f"{prefix[kind]}:{target}"] = {
+                    "target": room, "reason": evidence["source"], "next_hop": path[0],
+                    "full_path": path, "confidence": evidence.get("confidence", "unknown")}
         return hints
 
     def progress_signature(self) -> tuple:
-        return (self.memory.robot_room, tuple(self.memory.inventory()),
+        """Semantic task state only.
+
+        Deliberately excludes the robot's room: moving is not an achievement, so
+        hall->kitchen->hall->kitchen without discoveries produces one unchanging
+        signature and is detected as a stall.
+        """
+        return (tuple(self.memory.inventory()),
                 tuple((k, v.revision) for k, v in sorted(self.memory.objects.items())),
                 tuple((k, v.revision) for k, v in sorted(self.memory.people.items())),
-                tuple(sorted(self.memory.rooms)))
+                tuple(sorted(self.memory.rooms)),
+                len(self.memory.reported_needs),
+                # An accepted conversation turn is new information by construction:
+                # the conversation layer already rejected repeats before execution.
+                sum(len(thread.turns) for person in self.memory.people.values()
+                    for thread in person.conversation_threads.values()))
 
     def record(self, tool: str, arguments: dict, result: dict) -> None:
         entry = deepcopy({"tool": tool, "arguments": arguments, **result})
@@ -326,18 +430,89 @@ class TaskContext(BaseModel):
             return
         notification = tool == "talk_to" and self.is_notification(obs["person"], obs["message"])
         self.memory.observe(tool, entry["arguments"], obs, result["evidence_id"], notification)
+        self._update_intention(tool, obs)
+
+    def _update_intention(self, tool: str, obs: dict) -> None:
+        """Advance or retire the active intention after a successful action."""
+        plan = self.intention
+        if plan is None:
+            return
+        if tool == "move_to":
+            # Consume the hop we just took; anything else means we left the route.
+            if plan.route and plan.route[0] == obs["room"]:
+                plan.route.pop(0)
+            elif obs["room"] not in plan.route:
+                self.intention = None
+                return
+        # Reached the target, or reached and scanned the destination. Merely
+        # learning where the target is does not end the journey to it.
+        here = self.robot_status.get("room")
+        found = plan.target and self._entity_room(
+            "person" if plan.kind == "search_person" else "object", plan.target) == here
+        arrived = here == plan.destination and plan.destination in self.memory.rooms
+        if found or arrived or (not plan.route and plan.destination in self.memory.rooms):
+            self.intention = None
+
+    def adopt_intention(self, next_hop: str) -> Intention | None:
+        """Commit to the destination implied by moving to `next_hop`.
+
+        The chosen move identifies which navigation hint the agent is acting on;
+        the rest of that route then executes without further inference.
+        """
+        hints = self._navigation_hints()
+        kinds = {"recipient": "search_person", "object": "search_object", "explore": "explore"}
+        ranked = sorted((h for key, h in hints.items() if h["next_hop"] == next_hop),
+                        key=lambda h: h["reason"] == "unobserved")
+        for key, hint in hints.items():
+            if hint["next_hop"] != next_hop or (ranked and hint is not ranked[0]):
+                continue
+            prefix, _, target = key.partition(":")
+            self.intention = Intention(kind=kinds.get(prefix, "goto"),
+                                       target="" if prefix == "explore" else target,
+                                       destination=hint["target"], route=list(hint["full_path"]),
+                                       reason=hint["reason"])
+            return self.intention
+        return None
+
+    def authoritative_targets(self) -> dict:
+        """Object/recipient IDs fixed by the goal conditions themselves.
+
+        These outrank anything in long-term memory: a remembered association
+        between some other person and the same object must never redirect a task
+        whose recipient the goal already names.
+        """
+        recipients = sorted({c.person for c in self.conditions if c.kind == "deliver" and c.person})
+        return {"objects": sorted({c.object for c in self.conditions if c.object}),
+                "recipients": recipients,
+                "recipient_is_fixed_by_goal": bool(recipients),
+                "note": "Long-term memory is supporting context only; it cannot change these."}
+
+    def _scoped_long_term_memory(self) -> dict:
+        """Long-term memory with claims that could override the explicit task removed."""
+        store = deepcopy(self.long_term_memory)
+        # Schedules are machine-read by locate_evidence; they are noise in the prompt.
+        store.pop("_schedules", None)
+        now = self._clock_index()
+        fresh = {room for room, index in self.scan_log().items() if now - index <= self.search_stale_after}
+        for item in store.get("objects", {}).values():
+            # A room we just scanned is authoritative about what is not in it.
+            if item.get("last_seen_room") in fresh:
+                item.pop("last_seen_room", None)
+        targets = self.authoritative_targets()
+        if targets["recipient_is_fixed_by_goal"]:
+            named = set(targets["recipients"])
+            contested = set(targets["objects"])
+            for person_id, person in store.get("people", {}).items():
+                if person_id not in named:
+                    person["known_needs"] = [n for n in person.get("known_needs", []) if n not in contested]
+        return store
 
     def compact(self) -> dict:
         known_rooms = set(self.floor_plan.get("rooms", {})) | set(self.memory.rooms)
         known_rooms |= {exit for room in self.memory.rooms.values() for exit in room.connections}
         outcomes = check_conditions(self)
         memory = self.memory.prompt()
-        long_term_memory = deepcopy(self.long_term_memory)
-        scanned_rooms = {a["observation"]["room"] for a in self.action_history
-                         if a["success"] and a["tool"] == "look"}
-        for item in long_term_memory.get("objects", {}).values():
-            if item.get("last_seen_room") in scanned_rooms:
-                item.pop("last_seen_room", None)
+        long_term_memory = self._scoped_long_term_memory()
         memory["completed_outcomes"] = [c for c in outcomes if c["satisfied"]]
         room_view = self.memory.room_view(self.robot_status.get("room"))
         if room_view is not None:
@@ -351,6 +526,9 @@ class TaskContext(BaseModel):
                 "current_room_observation": room_view,
                 "delivery_state_from_observations": self.delivery_state(),
                 "navigation_hints": self._navigation_hints(),
+                "search_coverage": self.search_state(),
+                "active_intention": self.intention.model_dump() if self.intention else None,
+                "authoritative_targets": self.authoritative_targets(),
                 "long_term_memory": long_term_memory,
                 "self_model": self.self_model,
                 "action_feedback": self.action_feedback[-6:],

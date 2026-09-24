@@ -9,6 +9,71 @@ from app.tasks.goals import known_recipients
 from .prompts import EXPLORER
 from .schemas import CommandChoice, ExplorerDecision
 
+_log = logging.getLogger("agentic_friend.decisions")
+
+
+def reflex_action(context: TaskContext, commands: dict, view: dict | None) -> ExplorerDecision | None:
+    """Execute the next action directly when exactly one is unambiguously correct.
+
+    Deliberately narrow: it never speaks, drops, reports, or picks an object the
+    goal did not ask for. Every rule requires both a clear intent (an unmet goal
+    prerequisite or a committed route) and satisfied preconditions, so genuine
+    judgement still reaches the model.
+    """
+    def act(tool: str, arguments: dict, summary: str, source: str) -> ExplorerDecision:
+        return ExplorerDecision(action="tool", tool=tool, arguments=arguments,
+                                summary=summary, source=source)
+
+    # The robot cannot reason about a room it has not perceived. Nothing else is sane.
+    if view is None:
+        if "look" in commands:
+            return act("look", {}, "Scanning the unobserved current room.", "reflex")
+        return None
+
+    pending = [d for d in context.delivery_state() if not d["delivered"]]
+
+    # Holding the goal object with its intended recipient present: complete the handoff.
+    for command in commands.values():
+        if command.get("tool") != "give":
+            continue
+        arguments = command["arguments"]
+        if any(d["object"] == arguments["object"] and d["recipient"] == arguments["person"]
+               for d in pending):
+            return act("give", dict(arguments),
+                       f"Recipient present and {arguments['object']} held; completing handoff.", "reflex")
+
+    # The required object is visible on the floor here and is not yet held.
+    for command in commands.values():
+        if command.get("tool") == "pick_up" and command.get("priority"):
+            arguments = command["arguments"]
+            return act("pick_up", dict(arguments),
+                       f"Required {arguments['object']} is here; acquiring it.", "reflex")
+
+    # Mid-route toward a committed destination: take the next hop without re-planning.
+    plan = context.intention
+    if plan and plan.route and f"move_to:{plan.route[0]}" in commands:
+        hop = plan.route[0]
+        return act("move_to", {"room": hop},
+                   f"Continuing toward {plan.destination} via {hop}.", "route_executor")
+    return None
+
+
+def _conversation_is_exhausted(context: TaskContext, person: str) -> bool:
+    """True when every thread with this person is closed and nothing new has happened."""
+    known = context.memory.people.get(person)
+    if not known or not known.conversation_threads:
+        return False
+    if not all(thread.resolved for thread in known.conversation_threads.values()):
+        return False
+    spoken = [index for index, entry in enumerate(context.action_history)
+              if entry["success"] and entry["tool"] == "talk_to"
+              and entry["observation"]["person"] == person]
+    if not spoken:
+        return False
+    # Any later observation could have created a genuinely new thing to ask about.
+    return not any(entry["success"] and entry["tool"] in {"look", "pick_up", "give"}
+                   for entry in context.action_history[spoken[-1] + 1:])
+
 
 def observable_commands(context: TaskContext) -> tuple[dict, dict | None]:
     """Scope tools to observed targets and the Coordinator's fixed goal conditions.
@@ -74,9 +139,13 @@ def observable_commands(context: TaskContext) -> tuple[dict, dict | None]:
     for person in view["people"]:
         if context.conversation_rejections.get(person["id"], 0) >= 1:
             continue
+        exhausted = (" This person already answered every question you have asked and"
+                     " nothing has been observed since; expect no new information."
+                     if _conversation_is_exhausted(context, person["id"]) else "")
         add("talk_to", {"person": person["id"]},
             f"Speak to {person['id']} with a useful unanswered question or message. "
-            "Do not use speech to announce your plan; put that in summary. This transfers no objects.")
+            "Do not use speech to announce your plan; put that in summary. "
+            f"This transfers no objects.{exhausted}")
     for item in inventory:
         if item not in movable:
             continue
@@ -99,14 +168,21 @@ class Explorer:
         self.tool_names = set(tool_schemas)
 
     async def decide(self, context: TaskContext, task: str) -> ExplorerDecision:
-        commands, _ = observable_commands(context)
+        commands, view = observable_commands(context)
         commands = {id: command for id, command in commands.items()
                     if id == "report" or command["tool"] in self.tool_names}
-        logging.getLogger("agentic_friend.decisions").info(
+        _log.info(
             "Explorer context: task=%s room=%s inventory=%s commands=%s delivery=%s",
             context.id, context.robot_status.get("room"), context.robot_status.get("inventory", []),
             list(commands), context.delivery_state(),
         )
+        reflex = reflex_action(context, commands, view)
+        if reflex is not None:
+            counter = "route_actions" if reflex.source == "route_executor" else "reflex_actions"
+            setattr(context.metrics, counter, getattr(context.metrics, counter) + 1)
+            _log.info("Explorer choice: task=%s command=%s decision_source=%s summary=%s",
+                      context.id, reflex.tool, reflex.source, reflex.summary)
+            return reflex
         # Give commands already require a held goal object and an observed,
         # identified recipient. Surface this affordance without a second memory
         # store, simulator access, or taking action on the model's behalf.
@@ -156,14 +232,19 @@ class Explorer:
                                    "priority_actions": priority_actions,
                                    "commands": commands},
                                   repair_hint="For talk_to, include message with the actual nonblank words to speak. "
-                                              "Putting those words in summary does not supply message.")
-        logging.getLogger("agentic_friend.decisions").info(
-            "Explorer choice: task=%s command=%s summary=%s", context.id, choice.command_id, choice.summary)
+                                              "Putting those words in summary does not supply message.",
+                                  metrics=context.metrics, role="explorer")
+        _log.info("Explorer choice: task=%s command=%s decision_source=llm summary=%s",
+                  context.id, choice.command_id, choice.summary)
         if choice.command_id == "report":
-            return ExplorerDecision(action="report", summary=choice.summary)
+            return ExplorerDecision(action="report", summary=choice.summary, source="llm")
         command = commands[choice.command_id]
         arguments = dict(command["arguments"])
         if command["tool"] == "talk_to":
             arguments["message"] = choice.message
+        if command["tool"] == "move_to":
+            # The chosen hop identifies which hint the model is acting on. Commit to
+            # that whole route so the remaining doorways need no further inference.
+            context.adopt_intention(arguments["room"])
         return ExplorerDecision(action="tool", tool=command["tool"],
-                                arguments=arguments, summary=choice.summary)
+                                arguments=arguments, summary=choice.summary, source="llm")

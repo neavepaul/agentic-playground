@@ -33,6 +33,8 @@ class ExplorerDecision(StrictModel):
     summary: ShortText
     tool: str = Field(default="", max_length=40)
     arguments: dict = Field(default_factory=dict)
+    # Set by the executor, never by the model: which layer produced this action.
+    source: Literal["llm", "reflex", "route_executor"] = "llm"
 
     @model_validator(mode="after")
     def required_fields(self):
