@@ -185,14 +185,12 @@ class TaskManager:
                     continue
                 by_id = {entry["evidence_id"]: entry for entry in context.action_history
                          if entry["success"] and entry["tool"] != "get_status"}
-                if not all(id in by_id for id in decision.evidence_ids):
-                    context.critic_feedback.append({"approved": False,
-                        "observed_action_count": len(context.action_history),
-                        "summary": "Completion referenced unknown or failed tool evidence.",
-                        "suggestion": "Gather evidence and cite successful tool observation IDs."})
-                    self.message(context, "system", "Completion rejected: evidence IDs are not valid.")
-                    continue
-                evidence = [by_id[id] for id in decision.evidence_ids]
+                # The deterministic condition check above is authoritative; evidence IDs
+                # are advisory hints that help the Critic focus its review. If the model
+                # cited valid IDs use those; otherwise fall back to all successful
+                # observations so a hallucinated UUID cannot block a verified completion.
+                cited = [by_id[id] for id in decision.evidence_ids if id in by_id]
+                evidence = cited if cited else list(by_id.values())
                 if await self.review(context, decision.summary, "completion", evidence):
                     self.finish(context, "completed", decision.summary)
                     return

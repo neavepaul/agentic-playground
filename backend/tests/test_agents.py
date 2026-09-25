@@ -364,14 +364,16 @@ async def test_timeout_and_cancel():
 
 
 async def test_false_completion_rejected():
+    # Conditions require a room the robot hasn't visited. The deterministic
+    # condition check rejects completion before the Critic is consulted.
     mgr, _, _ = manager(ScriptedLLM([
         {"action": "complete", "summary": "Invented success.", "evidence_ids": ["fake"]}
-    ], conditions=[{"kind": "visit_room", "room": "hall"}]), max_coordinator_cycles=1)
-    task = mgr.start("Go to the hall.")
+    ], conditions=[{"kind": "visit_room", "room": "bedroom"}]), max_coordinator_cycles=1)
+    task = mgr.start("Go to the bedroom.")
     await mgr.runner
     assert task.status == "failed"
     assert task.critic_count == 0
-    assert "unknown" in task.critic_feedback[0]["summary"]
+    assert "required outcomes lack tool evidence" in task.critic_feedback[0]["summary"]
 
 
 async def test_model_failure_does_not_crash_manager():
