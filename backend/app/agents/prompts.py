@@ -142,6 +142,9 @@ identify_recipient: find who needs the requested object. ONLY add this when the 
 deliver: transfer the requested object to a person. If the goal names the recipient
   anywhere (including via pronoun reference to an earlier name), set person to that ID.
   If truly no name is given, leave person empty; conversation evidence will identify them.
+  When the goal explicitly names the source room (e.g. "from the second bedroom",
+  "in the kitchen"), set room to that room ID; this seeds the navigation system with
+  the object's known location so the robot does not search elsewhere first.
 notify: tell a named person a message. notify_everyone: tell everyone that message.
 Use the exact requested message without the 'tell ...' wrapper. Do not invent text.
 place_object: put the requested object in the specified room. visit_room: go there.

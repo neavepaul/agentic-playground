@@ -220,6 +220,13 @@ class TaskContext(BaseModel):
         if observed:
             return {"room": observed, "source": "direct_observation",
                     "age_actions": now - scans.get(observed, now), "confidence": "observed"}
+        # Explicit source room from goal conditions outranks long-term memory.
+        # The coordinator encodes this when the user's request names the source room.
+        if kind == "object":
+            for condition in self.conditions:
+                if condition.object == target and condition.room and condition.room not in fresh:
+                    return {"room": condition.room, "source": "goal_specification",
+                            "age_actions": None, "confidence": "explicit_task_fact"}
         store = self.long_term_memory.get("people" if kind == "person" else "objects", {}).get(target, {})
         historical = store.get("last_seen_room") or next(iter(store.get("typical_rooms") or []), None)
         scheduled = self._scheduled_room(target) if kind == "person" else None
@@ -454,25 +461,49 @@ class TaskContext(BaseModel):
             self.intention = None
 
     def adopt_intention(self, next_hop: str) -> Intention | None:
-        """Commit to the destination implied by moving to `next_hop`.
+        """Commit to the best destination reachable via next_hop.
 
-        The chosen move identifies which navigation hint the agent is acting on;
-        the rest of that route then executes without further inference.
+        Priority order for selecting among competing hints through the same hop:
+        1. Explicit goal-specification evidence (condition.room) beats everything.
+        2. Object hints beat recipient hints when the object is not yet held —
+           acquire the thing before locating who to give it to.
+        3. Recipient hints beat object hints once the object is held.
+        4. Within each group, fresher evidence (direct_observation > schedule >
+           long_term_memory > search_frontier) breaks ties.
+        5. When only explore hints compete, commit only to next_hop itself.
+
+        Crucially, committing to the full route rather than a single hop lets the
+        route executor traverse corridors and intermediate rooms deterministically,
+        avoiding wrong-destination detours caused by stale long-term memory.
         """
         hints = self._navigation_hints()
         kinds = {"recipient": "search_person", "object": "search_object", "explore": "explore"}
-        ranked = sorted((h for key, h in hints.items() if h["next_hop"] == next_hop),
-                        key=lambda h: h["reason"] == "unobserved")
-        for key, hint in hints.items():
-            if hint["next_hop"] != next_hop or (ranked and hint is not ranked[0]):
-                continue
-            prefix, _, target = key.partition(":")
-            self.intention = Intention(kind=kinds.get(prefix, "goto"),
-                                       target="" if prefix == "explore" else target,
-                                       destination=hint["target"], route=list(hint["full_path"]),
-                                       reason=hint["reason"])
+        matching = [(key, h) for key, h in hints.items() if h["next_hop"] == next_hop]
+        non_explore = [(key, h) for key, h in matching if key.split(":", 1)[0] != "explore"]
+        if not non_explore:
+            # Only explore hints: commit one hop, replan after scanning.
+            self.intention = Intention(kind="explore", target="", destination=next_hop,
+                                       route=[next_hop], reason="navigation")
             return self.intention
-        return None
+        # Evidence quality rank: lower number = higher priority.
+        _evidence_rank = {"goal_specification": 0, "direct_observation": 1,
+                          "schedule_prediction": 2, "long_term_memory": 3,
+                          "search_frontier": 4, "unknown": 5}
+        held_objects = {d["object"] for d in self.delivery_state() if d["held"]}
+        def _hint_priority(item: tuple) -> tuple:
+            key, h = item
+            prefix, _, entity = key.partition(":")
+            # Prefer object hints when the goal object is not yet held (acquire first).
+            # Prefer recipient hints when the goal object is already held (deliver next).
+            preferred = (prefix == "object" and entity not in held_objects) or \
+                        (prefix == "recipient" and bool(held_objects))
+            return (0 if preferred else 1, _evidence_rank.get(h.get("reason", "unknown"), 5))
+        key, hint = min(non_explore, key=_hint_priority)
+        prefix, _, target = key.partition(":")
+        self.intention = Intention(kind=kinds.get(prefix, "goto"), target=target,
+                                   destination=hint["target"], route=list(hint["full_path"]),
+                                   reason=hint["reason"])
+        return self.intention
 
     def authoritative_targets(self) -> dict:
         """Object/recipient IDs fixed by the goal conditions themselves.
