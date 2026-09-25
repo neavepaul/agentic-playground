@@ -21,7 +21,9 @@ export function setTask(next) {
   $('task-status').textContent = task?.status || 'Idle';
   $('task-status').className = `status ${task?.status || ''}`;
   $('task-summary').textContent = task?.summary || 'Ready when you are.';
-  $('budget').textContent = `${task?.cycle_count || 0} cycles · ${task?.tool_count || 0} tool calls`;
+  const reflex = (task?.metrics?.reflex_actions || 0) + (task?.metrics?.route_actions || 0);
+  $('budget').textContent = `${task?.cycle_count || 0} cycles · ${task?.tool_count || 0} tool calls · `
+    + `${task?.metrics?.llm_calls || 0} model calls · ${reflex} deterministic`;
   $('run').disabled = running || !connected;
   $('cancel').hidden = !running;
   renderMemory(task?.task_memory);
