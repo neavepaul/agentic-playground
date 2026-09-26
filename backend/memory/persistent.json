@@ -5,30 +5,32 @@
       "name": "Moira",
       "location_tally": {
         "master_bedroom": 4,
-        "hall": 6
+        "hall": 7,
+        "kitchen": 1
       },
-      "last_seen_room": "master_bedroom",
+      "last_seen_room": "kitchen",
       "known_needs": [],
       "delivery_counts": {}
     },
     "paul": {
       "name": "Paul",
       "location_tally": {
-        "kitchen": 5,
-        "master_bedroom": 2
+        "kitchen": 6,
+        "master_bedroom": 3,
+        "office": 1
       },
       "last_seen_room": "kitchen",
       "known_needs": [
         "medicine"
       ],
       "delivery_counts": {
-        "medicine": 1
+        "medicine": 2
       }
     },
     "neave": {
       "name": "Neave",
       "location_tally": {
-        "master_bedroom": 10
+        "master_bedroom": 14
       },
       "last_seen_room": "master_bedroom",
       "known_needs": [
@@ -41,7 +43,7 @@
     "minu": {
       "name": "Minu",
       "location_tally": {
-        "second_bedroom": 5
+        "second_bedroom": 7
       },
       "last_seen_room": "second_bedroom",
       "known_needs": [],
@@ -58,81 +60,11 @@
       "last_seen_room": "master_bedroom"
     },
     "medicine": {
-      "name": "Medicine",
+      "name": "medicine",
       "last_seen_room": "kitchen"
     }
   },
   "recent_tasks": [
-    {
-      "task_id": "e1cfa575-cd64-48b8-9ab5-31a9d59fc64a",
-      "goal": "paul needs the medicine. Find it and bring it to him.",
-      "outcome": "failed",
-      "timestamp": "2026-09-23T15:15:34.605726+00:00",
-      "summary": "Task time limit reached."
-    },
-    {
-      "task_id": "5bc3feca-7c83-49eb-aea3-0cadb44b7488",
-      "goal": "Neave needs the charger. Find it and bring it to him.",
-      "outcome": "failed",
-      "timestamp": "2026-09-23T15:27:23.533755+00:00",
-      "summary": "Ollama timed out. Try a smaller model or increase LLM_TIMEOUT_SECONDS."
-    },
-    {
-      "task_id": "a69741e1-18c5-426b-ba39-c301ff2a8267",
-      "goal": "Neave needs the charger. Find it and bring it to him.",
-      "outcome": "cancelled",
-      "timestamp": "2026-09-23T15:36:17.529211+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "60772b6c-ab70-4af3-92dd-ea7664065ef7",
-      "goal": "Neave needs the charger. Find it and bring it to him.",
-      "outcome": "cancelled",
-      "timestamp": "2026-09-23T15:36:18.752892+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "6aff255a-14c3-42d1-a30e-c27ba5b74118",
-      "goal": "paul needs the medicine. Find it and bring it to him.",
-      "outcome": "cancelled",
-      "timestamp": "2026-09-23T16:07:06.195393+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "a5791b00-0bf4-4ba2-86d2-b6837014debc",
-      "goal": "Find charger.",
-      "outcome": "cancelled",
-      "timestamp": "2026-09-23T16:08:25.044505+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "d27e8ea4-fe7d-4266-bc28-3782b17b518a",
-      "goal": "Try again.",
-      "outcome": "cancelled",
-      "timestamp": "2026-09-23T16:08:25.064567+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "8a53209e-f243-431d-83c4-44e89b559980",
-      "goal": "Find charger.",
-      "outcome": "cancelled",
-      "timestamp": "2026-09-23T16:09:18.061462+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "51260cdf-ce0c-4468-bfce-2a40410f704c",
-      "goal": "Try again.",
-      "outcome": "cancelled",
-      "timestamp": "2026-09-23T16:09:18.076079+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "17dd2a1f-1394-4d86-b48d-0b27d8b48f80",
-      "goal": "Paul needs the medicine. Find it and bring it to him.",
-      "outcome": "failed",
-      "timestamp": "2026-09-23T16:43:46.621095+00:00",
-      "summary": "Task time limit reached."
-    },
     {
       "task_id": "3804fd36-feae-4811-8a81-27f9c0398cff",
       "goal": "deliver medicine to neave",
@@ -202,25 +134,97 @@
       "outcome": "failed",
       "timestamp": "2026-09-25T15:57:53.663097+00:00",
       "summary": "Model returned invalid structured output twice. GoalPlan: conditions: value_error."
+    },
+    {
+      "task_id": "bd72f3a7-7d1c-49c5-8569-75ca22fc8ae2",
+      "goal": "Paul needs the medicine. Find it and bring it to him.",
+      "outcome": "cancelled",
+      "timestamp": "2026-09-25T16:36:00.807092+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "2b26618b-1b92-4dec-95f6-f05c64a21a02",
+      "goal": "Paul needs the medicine. Find it and bring it to him.",
+      "outcome": "cancelled",
+      "timestamp": "2026-09-25T16:36:01.103244+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "57fad9bb-227b-4103-b42f-f30ef80963e9",
+      "goal": "Paul needs the medicine from the second bedroom. Find it and bring it to him.",
+      "outcome": "failed",
+      "timestamp": "2026-09-25T16:40:07.290847+00:00",
+      "summary": "Ollama timed out. Try a smaller model or increase LLM_TIMEOUT_SECONDS."
+    },
+    {
+      "task_id": "05e6fc11-a435-464b-a519-9e1512e53fbd",
+      "goal": "Paul needs the medicine from the second bedroom.",
+      "outcome": "cancelled",
+      "timestamp": "2026-09-25T16:40:25.692193+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "f8c3ebff-756b-4c53-b33c-0127c7cd1304",
+      "goal": "Paul needs the medicine from the second bedroom.",
+      "outcome": "failed",
+      "timestamp": "2026-09-25T16:44:30.301281+00:00",
+      "summary": "Ollama timed out. Try a smaller model or increase LLM_TIMEOUT_SECONDS."
+    },
+    {
+      "task_id": "9daaabc6-7a1d-4dba-95df-1ee537214083",
+      "goal": "Deliver medicine to Paul",
+      "outcome": "cancelled",
+      "timestamp": "2026-09-25T16:46:32.035099+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "c1ac0f46-20bb-443e-93e7-36ac901c5846",
+      "goal": "Paul needs the medicine from the second bedroom.",
+      "outcome": "failed",
+      "timestamp": "2026-09-25T17:19:41.950823+00:00",
+      "summary": "Maximum Coordinator cycles reached."
+    },
+    {
+      "task_id": "22668c1d-6a0f-48ae-a535-de1f56588426",
+      "goal": "Find the medicine in the second room and give to Paul",
+      "outcome": "cancelled",
+      "timestamp": "2026-09-26T13:29:44.086992+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "3d30e759-4756-4ff5-b96e-6eef1d21f620",
+      "goal": "Find the medicine in the second room and give to Paul",
+      "outcome": "failed",
+      "timestamp": "2026-09-26T13:59:58.833434+00:00",
+      "summary": "Task time limit reached."
+    },
+    {
+      "task_id": "6f9e7202-a35e-4567-84e1-eb3e2d238aa2",
+      "goal": "Give medicine to Paul",
+      "outcome": "completed",
+      "timestamp": "2026-09-26T14:08:07.150024+00:00",
+      "summary": "Medicine successfully delivered to Paul in kitchen. All required outcomes satisfied."
     }
   ],
   "self_model": {
     "room_visit_counts": {
-      "kitchen": 30,
-      "hall": 38,
-      "bedroom_corridor": 26,
-      "master_bedroom": 10,
-      "second_bedroom": 5,
-      "entrance": 2
+      "kitchen": 33,
+      "hall": 47,
+      "bedroom_corridor": 37,
+      "master_bedroom": 14,
+      "second_bedroom": 8,
+      "entrance": 9,
+      "office": 4
     },
     "tool_failure_counts": {
-      "talk_to": 12
+      "talk_to": 12,
+      "give": 1
     },
     "entity_search_failures": {
       "charger": 2,
       "neave": 1,
-      "paul": 4,
-      "medicine": 6
+      "paul": 8,
+      "medicine": 10
     }
   }
 }

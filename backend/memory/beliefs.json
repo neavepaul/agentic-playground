@@ -1,4 +1,32 @@
 {
   "nodes": {},
-  "edges": []
+  "edges": [
+    {
+      "subject": "neave",
+      "relation": "located_in",
+      "target": "master_bedroom",
+      "confidence": 0.8,
+      "last_observed": "2026-09-26T13:30:32.841213+00:00",
+      "observation_count": 4,
+      "reason": "Observed in master_bedroom 12 times out of 12 total observations."
+    },
+    {
+      "subject": "paul",
+      "relation": "recurring_need",
+      "target": "medicine",
+      "confidence": 0.9,
+      "last_observed": "2026-09-26T13:30:32.841213+00:00",
+      "observation_count": 5,
+      "reason": "Delivered medicine to paul 1 time."
+    },
+    {
+      "subject": "paul",
+      "relation": "located_in",
+      "target": "kitchen",
+      "confidence": 0.7,
+      "last_observed": "2026-09-26T13:30:32.841213+00:00",
+      "observation_count": 5,
+      "reason": "Observed in kitchen 5 times out of 8 total observations."
+    }
+  ]
 }
