@@ -62,14 +62,42 @@ def reflex_action(context: TaskContext, commands: dict, view: dict | None) -> Ex
         "locate_recipient" in d.get("missing_prerequisites", []) and d.get("held", False)
         for d in pending
     )
+    if searching:
+        room = context.robot_status.get("room")
+        now = context._clock_index()
+        scans = context.scan_log()
+        # A previously-scanned room may have been vacated since. Re-scan stale rooms
+        # before picking a new destination so every search stop has fresh evidence —
+        # not just on first visit. Only fires when we're between destinations (no
+        # active intention) so route_executor hops are never interrupted.
+        room_stale = (room is not None
+                      and not context.intention
+                      and now - scans.get(room, -1) > context.search_stale_after)
+        if room_stale and "look" in commands:
+            return act("look", {}, "Re-scanning stale room during recipient search.", "reflex_search")
+
     if searching and not context.intention:
         hints = context._navigation_hints()
         search_hints = [(k, h) for k, h in hints.items()
                         if k.split(":", 1)[0] in {"explore", "recipient"}]
         if search_hints:
+            scans = context.scan_log()
+            # Rooms reached in the last few hops: deprioritise as destinations to
+            # break the A→B→A oscillation that stale-room cycling creates.
+            recent_dests = {entry["observation"]["room"]
+                            for entry in context.action_history[-6:]
+                            if entry["success"] and entry["tool"] == "move_to"}
+
             def _priority(item: tuple) -> tuple:
                 key, h = item
-                return (0 if key.split(":", 1)[0] == "recipient" else 1, len(h["full_path"]))
+                target = h["target"]
+                return (
+                    0 if key.split(":", 1)[0] == "recipient" else 1,
+                    1 if target in recent_dests else 0,   # prefer not recently visited
+                    1 if target in scans else 0,           # prefer never-scanned over stale
+                    len(h["full_path"])
+                )
+
             _, best = min(search_hints, key=_priority)
             context.adopt_intention(best["next_hop"])
             if context.intention and context.intention.route:

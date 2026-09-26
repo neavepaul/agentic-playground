@@ -298,7 +298,11 @@ class TaskContext(BaseModel):
             frontier = [room for room in rooms
                         if room not in scans or now - scans[room] > self.search_stale_after]
             if current:
-                frontier.sort(key=lambda room: (len(self._find_path(current, room) or [99]), room))
+                # Prefer never-scanned rooms over stale rooms at equal distance.
+                # This stops stale waypoints (corridors passed through recently)
+                # from winning a tie-break over genuinely unexplored rooms.
+                frontier.sort(key=lambda room: (len(self._find_path(current, room) or [99]),
+                                                0 if room not in scans else 1, room))
             evidence = self.locate_evidence(kind, target)
             result.append({"target": target, "kind": kind,
                            "best_location_guess": evidence["room"],

@@ -336,7 +336,9 @@ class TaskManager:
             context.metrics.useful_observations += 1
             context.stall_count = 0
             return False
-        if on_route:
+        # Deterministic search sweeps are purposeful even when rooms are empty:
+        # don't penalise them or escalate to the Coordinator mid-frontier.
+        if on_route or action.source == "reflex_search":
             return False
         context.stall_count += 1
         if context.stall_count < self.settings.max_semantic_stall:
