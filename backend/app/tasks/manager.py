@@ -270,7 +270,11 @@ class TaskManager:
                             conversation_thread_id = conversation_move.existing_thread_id
                         else:
                             conversation_thread_id = context.memory.next_thread_id(action.arguments["person"])
-                    if action.tool == "give":
+                    if action.tool == "give" and action.source != "reflex":
+                        # Reflex give: state machine already verified object-in-inventory
+                        # AND recipient-present, so the Critic cannot add information and
+                        # only risks blocking a correct action or introducing latency that
+                        # lets the recipient move away before the tool fires.
                         proposal = f"Execute {action.tool} with arguments {action.arguments}."
                         if not await self.review(context, proposal, "object_transfer",
                                                  proposed_action={"tool": action.tool, "arguments": action.arguments}):

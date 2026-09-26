@@ -255,7 +255,6 @@ async def test_handoff_recovers_from_invalid_model_output(invalid_field, value, 
         tool("move_to", room="study"),
         tool("talk_to", person="dad", message="Who needs the charger?"),
         invalid, tool("move_to", room="hall"),
-        {"approved": True, "summary": "Held charger and observed recipient."},
         complete,
         {"approved": True, "summary": "Successful transfer evidenced."},
     ])
@@ -267,7 +266,7 @@ async def test_handoff_recovers_from_invalid_model_output(invalid_field, value, 
     assert engine.snapshot()["objects"]["charger"]["location"] == {"kind": "person", "id": "neave"}
     transfers = [a for a in task.action_history if a["tool"] == "give"]
     assert len(transfers) == 1 and transfers[0]["success"]
-    assert task.critic_count == 2
+    assert task.critic_count == 1
     assert any(f"{invalid_field}: {error_code}" in messages[-1]["content"]
                for messages, _ in fake.calls)
 
@@ -306,7 +305,6 @@ async def test_delivery_end_to_end_with_mock_model():
                tool("move_to", room="study"),
                tool("talk_to", person="dad", message="Who needs the charger?"),
                tool("move_to", room="hall"),
-               {"approved": True, "summary": "Neave is the confirmed recipient."},
                complete,
                {"approved": True, "summary": "Delivery and need are evidenced."}]
     fake = ScriptedLLM(replies)
@@ -314,7 +312,7 @@ async def test_delivery_end_to_end_with_mock_model():
     task = mgr.start("Find out who needs the charger and deliver it.")
     await mgr.runner
     assert task.status == "completed"
-    assert task.critic_count == 2
+    assert task.critic_count == 1
     assert task.action_history[0]["observation"] == {"room": "hall", "inventory": []}
     assert mission_satisfied(3, task, engine.snapshot())
     assert mgr.active_id is None
@@ -704,7 +702,7 @@ async def test_delivery_search_rejects_rephrased_recipient_question_and_continue
         tool("talk_to", person="neave", message="Who needs the charger?"),
         tool("talk_to", person="neave", message="WHO needs the charger?!"),
         tool("move_to", room="hall"), tool("move_to", room="hall"), tool("move_to", room="hall"),
-        {"approved": True, "summary": "Held and nearby."}, complete,
+        complete,
         {"approved": True, "summary": "Delivery evidenced."},
     ])
     mgr, engine, _ = manager(fake, max_explorer_actions=20)
@@ -713,7 +711,7 @@ async def test_delivery_search_rejects_rephrased_recipient_question_and_continue
     assert task.status == "completed", task.summary
     assert engine.snapshot()["objects"]["charger"]["location"] == {"kind": "person", "id": "neave"}
     assert sum(a["tool"] == "talk_to" for a in task.action_history) == 1
-    assert task.critic_count == 2  # give and completion; pickup is deterministic
+    assert task.critic_count == 1  # completion only; give is deterministic reflex, bypasses Critic
     assert any("Conversation move rejected" in message for message in task.action_feedback)
     # The rephrasing was caught locally, so it cost no conversation inference.
     assert task.metrics.conversation_llm_calls == 1

@@ -146,10 +146,13 @@ def observable_commands(context: TaskContext) -> tuple[dict, dict | None]:
             f"Speak to {person['id']} with a useful unanswered question or message. "
             "Do not use speech to announce your plan; put that in summary. "
             f"This transfers no objects.{exhausted}")
+    active_deliveries = {d["object"] for d in context.delivery_state()
+                         if not d["delivered"] and d["held"]}
     for item in inventory:
         if item not in movable:
             continue
-        add("drop", {"object": item}, f"Place held {item} in this room.")
+        if item not in active_deliveries:
+            add("drop", {"object": item}, f"Place held {item} in this room.")
         for person in view["people"]:
             if (item, person["id"]) in deliveries:
                 add("give", {"object": item, "person": person["id"]},
