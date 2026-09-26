@@ -288,6 +288,18 @@ class TaskManager:
                                     and action.arguments.get("room") not in context.memory.rooms))
                     revisit = action.arguments.get("room") in context.memory.visited_rooms
                     result = self.call_tool(context, action.tool, action.arguments)
+                    if result.get("success") and action.tool == "give":
+                        # Delivery conditions are machine-checkable from world tool
+                        # evidence: no LLM can add information the state machine
+                        # doesn't already have. Skip the Coordinator + Critic
+                        # round-trip (~2 min at qwen3:4b latency).
+                        if not [c for c in check_conditions(context) if not c["satisfied"]]:
+                            obj = action.arguments.get("object", "object")
+                            person = action.arguments.get("person", "recipient")
+                            context.metrics.coordinator_handoffs += 1
+                            self.finish(context, "completed",
+                                        f"{obj.capitalize()} delivered to {person}. All goal conditions met.")
+                            return
                     if result.get("success") and action.tool == "talk_to":
                         await interpret_conversation(
                             self.client, context, result, conversation_thread_id,

@@ -335,22 +335,17 @@ class TestDelegationLifetime:
             {"action": "delegate", "summary": "Deliver.", "task": "Take the medicine to paul."},
             tool("move_to", room="bedroom_corridor"),
             tool("move_to", room="second_bedroom"),
-            tool("move_to", room="bedroom_corridor"),
-            tool("move_to", room="bedroom_corridor"),
-            tool("move_to", room="office"),
-            {"approved": True, "summary": "Held and recipient present."},
-            complete, {"approved": True, "summary": "Delivery evidenced."},
         ])
         task = manager.start("Deliver medicine to paul.")
         await manager.runner
         assert task.status == "completed", task.summary
         assert engine.snapshot()["objects"]["medicine"]["location"] == {"kind": "person", "id": "paul"}
-        # Sixteen embodied actions inside ONE delegation: the old budget was eight,
-        # and every doorway used to cost an inference.
+        # Many embodied actions inside ONE delegation: the old budget was eight,
+        # and every doorway used to cost an inference. Recipient search is now reflex.
         assert task.metrics.coordinator_handoffs == 1
         assert task.tool_count > 8
-        assert task.metrics.explorer_llm_calls == 5
-        assert task.metrics.reflex_actions + task.metrics.route_actions == 11
+        assert task.metrics.explorer_llm_calls == 2
+        assert task.metrics.reflex_actions + task.metrics.route_actions == 14
 
     async def test_completed_objective_returns_control_before_the_ceiling(self):
         manager, _ = self._manager([

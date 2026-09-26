@@ -55,6 +55,29 @@ def reflex_action(context: TaskContext, commands: dict, view: dict | None) -> Ex
         hop = plan.route[0]
         return act("move_to", {"room": hop},
                    f"Continuing toward {plan.destination} via {hop}.", "route_executor")
+
+    # Holding the goal object with recipient location unknown: search deterministically.
+    # Avoids one 30-50 s LLM call per room visited during the sweep.
+    searching = any(
+        "locate_recipient" in d.get("missing_prerequisites", []) and d.get("held", False)
+        for d in pending
+    )
+    if searching and not context.intention:
+        hints = context._navigation_hints()
+        search_hints = [(k, h) for k, h in hints.items()
+                        if k.split(":", 1)[0] in {"explore", "recipient"}]
+        if search_hints:
+            def _priority(item: tuple) -> tuple:
+                key, h = item
+                return (0 if key.split(":", 1)[0] == "recipient" else 1, len(h["full_path"]))
+            _, best = min(search_hints, key=_priority)
+            context.adopt_intention(best["next_hop"])
+            if context.intention and context.intention.route:
+                hop = context.intention.route[0]
+                if f"move_to:{hop}" in commands:
+                    return act("move_to", {"room": hop},
+                               f"Searching for recipient; routing toward {best['target']}.",
+                               "reflex_search")
     return None
 
 
@@ -98,8 +121,9 @@ def observable_commands(context: TaskContext) -> tuple[dict, dict | None]:
 
     # Permit fresh scans on return; don't immediately repeat an unchanged scan.
     previous = context.action_history[-1] if context.action_history else None
-    if previous and previous["success"] and previous["tool"] == "look":
-        commands.pop("look", None)
+    if previous and previous["success"]:
+        if previous["tool"] == "look" or previous["tool"] in {"pick_up", "drop", "give"}:
+            commands.pop("look", None)
 
     def add(tool: str, arguments: dict, description: str, priority: bool = False) -> None:
         id = ":".join([tool, *arguments.values()])

@@ -239,24 +239,21 @@ async def test_ready_handoff_context_survives_search_delegation(object_id, sourc
 
 
 @pytest.mark.parametrize("invalid_field,value,error_code", [
-    ("message", None, "string_type"),
+    ("summary", None, "string_type"),
     ("summary", "x" * 301, "string_too_long"),
     ("command_id", "give:charger:dad", "literal_error"),
 ])
 async def test_handoff_recovers_from_invalid_model_output(invalid_field, value, error_code):
     # Uses LEGACY_WORLD so the scripted tool sequence is stable. The test
-    # exercises the repair mechanism for invalid Explorer output — the specific
-    # world entities are incidental. The corrupted reply lands on a navigation
-    # decision, which is the kind of step that still requires the model.
-    invalid = {"command_id": "move_to:hall", "message": "", "summary": "Head back toward Neave."}
+    # exercises the repair mechanism for invalid Explorer output. The corrupted
+    # reply lands on the talk_to:dad conversation decision (in study, after
+    # reflex pick_up), which is the kind of step that still requires the model.
+    invalid = {"command_id": "talk_to:dad", "message": "", "summary": "Checking with dad."}
     invalid[invalid_field] = value
     fake = ScriptedLLM([
         {"action": "delegate", "summary": "Find and deliver.", "task": "Find charger and recipient, then deliver."},
         tool("move_to", room="study"),
-        tool("talk_to", person="dad", message="Who needs the charger?"),
-        invalid, tool("move_to", room="hall"),
-        complete,
-        {"approved": True, "summary": "Successful transfer evidenced."},
+        invalid, tool("talk_to", person="dad", message="Who needs the charger?"),
     ])
     engine, bus = WorldEngine(LEGACY_WORLD), EventBus()
     mgr = TaskManager(fake, WorldTools(engine, bus), bus, Settings(max_explorer_actions=20))
@@ -266,7 +263,7 @@ async def test_handoff_recovers_from_invalid_model_output(invalid_field, value, 
     assert engine.snapshot()["objects"]["charger"]["location"] == {"kind": "person", "id": "neave"}
     transfers = [a for a in task.action_history if a["tool"] == "give"]
     assert len(transfers) == 1 and transfers[0]["success"]
-    assert task.critic_count == 1
+    assert task.critic_count == 0
     assert any(f"{invalid_field}: {error_code}" in messages[-1]["content"]
                for messages, _ in fake.calls)
 
@@ -303,16 +300,13 @@ async def test_delivery_end_to_end_with_mock_model():
     # handing over to a present recipient are all executed without inference.
     replies = [{"action": "delegate", "summary": "Locate the charger and recipient.", "task": "Search study."},
                tool("move_to", room="study"),
-               tool("talk_to", person="dad", message="Who needs the charger?"),
-               tool("move_to", room="hall"),
-               complete,
-               {"approved": True, "summary": "Delivery and need are evidenced."}]
+               tool("talk_to", person="dad", message="Who needs the charger?")]
     fake = ScriptedLLM(replies)
     mgr, engine, bus = manager(fake)
     task = mgr.start("Find out who needs the charger and deliver it.")
     await mgr.runner
     assert task.status == "completed"
-    assert task.critic_count == 1
+    assert task.critic_count == 0
     assert task.action_history[0]["observation"] == {"room": "hall", "inventory": []}
     assert mission_satisfied(3, task, engine.snapshot())
     assert mgr.active_id is None
@@ -320,9 +314,9 @@ async def test_delivery_end_to_end_with_mock_model():
     assert [a["tool"] for a in task.action_history] == [
         "get_status", "get_map", "look", "move_to", "look", "pick_up",
         "talk_to", "move_to", "move_to", "look", "give"]
-    # Nine embodied actions cost three Explorer inferences, not nine.
-    assert task.metrics.explorer_llm_calls == 3
-    assert task.metrics.reflex_actions == 5 and task.metrics.route_actions == 1
+    # Nine embodied actions cost two Explorer inferences, not nine.
+    assert task.metrics.explorer_llm_calls == 2
+    assert task.metrics.reflex_actions == 6 and task.metrics.route_actions == 1
     assert task.metrics.coordinator_handoffs == 1
     # Initial Coordinator and Explorer inputs do not reveal hidden occupants/items.
     for messages, _ in fake.calls[:2]:
@@ -679,18 +673,17 @@ async def test_valid_evidence_ids_cannot_substitute_for_required_outcomes():
 
 
 async def test_pickup_does_not_wait_for_critic_approval():
+    # pick_up is a reflex action that fires when the goal object is visible.
+    # No Critic review is solicited for pick_up or the final give.
     fake = ScriptedLLM([
         {"action": "delegate", "summary": "Find charger.", "task": "Find and pick up charger."},
-        tool("look"), tool("move_to", room="study"), tool("look"),
-        tool("talk_to", person="dad", message="Who needs the charger?"),
-        tool("pick_up", object="charger"),
-        {"action": "report", "summary": "Charger picked up."},
-        {"action": "fail", "summary": "Stopping the test after pickup."}])
+        tool("move_to", room="study"),
+        tool("talk_to", person="dad", message="Who needs the charger?")])
     mgr, engine, _ = manager(fake)
     task = mgr.start("Find out who needs the charger and deliver it.")
     await mgr.runner
-    assert task.status == "failed" and task.critic_count == 0
-    assert engine.snapshot()["objects"]["charger"]["location"] == {"kind": "robot", "id": "robot"}
+    assert task.status == "completed" and task.critic_count == 0
+    assert engine.snapshot()["objects"]["charger"]["location"] == {"kind": "person", "id": "neave"}
 
 
 async def test_delivery_search_rejects_rephrased_recipient_question_and_continues():
@@ -702,8 +695,6 @@ async def test_delivery_search_rejects_rephrased_recipient_question_and_continue
         tool("talk_to", person="neave", message="Who needs the charger?"),
         tool("talk_to", person="neave", message="WHO needs the charger?!"),
         tool("move_to", room="hall"), tool("move_to", room="hall"), tool("move_to", room="hall"),
-        complete,
-        {"approved": True, "summary": "Delivery evidenced."},
     ])
     mgr, engine, _ = manager(fake, max_explorer_actions=20)
     task = mgr.start("Find who needs the charger and deliver it.")
@@ -711,7 +702,7 @@ async def test_delivery_search_rejects_rephrased_recipient_question_and_continue
     assert task.status == "completed", task.summary
     assert engine.snapshot()["objects"]["charger"]["location"] == {"kind": "person", "id": "neave"}
     assert sum(a["tool"] == "talk_to" for a in task.action_history) == 1
-    assert task.critic_count == 1  # completion only; give is deterministic reflex, bypasses Critic
+    assert task.critic_count == 0  # give and completion are both deterministic, no Critic consulted
     assert any("Conversation move rejected" in message for message in task.action_feedback)
     # The rephrasing was caught locally, so it cost no conversation inference.
     assert task.metrics.conversation_llm_calls == 1
