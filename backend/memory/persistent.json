@@ -4,16 +4,17 @@
     "moira": {
       "name": "Moira",
       "location_tally": {
-        "master_bedroom": 1
+        "master_bedroom": 1,
+        "kitchen": 1
       },
-      "last_seen_room": "master_bedroom",
+      "last_seen_room": "kitchen",
       "known_needs": [],
       "delivery_counts": {}
     },
     "minu": {
       "name": "Minu",
       "location_tally": {
-        "second_bedroom": 1
+        "second_bedroom": 2
       },
       "last_seen_room": "second_bedroom",
       "known_needs": [],
@@ -22,7 +23,7 @@
     "neave": {
       "name": "Neave",
       "location_tally": {
-        "master_bedroom": 1
+        "master_bedroom": 2
       },
       "last_seen_room": "master_bedroom",
       "known_needs": [],
@@ -45,7 +46,7 @@
   "objects": {
     "medicine": {
       "name": "Medicine",
-      "last_seen_room": "master_bedroom"
+      "last_seen_room": "second_bedroom"
     },
     "laptop": {
       "name": "Laptop",
@@ -63,19 +64,35 @@
       "outcome": "completed",
       "timestamp": "2026-09-26T14:50:48.337473+00:00",
       "summary": "Medicine delivered to Paul in master bedroom after verification. Goal achieved."
+    },
+    {
+      "task_id": "2aa85b32-5164-4097-abe9-5f928adb2cf9",
+      "goal": "find medicine and give it to paul",
+      "outcome": "cancelled",
+      "timestamp": "2026-09-26T15:56:07.682442+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "5e7717a0-89a2-43f3-9083-bf55c92bd319",
+      "goal": "find medicine and give it to paul",
+      "outcome": "failed",
+      "timestamp": "2026-09-26T16:14:25.431414+00:00",
+      "summary": "Maximum total tool calls reached."
     }
   ],
   "self_model": {
     "room_visit_counts": {
-      "bedroom_corridor": 5,
-      "second_bedroom": 1,
-      "master_bedroom": 2,
-      "hall": 4,
-      "entrance": 2,
+      "bedroom_corridor": 23,
+      "second_bedroom": 2,
+      "master_bedroom": 18,
+      "hall": 7,
+      "entrance": 3,
       "office": 1,
-      "kitchen": 1
+      "kitchen": 2
     },
     "tool_failure_counts": {},
-    "entity_search_failures": {}
+    "entity_search_failures": {
+      "paul": 1
+    }
   }
 }
