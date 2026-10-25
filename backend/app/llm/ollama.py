@@ -1,3 +1,7 @@
+import json
+import time
+from collections.abc import AsyncIterator
+
 import httpx
 
 from app.config import Settings
@@ -49,6 +53,37 @@ class OllamaClient:
             raise ModelError("Cannot reach Ollama. Start ollama serve and check OLLAMA_BASE_URL.") from None
         except (ValueError, KeyError, TypeError):
             raise ModelError("Ollama returned an unexpected response envelope.") from None
+
+    async def stream_text(self, messages: list[dict], max_tokens: int = 300,
+                          temperature: float | None = None) -> AsyncIterator[str]:
+        """Plain conversational text as NDJSON chunks; no format grammar, no thinking."""
+        started, self.last_metrics = time.monotonic(), {}
+        try:
+            async with self.http.stream("POST", "/api/chat", json={
+                "model": self.settings.ollama_model, "messages": messages, "stream": True, "think": False,
+                "options": {"temperature": self.settings.temperature if temperature is None else temperature,
+                            "num_ctx": self.settings.context_tokens, "num_predict": max_tokens},
+            }) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.strip():
+                        continue
+                    chunk = json.loads(line)
+                    delta = chunk.get("message", {}).get("content")
+                    if delta:
+                        self.last_metrics.setdefault("first_token_seconds", round(time.monotonic() - started, 3))
+                        yield delta
+                    if chunk.get("done"):
+                        break
+            self.last_metrics["total_seconds"] = round(time.monotonic() - started, 3)
+        except httpx.TimeoutException:
+            raise ModelError("Ollama timed out while replying.") from None
+        except httpx.HTTPStatusError as exc:
+            raise ModelError(f"Ollama returned HTTP {exc.response.status_code} while replying.") from None
+        except httpx.RequestError:
+            raise ModelError("Cannot reach Ollama. Start ollama serve and check OLLAMA_BASE_URL.") from None
+        except (ValueError, KeyError, TypeError):
+            raise ModelError("Ollama returned an unexpected stream.") from None
 
     async def health(self) -> dict:
         try:

@@ -90,13 +90,14 @@ async def test_colibri_health_and_provider_selection():
             await client.close()
 
 
-async def test_application_health_reports_colibri(monkeypatch):
+async def test_application_health_reports_colibri(monkeypatch, tmp_path):
     from app.main import create_app
 
     client = await mock_client(lambda request: httpx.Response(
         200, json={"data": [{"id": "qwen3.6-colibri"}]}))
     monkeypatch.setattr("app.main.create_client", lambda settings: client)
-    app = create_app(settings=Settings(llm_provider="colibri"))
+    app = create_app(settings=Settings(llm_provider="colibri", memory_db_file=tmp_path / "kip.db",
+                                       embeddings_enabled=False))
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://app") as api:
             assert (await api.get("/api/health")).json()["llm"] == {

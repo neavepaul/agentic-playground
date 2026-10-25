@@ -90,6 +90,49 @@ Only one task runs at a time. A second request receives HTTP 409. The world pers
 between goals until Reset or a backend restart. Room labels, people and objects
 are visible to you. Agents receive the static map but must discover people and objects with tools.
 
+### Talking to Kip
+
+The **Talk to Kip** panel is an ongoing conversation. Each message costs one streamed
+model call with a short prompt: Kip's voice and mood, up to six recalled memories, the
+last eight turns and a one-line status. There are no maps or tool schemas in this prompt.
+When you ask for something to be done ("could you find the keys?"), Kip agrees and starts
+an errand through the normal task system, ending its reply with a hidden `###` action
+line. A second errand waits until the first finishes. Kip narrates errand progress and
+results in the chat using templates, without extra model calls. The old goal form is
+still available under **Run a task directly**.
+
+The idle mind stays quiet while you are chatting and for `CHAT_QUIET_SECONDS` (default
+90) afterwards, so it doesn't compete with the conversation for the model.
+
+**Reply speed.** Chat uses the main model unless you configure a separate one. While an
+errand is running on the same Colibri model, chat replies wait behind its planning
+calls. If replies are slow, point chat at a small, fast model; errands keep using
+Colibri:
+
+```
+CHAT_PROVIDER=ollama
+CHAT_MODEL=qwen3:4b
+```
+
+The backend log reports `first_token_seconds` and `total_seconds` for every reply, and
+hovering over a reply in the UI shows the same timing.
+
+### Kip's searchable memory
+
+`backend/memory/kip.db` is one SQLite file holding every kind of memory as a row: chat
+exchanges, facts you ask Kip to remember, task episodes, *skills* learned from
+successful errands (where things were found, the route that worked), and answers to
+past questions. Recall combines keyword search (FTS5) with meaning search (`sqlite-vec`
+plus a small local `fastembed` model, `BAAI/bge-small-en-v1.5`, about 70 MB, downloaded to
+`backend/memory/models/` on first use), then ranks by recency and importance.
+Rewordings of a memory reinforce it instead of being stored twice. If the embedding
+model cannot load, recall falls back to keyword search. Set `EMBEDDINGS_ENABLED=false` to
+skip it entirely.
+
+Chat replies, new errands (as `relevant_memories`, marked advisory) and the idle mind
+all read from this store. Browse or search it in the **Memories** tab, or with
+`GET /api/memories?q=...`. To make Kip forget everything, delete `backend/memory/kip.db`.
+
 ## How the code fits together
 
 ```text
@@ -246,6 +289,14 @@ Copy `backend/.env.example` to `backend/.env`. Environment variables override it
 | `CLOCK_START_HOUR` | `8` | Simulated hour at startup |
 | `ACTION_SECONDS` | `60` | Simulated seconds per action in `action_driven` |
 | `LOG_LEVEL` | `INFO` | Use `DEBUG` for application diagnostics |
+| `CHAT_PROVIDER` / `CHAT_MODEL` / `CHAT_BASE_URL` | unset | Optional separate (faster) model for conversation; unset uses the main model |
+| `CHAT_MAX_TOKENS` | `300` | Upper bound on one chat reply |
+| `CHAT_TEMPERATURE` | `0.6` | Conversational variety (tasks keep `TEMPERATURE`) |
+| `CHAT_QUIET_SECONDS` | `90` | Idle mind waits this long after chat activity |
+| `MEMORY_DB_FILE` | `backend/memory/kip.db` | Searchable long-term memory |
+| `EMBEDDINGS_ENABLED` | `true` | Meaning search with fastembed; false means keyword-only |
+| `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | fastembed model name |
+| `PERSONA_ENABLED` / `PERSONA_NAME` | `true` / `Kip` | Personality layer |
 
 ### Simulation modes
 

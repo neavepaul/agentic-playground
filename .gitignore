@@ -10,3 +10,7 @@ artifacts/
 graphify-out/
 .pnpm-store/
 venv/
+
+# Kip memory store and embedding model cache
+backend/memory/kip.db*
+backend/memory/models/

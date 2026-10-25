@@ -27,11 +27,6 @@ class EventBus:
             self.history.append(event)
         logger.info("%s [%s] %s", type, agent,
                     data.get("summary", data.get("observation", data.get("error", ""))))
-        for listener in tuple(self.listeners):
-            try:
-                listener(event)
-            except Exception:
-                logger.exception("Event listener failed for %s", type)
         for queue in tuple(self.subscribers):
             if queue.full():
                 # Force a snapshot resync rather than silently lose state changes.
@@ -40,6 +35,12 @@ class EventBus:
                 queue.put_nowait({"type": "resync_required"})
             else:
                 queue.put_nowait(event)
+        # Listeners run after delivery, so events they emit always follow their cause.
+        for listener in tuple(self.listeners):
+            try:
+                listener(event)
+            except Exception:
+                logger.exception("Event listener failed for %s", type)
         return event
 
     def subscribe(self) -> asyncio.Queue:

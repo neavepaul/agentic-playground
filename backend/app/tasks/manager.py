@@ -56,11 +56,12 @@ class LimitReached(RuntimeError):
 
 class TaskManager:
     def __init__(self, client: LLMClient, tools: WorldTools, bus: EventBus, settings: Settings,
-                 persistent: PersistentMemory | None = None, persona=None) -> None:
+                 persistent: PersistentMemory | None = None, persona=None, memory_store=None) -> None:
         self.tools, self.bus, self.settings = tools, bus, settings
         self.client = client
         self.persistent = persistent
         self.persona = persona
+        self.memory_store = memory_store
         self.coordinator = Coordinator(client, digital_enabled=settings.digital_tools_enabled)
         self.capabilities = CapabilityTools(bus, enabled=settings.digital_tools_enabled)
         self.explorer = Explorer(client, tools.schemas(), persona=persona)
@@ -431,9 +432,37 @@ class TaskManager:
         context.intention = None
         return True
 
+    async def _recall_for(self, context: TaskContext) -> None:
+        # Searchable memory is advisory like the rest of long_term_memory: skills and
+        # past episodes suggest where to look, observations still decide.
+        if not self.memory_store:
+            return
+        from app.memory.recall import prompt_memories
+        try:
+            found = await self.memory_store.recall(context.goal, kinds=["skill", "episode", "fact"], k=3)
+        except Exception:
+            logging.getLogger("agentic_friend.tasks").exception("Memory recall failed")
+            return
+        if found:
+            context.long_term_memory["relevant_memories"] = {
+                "note": "Recalled from past experience; may be stale. Verify by observation.",
+                "items": prompt_memories(found)}
+
+    async def _remember(self, context: TaskContext) -> None:
+        if not self.memory_store or context.status not in {"completed", "failed"}:
+            return
+        from app.memory.recall import task_memories
+        feeling = self.persona.mood_label() if self.persona else None
+        try:
+            for memory in task_memories(context, feeling):
+                await self.memory_store.add(source="task", **memory)
+        except Exception:
+            logging.getLogger("agentic_friend.tasks").exception("Failed to store task memories")
+
     async def _run(self, context: TaskContext) -> None:
         try:
             async with asyncio.timeout(self.settings.task_timeout_seconds):
+                await self._recall_for(context)
                 await self._loop(context)
         except asyncio.CancelledError:
             self.finish(context, "cancelled", "Task cancelled. Completed world actions are retained.")
@@ -447,6 +476,7 @@ class TaskManager:
         finally:
             if self.active_id == context.id:
                 self.active_id = None
+            await self._remember(context)
             if self.persistent:
                 try:
                     self.persistent.update_from_task(context)

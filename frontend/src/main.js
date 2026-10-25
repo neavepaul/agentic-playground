@@ -5,6 +5,8 @@ import { connectEvents } from './websocket.js';
 import { addEvent, clearFeed, getTask, setAgent, setConnection, setMemoryOpen, setTask, setWorld, showError } from './ui.js';
 import { renderBeliefs } from './beliefs.js';
 import { renderPersona } from './persona.js';
+import { handleChatEvent, initChat } from './chat.js';
+import { initMemories, loadMemories } from './memories.js';
 
 let scene;
 try { scene = createScene(document.getElementById('scene')); }
@@ -13,6 +15,9 @@ let sequence = -1;
 let activeTab = 'activity';
 const beliefsPanel = document.getElementById('beliefs-panel');
 const personaPanel = document.getElementById('persona-panel');
+const memoriesPanel = document.getElementById('memories-panel');
+initMemories(memoriesPanel);
+initChat();
 
 async function fetchAndRenderBeliefs() {
   try {
@@ -34,6 +39,7 @@ const tabs = {
   activity: { panel: document.getElementById('feed') },
   beliefs: { panel: beliefsPanel, load: fetchAndRenderBeliefs },
   persona: { panel: personaPanel, load: fetchAndRenderPersona },
+  memories: { panel: memoriesPanel, load: () => loadMemories(memoriesPanel) },
 };
 for (const name of Object.keys(tabs)) {
   document.getElementById(`tab-${name}`).addEventListener('click', () => {
@@ -55,7 +61,7 @@ function snapshot(data, events) {
   scene?.update(data.world, true);
   setWorld(data.world);
   setTask(data.task);
-  if (events) { clearFeed(); events.forEach(addEvent); }
+  if (events) { clearFeed(); events.forEach(e => handleChatEvent(e) || addEvent(e)); }
 }
 connectEvents({ snapshot, connection: setConnection, error: showError, event(event) {
   if (event.sequence <= sequence) return;
@@ -67,6 +73,7 @@ connectEvents({ snapshot, connection: setConnection, error: showError, event(eve
   if (event.type === 'agent_active' || event.type === 'agent_message' || event.type === 'critic_review') setAgent(event.agent);
   if (event.type === 'agent_message') document.getElementById('task-summary').textContent = d.summary;
   if (event.type === 'world_tick') return;
+  if (handleChatEvent(event)) return;
   if (event.type === 'persona_updated') {
     if (activeTab === 'persona') renderPersona(personaPanel, d.persona);
     else document.getElementById('tab-persona').classList.add('has-update');

@@ -1,4 +1,8 @@
 """Colibri's local OpenAI-compatible chat API, with application JSON validation."""
+import json
+import time
+from collections.abc import AsyncIterator
+
 import httpx
 
 from app.config import Settings
@@ -58,6 +62,37 @@ class ColibriClient:
             raise ModelError("Cannot reach Colibri. Start it on port 8001 and check COLIBRI_BASE_URL.") from None
         except (ValueError, KeyError, TypeError, IndexError, AttributeError):
             raise ModelError("Colibri returned an unexpected response envelope.") from None
+
+    async def stream_text(self, messages: list[dict], max_tokens: int = 300,
+                          temperature: float | None = None) -> AsyncIterator[str]:
+        """Plain conversational text as server-sent events; no JSON, no thinking."""
+        started, self.last_metrics = time.monotonic(), {}
+        try:
+            async with self.http.stream("POST", "chat/completions", json={
+                "model": self.settings.colibri_model, "messages": messages, "stream": True,
+                "enable_thinking": False, "max_tokens": max_tokens,
+                "temperature": self.settings.temperature if temperature is None else temperature,
+            }) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    delta = json.loads(data)["choices"][0].get("delta", {}).get("content")
+                    if delta:
+                        self.last_metrics.setdefault("first_token_seconds", round(time.monotonic() - started, 3))
+                        yield delta
+            self.last_metrics["total_seconds"] = round(time.monotonic() - started, 3)
+        except httpx.TimeoutException:
+            raise ModelError("Colibri timed out while replying.") from None
+        except httpx.HTTPStatusError as exc:
+            raise ModelError(f"Colibri returned HTTP {exc.response.status_code} while replying.") from None
+        except httpx.RequestError:
+            raise ModelError("Cannot reach Colibri. Start it on port 8001 and check COLIBRI_BASE_URL.") from None
+        except (ValueError, KeyError, TypeError, IndexError):
+            raise ModelError("Colibri returned an unexpected stream.") from None
 
     async def health(self) -> dict:
         try:

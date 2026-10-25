@@ -59,6 +59,7 @@ beliefs: your long-term belief graph — where people and objects were last seen
          with stored_confidence and effective_confidence (time-decayed).
 drive_helpfulness: a 0-1 scalar; higher means more motivated to help people proactively.
 recent_events: what just happened that may be relevant.
+memories (optional): relevant past episodes, facts and preferences; may be stale.
 idle_seconds: how long since your last task completed.
 current_time: simulated wall-clock time (HH:MM). Use it to judge whether a
   person belief is plausible for the time of day before acting on it.
@@ -143,7 +144,8 @@ class AgentMind:
     def __init__(self, client: LLMClient, manager: TaskManager, engine: WorldEngine,
                  bus: EventBus, settings: Settings,
                  graph: BeliefGraph | None = None,
-                 persistent: PersistentMemory | None = None, persona=None) -> None:
+                 persistent: PersistentMemory | None = None, persona=None,
+                 memory_store=None, chat=None) -> None:
         self._client = client
         self._manager = manager
         self._engine = engine
@@ -152,6 +154,8 @@ class AgentMind:
         self._graph = graph if graph is not None else BeliefGraph()
         self._persistent = persistent
         self._persona = persona
+        self._memory_store = memory_store
+        self._chat = chat
         self._task: asyncio.Task | None = None
         # Track by monotonic sequence number — safe when the deque wraps at maxlen.
         self._last_seen_sequence: int = 0
@@ -174,13 +178,19 @@ class AgentMind:
                 if now - self._last_world_push >= 10.0:
                     self._bus.emit("world_tick", world=self._engine.snapshot(), skip_history=True)
                     self._last_world_push = now
-                if self._settings.idle_reflection_enabled and not self._manager.active_id:
+                if (self._settings.idle_reflection_enabled and not self._manager.active_id
+                        and not self._in_conversation()):
                     await self._tick()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 _log.exception("AgentMind tick failed")
             await asyncio.sleep(self._settings.idle_tick_seconds)
+
+    def _in_conversation(self) -> bool:
+        # Do not compete with a conversation for the model, or interrupt it.
+        return bool(self._chat and (self._chat.busy
+                                    or self._chat.quiet_seconds() < self._settings.chat_quiet_seconds))
 
     def _helpfulness(self) -> float:
         return self._persona.helpfulness() if self._persona else self._settings.drive_helpfulness
@@ -197,9 +207,11 @@ class AgentMind:
         self._save_persona()
         now = time.monotonic()
         history = list(self._bus.history)
-        new_events = [e for e in history if e["sequence"] > self._last_seen_sequence]
-        if new_events:
-            self._last_seen_sequence = new_events[-1]["sequence"]
+        unseen = [e for e in history if e["sequence"] > self._last_seen_sequence]
+        if unseen:
+            self._last_seen_sequence = unseen[-1]["sequence"]
+        # Chat events never trigger reflection model calls by themselves.
+        new_events = [e for e in unseen if not e["type"].startswith("chat_")]
 
         since_last = now - self._last_reflection
 
@@ -234,6 +246,14 @@ class AgentMind:
             prompt += _PERSONA_INTENTION
             context["persona"] = self._persona.mind_view()
             threshold = self._persona.intention_threshold(threshold)
+        if self._memory_store:
+            people = list((context.get("persona") or {}).get("relationships", {}))
+            query = " ".join(people + [e["summary"] for e in context["recent_events"][-3:]])
+            try:
+                context["memories"] = [m["text"] for m in await self._memory_store.recall(
+                    query, kinds=["episode", "fact", "preference"], k=4, touch=False)]
+            except Exception:
+                _log.exception("Memory recall failed")
         result = await structured(self._client, IntentionOrIdle, prompt, context)
 
         if result.intention is None:

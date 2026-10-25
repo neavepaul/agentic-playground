@@ -7,7 +7,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import Settings, get_settings
 from app.events.bus import EventBus
-from app.llm.factory import create_client
+from app.chat import ChatSession
+from app.llm.factory import create_chat_client, create_client
+from app.memory.recall import Embedder, MemoryStore
 from app.memory.graph import BeliefGraph
 from app.memory.store import PersistentMemory
 from app.mind.agent import AgentMind
@@ -16,6 +18,11 @@ from app.tasks.manager import TaskBusy, TaskManager
 from app.world.clock import WorldClock
 from app.world.engine import WorldEngine
 from app.world.tools import WorldTools
+
+
+class ChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    message: str = Field(min_length=1, max_length=1000)
 
 
 class GoalRequest(BaseModel):
@@ -41,18 +48,36 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
         persona = Persona(persistent.persona, config.persona_name, now=clock.simulated_seconds,
                           helpfulness_baseline=config.drive_helpfulness)
         persona.attach(bus)
-    manager = TaskManager(llm, WorldTools(engine, bus), bus, config, persistent, persona=persona)
-    mind = AgentMind(llm, manager, engine, bus, config, graph, persistent, persona=persona)
+    # Injected test clients get a throwaway in-memory store and no embedding model.
+    live = client is None
+    embedder = (Embedder(config.embedding_model, config.embedding_cache_dir)
+                if live and config.embeddings_enabled else None)
+    store = MemoryStore(config.memory_db_file if live else ":memory:", embedder)
+    manager = TaskManager(llm, WorldTools(engine, bus), bus, config, persistent, persona=persona,
+                          memory_store=store)
+    chat_llm = create_chat_client(config, llm) if live else llm
+    chat = ChatSession(chat_llm, bus, manager, engine, config, store=store, persona=persona,
+                       shares_task_model=chat_llm is llm)
+    chat.attach()
+    mind = AgentMind(llm, manager, engine, bus, config, graph, persistent, persona=persona,
+                     memory_store=store, chat=chat)
     mutation_lock = asyncio.Lock()
 
     @asynccontextmanager
     async def lifespan(app):
+        if embedder:
+            # Load the embedding model in the background so the first reply doesn't wait.
+            app.state.embedder_warmup = asyncio.create_task(asyncio.to_thread(embedder.embed_sync, ["warm up"]))
         mind.start()
         yield
         await mind.close()
         await manager.close()
+        await chat.drain()
         if client is None:
             await llm.close()
+            if chat_llm is not llm:
+                await chat_llm.close()
+        store.close()
 
     app = FastAPI(title="agentic_friend", lifespan=lifespan)
     app.state.manager, app.state.engine, app.state.bus = manager, engine, bus
@@ -65,6 +90,22 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
     @app.get("/api/beliefs")
     async def get_beliefs():
         return graph.prompt()
+
+    @app.post("/api/chat", status_code=202)
+    async def send_chat(request: ChatRequest):
+        return chat.submit(request.message)
+
+    @app.get("/api/chat")
+    async def chat_history():
+        return {"turns": chat.history(), "busy": chat.busy, "name": chat.name}
+
+    @app.get("/api/memories")
+    async def memories(q: str = "", kind: str = "", limit: int = 20):
+        limit = max(1, min(limit, 100))
+        kinds = [kind] if kind else None
+        if q.strip():
+            return await store.recall(q, kinds=kinds, k=limit, touch=False)
+        return await asyncio.to_thread(store.recent, limit, kind or None)
 
     @app.get("/api/persona")
     async def get_persona():
