@@ -67,27 +67,6 @@
   },
   "recent_tasks": [
     {
-      "task_id": "3aa571bf-a190-49ba-ae97-1cfbc69705b4",
-      "goal": "Try again.",
-      "outcome": "cancelled",
-      "timestamp": "2026-10-25T06:32:59.049112+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "b414cab9-90df-4071-8840-8ffd16b147f4",
-      "goal": "Read https://example.com and use Python to calculate 6 × 7. Tell me both results.",
-      "outcome": "completed",
-      "timestamp": "2026-10-25T07:31:33.701635+00:00",
-      "summary": "Answer ready. All requested outcomes completed."
-    },
-    {
-      "task_id": "6d14dd42-5700-491a-9e80-5cc31134d2b0",
-      "goal": "Find charger.",
-      "outcome": "cancelled",
-      "timestamp": "2026-10-25T07:32:10.715994+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
       "task_id": "0e7681a0-4a89-4cb3-b08e-66a9325e5894",
       "goal": "Try again.",
       "outcome": "cancelled",
@@ -205,6 +184,27 @@
       "outcome": "cancelled",
       "timestamp": "2026-10-25T14:05:41.326939+00:00",
       "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "57539558-fd59-4cdc-aa66-19c634cf6083",
+      "goal": "Find charger.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T14:29:44.084661+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "6a635d2f-1b9a-469c-a2cb-e92be2859d3a",
+      "goal": "Find charger.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T14:33:29.736308+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "54bc3260-4260-4105-b761-4f0ed99a6289",
+      "goal": "Try again.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T14:33:29.747640+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
     }
   ],
   "self_model": {
@@ -234,9 +234,9 @@
       "caution": 0.51
     },
     "mood": {
-      "valence": -0.14918687727422977,
-      "energy": 0.5003252490903081,
-      "updated_at": 461228.52000000025
+      "valence": -0.1488917738137257,
+      "energy": 0.5004432904745096,
+      "updated_at": 461231.59718400013
     },
     "relationships": {
       "moira": {
@@ -275,6 +275,6 @@
       }
     ],
     "followups": [],
-    "age_seconds": 461228.52000000025
+    "age_seconds": 461231.59718400013
   }
 }

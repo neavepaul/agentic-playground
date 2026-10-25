@@ -26,6 +26,9 @@ _WORD = re.compile(r"[\w']{2,}", re.UNICODE)
 
 
 DUPLICATE_OVERLAP = 0.7
+# High on purpose: "Neave is allergic to peanuts" vs "Paul is allergic to peanuts" share
+# 4 of 6 words, and a correction must never delete the corrected fact.
+FORGET_OVERLAP = 0.8
 
 
 def _now() -> str:
@@ -260,6 +263,24 @@ class MemoryStore:
                 ([kind] if kind else []) + [limit]).fetchall()
         return [{"id": row["id"], "kind": row["kind"], "text": row["text"], "about": json.loads(row["about"]),
                  "importance": round(row["importance"], 2), "created_at": row["created_at"]} for row in rows]
+
+    def delete(self, memory_id: int) -> None:
+        with self._lock:
+            db = self._db
+            db.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+            if self.vectors:
+                db.execute("DELETE FROM memories_vec WHERE rowid = ?", (memory_id,))
+            db.commit()
+
+    async def forget(self, text: str, kinds: list[str] | None = None) -> dict | None:
+        """Retract the memory a correction refers to. Requires clear word overlap, so a
+        loosely worded request cannot erase an unrelated memory."""
+        candidates = await self.recall(text, kinds=kinds or ["fact", "preference"], k=5, touch=False)
+        best = max(candidates, key=lambda m: _overlap(m["text"], text), default=None)
+        if best is None or _overlap(best["text"], text) < FORGET_OVERLAP:
+            return None
+        await asyncio.to_thread(self.delete, best["id"])
+        return best
 
     def count(self) -> int:
         with self._lock:

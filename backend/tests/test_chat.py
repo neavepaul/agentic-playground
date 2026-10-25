@@ -56,6 +56,15 @@ def make_session(replies, store=None):
     return session, model, manager, events
 
 
+def spoken(content):
+    """The person's own words inside the latest message (context travels with them)."""
+    return content.split("They say: ", 1)[1].rsplit("\n\n(Reply, then", 1)[0]
+
+
+def conversation(prompt):
+    return [m["content"] for m in prompt[1:-1]] + [spoken(prompt[-1]["content"])]
+
+
 def reply(text, task="", remember=()):
     return f"{text}\n###\n" + json.dumps({"task": task, "remember": list(remember)})
 
@@ -90,7 +99,8 @@ async def test_task_trailer_starts_an_errand_and_queues_the_next():
     session.submit("Could you find the keys?")
     await session.drain()
     assert manager.active()["goal"] == "Find the missing keys."
-    assert any(t["text"] == "On it: Find the missing keys." for t in session.history())
+    # Kip's own reply acknowledged it; no second "On it" narration.
+    assert not any(t["text"].startswith("On it") for t in session.history())
     session.submit("Also tell Neave dinner is ready")
     await session.drain()
     assert list(session.pending_goals) == ["Find Neave and tell him dinner is ready."]
@@ -122,10 +132,9 @@ async def test_remembered_facts_are_recalled_in_later_turns():
     assert store.recent(10, "conversation")
     session.submit("What tea does Neave like?")
     await session.drain()
-    system = model.prompts[-1][0]["content"]
-    assert "Neave prefers green tea after 6pm" in system
-    # Earlier turns keep their trailers so the model keeps the format.
-    assert any(m["role"] == "assistant" and "###" in m["content"] for m in model.prompts[-1])
+    assert "Neave prefers green tea after 6pm" in model.prompts[-1][-1]["content"]
+    # Earlier replies carry no action lines, so old errands and facts are not copied.
+    assert not any(m["role"] == "assistant" and "###" in m["content"] for m in model.prompts[-1])
 
 
 @pytest.mark.asyncio
@@ -156,7 +165,7 @@ def test_chat_prompt_stays_small():
     assert len(messages[0]["content"]) < 3500
     assert len(messages) == 1 + 8 + 1
     assert sum(len(m["content"]) for m in messages) < 9000
-    assert messages[-1]["content"] == "z" * 2000
+    assert spoken(messages[-1]["content"]) == "z" * 2000
 
 
 @pytest.mark.asyncio
@@ -165,7 +174,7 @@ async def test_current_message_keeps_trailing_constraints_and_code_formatting():
     text = "A" * 450 + "\nPlease preserve this constraint.\nfor i in range(2):\n    print(i)"
     session.submit(text)
     await session.drain()
-    assert model.prompts[0][-1]["content"] == text
+    assert spoken(model.prompts[0][-1]["content"]) == text
     assert session.history()[0]["text"] == text
 
 
@@ -176,10 +185,9 @@ async def test_rapid_messages_keep_each_question_and_reply_in_order():
     session.submit("Second message")
     session.submit("Third message")
     await session.drain()
-    assert [m["content"].split("\n###")[0] for m in model.prompts[0][1:]] == ["First message"]
-    assert [m["content"].split("\n###")[0] for m in model.prompts[1][1:]] == [
-        "First message", "First reply", "Second message"]
-    assert [m["content"].split("\n###")[0] for m in model.prompts[2][1:]] == [
+    assert conversation(model.prompts[0]) == ["First message"]
+    assert conversation(model.prompts[1]) == ["First message", "First reply", "Second message"]
+    assert conversation(model.prompts[2]) == [
         "First message", "First reply", "Second message", "Second reply", "Third message"]
 
 
@@ -350,3 +358,97 @@ def test_chat_and_memories_api():
         assert history["turns"][-1]["text"] == "Hello from Kip!"
         assert client.get("/api/memories", params={"q": "Kip"}).json()[0]["kind"] == "conversation"
         assert client.get("/api/memories").json()
+
+
+# ── regressions from the seven-act live run ──────────────────────────────────
+@pytest.mark.asyncio
+async def test_copied_errands_are_ignored_but_new_ones_queue():
+    session, _, manager, _ = make_session([
+        reply("I'll look for the keys.", task="Find the keys"),
+        reply("Still looking!", task="Find the keys."),           # step 10: copied, not new
+        reply("I'll tell Neave after.", task="Tell Neave dinner is ready.")])
+    session.submit("Could you find the keys?")
+    await session.drain()
+    session.submit("How's the search going?")
+    await session.drain()
+    assert list(session.pending_goals) == []
+    session.submit("Once you're done, tell Neave dinner is ready.")
+    await session.drain()
+    assert list(session.pending_goals) == ["Tell Neave dinner is ready."]
+    await manager.cancel(manager.active_id)
+    await session.close()
+
+
+@pytest.mark.parametrize("raw, visible, task", [
+    ('Sure, I can check. {"task": "Check the kitchen", "remember": []}', "Sure, I can check.", "Check the kitchen"),
+    ('Hello!\n{"task": "", "remember": []}', "Hello!", ""),
+    ('Hi {"task": "", "remember": []}\n###\n{"task": "Find keys", "remember": []}', "Hi", "Find keys"),
+])
+def test_inline_action_json_never_reaches_the_reply(raw, visible, task):
+    splitter = TrailerSplitter()
+    streamed = "".join(splitter.feed(raw[i:i + 3]) for i in range(0, len(raw), 3))
+    remaining, full, trailer = splitter.finish()
+    assert (streamed + remaining).strip() == visible == full
+    assert parse_action(trailer).task == task
+
+
+@pytest.mark.asyncio
+async def test_corrections_retract_the_wrong_memory_only():
+    store = MemoryStore(":memory:")
+    await store.add("fact", "Neave is allergic to peanuts.", ["neave"])
+    session, _, _, _ = make_session([
+        "Got it, Paul then.\n###\n" + json.dumps({"task": "", "remember": ["Paul is allergic to peanuts."],
+                                                    "forget": ["Neave is allergic to peanuts."]}),
+        "Okay.\n###\n" + json.dumps({"task": "", "remember": [], "forget": ["Neave is allergic to peanuts"]})], store)
+    session.submit("Correction: it's Paul who's allergic to peanuts, not Neave.")
+    await session.drain()
+    assert [m["text"] for m in store.recent(10, "fact")] == ["Paul is allergic to peanuts."]
+    # A repeated retraction must not delete the corrected fact (4 of 6 words overlap).
+    session.submit("Just making sure Neave isn't listed.")
+    await session.drain()
+    assert [m["text"] for m in store.recent(10, "fact")] == ["Paul is allergic to peanuts."]
+
+
+LIVE_KEYS_TASK = {"goal": "Find the keys", "summary": "Checking goal completion against tool evidence.",
+                  "task_memory": {"visited_rooms": ["kitchen"], "observed_rooms": {"kitchen": {}},
+                                  "people": {"moira": {"name": "Moira", "location": "hall"}},
+                                  "objects": {"keys": {"name": "Keys", "location": {"kind": "room", "id": "kitchen"}}},
+                                  "completed_outcomes": [{"kind": "find_object", "object": "keys", "satisfied": True}]}}
+
+
+def test_status_reports_real_errand_progress_and_known_people():
+    from app.chat.session import errand_progress, known_people
+    from app.memory.store import PersistentMemory, PersonMemory
+    progress = errand_progress(LIVE_KEYS_TASK)
+    assert progress["rooms_looked_in"] == ["kitchen"]
+    assert progress["objects_found"] == {"Keys": "in the kitchen"}
+    assert progress["people_seen"] == {"Moira": "in the hall"}
+    memory = PersistentMemory(people={"paul": PersonMemory(name="Paul", last_seen_room="office"),
+                                      "minu": PersonMemory(name="Minu")})
+    assert known_people(memory) == {"Paul": "last seen in the office", "Minu": ""}
+    status_prompt = build_messages("Kip", None, [], {"current_errand": progress, "people_i_know": known_people(memory)},
+                                   [], "Who lives here?")[-1]["content"]
+    assert "Paul" in status_prompt and "in the kitchen" in status_prompt
+
+
+@pytest.mark.asyncio
+async def test_finished_errands_describe_what_was_seen_without_stock_openers():
+    session, model, manager, _ = make_session([])
+    manager.bus.emit("task_completed", task=LIVE_KEYS_TASK, summary="The goal is satisfied.")
+    text = session.history()[-1]["text"]
+    assert text == "I looked in the kitchen. I found the keys in the kitchen. I saw Moira in the hall."
+    assert "All done" not in text and "goal" not in text
+
+
+def test_checking_a_room_requires_looking_at_it():
+    from app.agents.schemas import GoalCondition
+    from app.tasks.goals import check_conditions
+    from app.tasks.models import TaskContext
+    context = TaskContext(goal="Check the kitchen")
+    context.conditions = [GoalCondition(kind="visit_room", room="kitchen")]
+    context.record("move_to", {"room": "kitchen"},
+                   {"success": True, "observation": {"from_room": "hall", "room": "kitchen"}, "evidence_id": "m"})
+    assert not check_conditions(context)[0]["satisfied"]
+    context.record("look", {}, {"success": True, "evidence_id": "l", "observation": {
+        "room": "kitchen", "connections": ["hall"], "people": [], "objects": [], "held_objects": []}})
+    assert check_conditions(context)[0]["satisfied"]

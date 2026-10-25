@@ -177,7 +177,7 @@ deliver: transfer the requested object to a person. If the goal names the recipi
   the object's known location so the robot does not search elsewhere first.
 notify: tell a named person a message. notify_everyone: tell everyone that message.
 Use the exact requested message without the 'tell ...' wrapper. Do not invent text.
-place_object: put the requested object in the specified room. visit_room: go there.
+place_object: put the requested object in the specified room. visit_room: go there and look around (also for checking what is in a room).
 A delivery condition already includes finding the object, so do not add redundant
 conditions. Leave irrelevant fields empty. Be precise about the requested object:
 never substitute a related object. You have no tools and know no world locations.

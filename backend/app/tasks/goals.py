@@ -68,7 +68,9 @@ def check_conditions(context: "TaskContext") -> list[dict]:
         elif kind == "place_object":
             met = location(condition.object) == ("room", condition.room)
         elif kind == "visit_room":
-            met = context.robot_status.get("room") == condition.room
+            # Being there is not enough to report on a room: it must have been looked at.
+            met = (context.robot_status.get("room") == condition.room
+                   and condition.room in context.memory.rooms)
         elif kind == "notify":
             met = notified(condition.person, condition.message)
         else:  # notify_everyone: all reachable rooms must first be observed.
