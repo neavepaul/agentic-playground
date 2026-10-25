@@ -11,6 +11,15 @@ from .web import read_webpage, web_search
 DIGITAL_TOOLS = frozenset(ACTION_SCHEMAS)
 
 
+def validation_reasons(exc: ValidationError, skip: int = 0) -> str:
+    """Field-level reasons the model can act on, without echoing input values."""
+    reasons = []
+    for error in exc.errors():
+        field = ".".join(str(part) for part in error["loc"][skip:]) or "input"
+        reasons.append(f"{field}: {error['msg']}")
+    return "; ".join(reasons)[:400]
+
+
 def required_tool_progress(context) -> dict:
     required = {tool for c in context.conditions if c.kind == "answer" for tool in c.required_tools}
     evidence = {}
@@ -47,7 +56,7 @@ class CapabilityTools:
         except Exception as exc:
             logging.getLogger("agentic_friend.capabilities").info("%s failed: %s", tool, type(exc).__name__)
             if isinstance(exc, ValidationError):
-                error = "Invalid tool arguments: " + ", ".join(str(e["loc"][0]) for e in exc.errors())
+                error = "Invalid tool arguments: " + validation_reasons(exc)
             elif isinstance(exc, (ValueError, TimeoutError)):
                 error = str(exc)[:400] or "Tool time limit reached."
             elif type(exc).__module__.startswith("pydantic_monty"):

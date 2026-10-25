@@ -160,3 +160,40 @@ async def test_compact_schema_preserves_named_properties_and_runtime_validation(
             return '{"title":"A","description":"B"}'
     result = await structured(Client(), Output, 'Test', {}, compact_schema=True)
     assert result.title == 'A'
+
+
+@pytest.mark.asyncio
+async def test_invalid_batch_is_feedback_not_a_task_failure():
+    runner = manager(ScriptedLLM([]))
+    context = TaskContext(goal='Read a source')
+    assert await runner.call_capability_batch(context, [{'tool': 'read_webpage', 'arguments': {}}]) == []
+    assert context.tool_count == 0 and context.action_history == []
+    assert 'none of its calls ran' in context.action_feedback[-1]
+    assert 'url: Field required' in context.action_feedback[-1]
+
+
+@pytest.mark.asyncio
+async def test_bad_initial_actions_fall_back_to_explorer(monkeypatch):
+    from app.capabilities import tools
+    async def read(url, start_char):
+        return {'url': url, 'title': 'Example Domain', 'text': 'Actual page', 'next_start_char': None}
+    monkeypatch.setattr(tools, 'read_webpage', read)
+    payloads = []
+    class Model:
+        async def generate(self, messages, schema):
+            if schema['title'] == 'GoalPlan':
+                return json.dumps({'summary': 'Read a page.',
+                    'conditions': [{'kind': 'answer', 'required_tools': ['read_webpage']}],
+                    'initial_actions': [{'tool': 'read_webpage', 'arguments': {'link': 'https://example.com'}}]})
+            payload = json.loads(messages[1]['content'])
+            payloads.append(payload)
+            if not payload['tool_observations']:
+                return json.dumps({'summary': 'Reading.', 'action': {'tool': 'read_webpage', 'url': 'https://example.com'}})
+            return json.dumps({'summary': 'Done.', 'action': {'tool': 'finish_answer', 'answer': 'Example Domain.',
+                'evidence_ids': [o['evidence_id'] for o in payload['tool_observations']]}})
+    runner = manager(Model(), direct_initial_delegation=False)
+    task = runner.start('Read https://example.com and tell me its title.')
+    await runner.runner
+    assert task.status == 'completed', task.summary
+    assert any('Tool batch rejected' in f for f in payloads[0]['feedback'])
+    assert task.answer['answer'] == 'Example Domain.'

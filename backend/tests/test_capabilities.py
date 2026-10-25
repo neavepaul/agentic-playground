@@ -297,3 +297,24 @@ async def test_mixed_goal_can_read_page_then_complete_physical_delivery(monkeypa
     assert task.answer['answer'] == 'Example page.'
     assert all(c['satisfied'] for c in check_conditions(task))
     assert any(a['tool'] == 'give' and a['success'] for a in task.action_history)
+
+
+@pytest.mark.asyncio
+async def test_reader_reports_http_status(monkeypatch):
+    async def address(*args):
+        return '93.184.216.34'
+    original = httpx.AsyncClient
+    monkeypatch.setattr(web, 'public_address', address)
+    transport = httpx.MockTransport(lambda req: httpx.Response(404, content=b'missing', headers={'content-type': 'text/html'}))
+    monkeypatch.setattr(web.httpx, 'AsyncClient', lambda **kwargs: original(transport=transport, **kwargs))
+    with pytest.raises(ValueError, match=r'HTTP 404 \(Not Found\)'):
+        await web.read_webpage('https://example.com/missing')
+
+
+@pytest.mark.asyncio
+async def test_invalid_arguments_explain_the_reason():
+    result = await CapabilityTools(EventBus()).execute('read_webpage', {'url': 'https://example.com/' + 'a' * 3000},
+                                                       TaskContext(goal='Read'))
+    assert not result['success']
+    assert result['error'].startswith('Invalid tool arguments: url: String should have at most 2048 characters')
+    assert 'aaaa' not in result['error']

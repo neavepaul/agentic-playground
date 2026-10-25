@@ -163,12 +163,21 @@ class TaskManager:
 
     async def call_capability_batch(self, context: TaskContext, calls: list[dict]) -> list[dict]:
         from app.capabilities.schemas import BatchAction
+        from app.capabilities.tools import validation_reasons
         from pydantic import ValidationError
         try:
             validated = BatchAction.model_validate({"tool": "batch_capabilities", "actions": [
                 {**call.get("arguments", {}), "tool": call["tool"]} for call in calls]})
-        except ValidationError:
-            raise ModelError("Model requested an invalid tool batch. Calls must be distinct public reads or small Python programs with valid arguments.") from None
+        except ValidationError as exc:
+            # Like a single invalid call, a malformed batch is feedback for the
+            # next decision, not a task failure. Nothing in it was started.
+            error = ("Tool batch rejected; none of its calls ran. Use distinct web_search, "
+                     "read_webpage or run_python calls with valid arguments. " + validation_reasons(exc))
+            context.feedback(error)
+            self.bus.emit("tool_failed", "explorer", task_id=context.id, tool="batch_capabilities",
+                          arguments={"actions": calls}, success=False, error=error)
+            self.message(context, "system", "Tool batch rejected; continuing with the error feedback.")
+            return []
         actions = [(action.tool, action.model_dump(exclude={"tool"})) for action in validated.actions]
         if context.tool_count + len(actions) > self.settings.max_tool_calls:
             raise LimitReached("Maximum total tool calls reached; batch was not started.")

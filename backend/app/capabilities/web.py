@@ -48,7 +48,9 @@ async def read_webpage(url: str, start_char: int = 0) -> dict:
                             raise ValueError("The page redirected without a destination.")
                         current = public_url(urljoin(str(current), location))
                         continue
-                    response.raise_for_status()
+                    if not response.is_success:
+                        raise ValueError(f"The page returned HTTP {response.status_code} "
+                                         f"({response.reason_phrase or 'error'}).")
                     if response.headers.get("content-encoding", "identity").lower() != "identity":
                         raise ValueError("The server ignored the uncompressed-page request; this page cannot be read safely within the size limit.")
                     content_type = response.headers.get("content-type", "").lower()
