@@ -71,6 +71,7 @@ class ColibriClient:
             async with self.http.stream("POST", "chat/completions", json={
                 "model": self.settings.colibri_model, "messages": messages, "stream": True,
                 "enable_thinking": False, "max_tokens": max_tokens,
+                "stream_options": {"include_usage": True},
                 "temperature": self.settings.temperature if temperature is None else temperature,
             }) as response:
                 response.raise_for_status()
@@ -80,7 +81,16 @@ class ColibriClient:
                     data = line[5:].strip()
                     if data == "[DONE]":
                         break
-                    delta = json.loads(data)["choices"][0].get("delta", {}).get("content")
+                    envelope = json.loads(data)
+                    usage = envelope.get("usage") or {}
+                    self.last_metrics.update({key: usage[key] for key in ("prompt_tokens", "completion_tokens")
+                                              if isinstance(usage.get(key), int)})
+                    choices = envelope["choices"]
+                    if not choices:  # The optional final usage event has no choice.
+                        continue
+                    if choices[0].get("finish_reason") == "length":
+                        raise ModelError("Colibri reached its reply limit before finishing. Please try a shorter request.")
+                    delta = choices[0].get("delta", {}).get("content")
                     if delta:
                         self.last_metrics.setdefault("first_token_seconds", round(time.monotonic() - started, 3))
                         yield delta

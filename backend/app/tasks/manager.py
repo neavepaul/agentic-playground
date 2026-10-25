@@ -121,7 +121,8 @@ class TaskManager:
             # Covers cancellation before the coroutine starts executing.
             if context.status == "running":
                 self.finish(context, "cancelled", "Task cancelled. Completed world actions are retained.")
-            self.active_id = None
+            if self.active_id == task_id:
+                self.active_id = None
         return context
 
     async def close(self) -> None:

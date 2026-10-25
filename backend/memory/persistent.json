@@ -5,8 +5,8 @@
       "name": "Moira",
       "location_tally": {
         "master_bedroom": 1,
-        "kitchen": 1,
-        "hall": 1
+        "kitchen": 2,
+        "hall": 2
       },
       "last_seen_room": "hall",
       "known_needs": [],
@@ -66,41 +66,6 @@
     }
   },
   "recent_tasks": [
-    {
-      "task_id": "040666de-e6e8-416d-89bb-c834387b5895",
-      "goal": "Find charger.",
-      "outcome": "cancelled",
-      "timestamp": "2026-10-25T03:51:20.595103+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "0e205f43-acd8-4fc2-8ede-0ab8c7db0bb4",
-      "goal": "Try again.",
-      "outcome": "cancelled",
-      "timestamp": "2026-10-25T03:51:20.601103+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "d7714b7b-3149-43be-a51a-327dad659681",
-      "goal": "Find charger.",
-      "outcome": "cancelled",
-      "timestamp": "2026-10-25T06:28:21.464473+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "f80a32b0-3605-49b5-8412-6424ec9d2c4b",
-      "goal": "Try again.",
-      "outcome": "cancelled",
-      "timestamp": "2026-10-25T06:28:21.476030+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "fe528dec-dde1-4007-9477-ece2ed878206",
-      "goal": "Find charger.",
-      "outcome": "cancelled",
-      "timestamp": "2026-10-25T06:32:59.030114+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
     {
       "task_id": "3aa571bf-a190-49ba-ae97-1cfbc69705b4",
       "goal": "Try again.",
@@ -205,6 +170,41 @@
       "outcome": "cancelled",
       "timestamp": "2026-10-25T08:21:55.386076+00:00",
       "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "05f09539-18f2-4500-b34f-913ff9463b0c",
+      "goal": "Calculate the total minutes in 3 hours and 25 minutes using Python.",
+      "outcome": "completed",
+      "timestamp": "2026-10-25T11:15:55.905186+00:00",
+      "summary": "Answer ready. All requested outcomes completed."
+    },
+    {
+      "task_id": "188390d8-f180-4aec-9c83-a07a0fae22a7",
+      "goal": "Check the kitchen for current items",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T12:12:17.311079+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "d7338de7-e9c8-4cb3-bcbc-96fa6f381238",
+      "goal": "Check the kitchen for current items",
+      "outcome": "completed",
+      "timestamp": "2026-10-25T12:28:13.704202+00:00",
+      "summary": "The kitchen has been visited and the goal to check it is satisfied."
+    },
+    {
+      "task_id": "62ad172b-31ac-4868-84c7-4e25754eb160",
+      "goal": "Find the keys",
+      "outcome": "failed",
+      "timestamp": "2026-10-25T14:05:41.188506+00:00",
+      "summary": "Colibri timed out. Check the server or increase LLM_TIMEOUT_SECONDS."
+    },
+    {
+      "task_id": "27bf553d-de71-49c6-add4-9df5cfa46b8e",
+      "goal": "Find the keys",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T14:05:41.326939+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
     }
   ],
   "self_model": {
@@ -215,7 +215,7 @@
       "hall": 8,
       "entrance": 4,
       "office": 2,
-      "kitchen": 2
+      "kitchen": 4
     },
     "tool_failure_counts": {
       "finish_answer": 1,
@@ -224,5 +224,57 @@
     "entity_search_failures": {
       "paul": 1
     }
+  },
+  "persona": {
+    "traits": {
+      "empathy": 0.9,
+      "loyalty": 0.8,
+      "curiosity": 0.703,
+      "enthusiasm": 0.71,
+      "caution": 0.51
+    },
+    "mood": {
+      "valence": -0.14918687727422977,
+      "energy": 0.5003252490903081,
+      "updated_at": 461228.52000000025
+    },
+    "relationships": {
+      "moira": {
+        "familiarity": 0.02,
+        "warmth": 0.51,
+        "interactions": 1,
+        "times_helped": 0,
+        "last_interaction": 60226.92000000017,
+        "moments": []
+      }
+    },
+    "episodes": [
+      {
+        "summary": "Finished: Calculate the total minutes in 3 hours and 25 minutes using Python.",
+        "feeling": "content",
+        "person": null,
+        "at": 33233.460000000196
+      },
+      {
+        "summary": "Met moira for the first time.",
+        "feeling": "content",
+        "person": "moira",
+        "at": 60226.92000000017
+      },
+      {
+        "summary": "Finished: Check the kitchen for current items",
+        "feeling": "content",
+        "person": null,
+        "at": 110368.20000000029
+      },
+      {
+        "summary": "Could not finish: Find the keys",
+        "feeling": "concerned",
+        "person": null,
+        "at": 461220.06000000006
+      }
+    ],
+    "followups": [],
+    "age_seconds": 461228.52000000025
   }
 }

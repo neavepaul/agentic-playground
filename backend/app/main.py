@@ -70,9 +70,9 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
             app.state.embedder_warmup = asyncio.create_task(asyncio.to_thread(embedder.embed_sync, ["warm up"]))
         mind.start()
         yield
+        await chat.close()
         await mind.close()
         await manager.close()
-        await chat.drain()
         if client is None:
             await llm.close()
             if chat_llm is not llm:
@@ -123,6 +123,8 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
     @app.post("/api/world/reset")
     async def reset():
         async with mutation_lock:
+            # Reset also discards pending replies/errands from the previous world.
+            await chat.reset_pending()
             await manager.close()
             try:
                 engine.reset()

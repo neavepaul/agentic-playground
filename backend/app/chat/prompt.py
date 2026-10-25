@@ -55,7 +55,7 @@ def build_messages(name: str, voice: dict | None, memories: list[dict], status: 
             action = turn.get("action") or {"task": "", "remember": []}
             messages.append({"role": "assistant", "content": _clip(turn["text"]) + f"\n{TRAILER}\n"
                              + json.dumps(action, ensure_ascii=False)})
-    messages.append({"role": "user", "content": _clip(message)})
+    messages.append({"role": "user", "content": message})
     return messages
 
 

@@ -765,3 +765,56 @@ footer span {
 #answer-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; margin-top: 12px; }
 #answer-sources { display: grid; gap: 6px; margin-top: 12px; }
 #answer-sources a { color: #365f50; overflow-wrap: anywhere; font-size: 12px; }
+
+/* Personality tab */
+.persona-panel { flex: 1; overflow-y: auto; padding: 14px 24px 18px; display: grid; gap: 16px; align-content: start; scrollbar-width: thin; }
+.persona-panel[hidden] { display: none; }
+.persona-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.persona-name { font-size: 18px; color: #24352d; }
+.persona-mood { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #edf1eb; color: #4a5e44; text-transform: capitalize; }
+.persona-mood.cheerful { background: #e3f0dc; color: #3e6b3a; }
+.persona-mood.concerned { background: #f6ead9; color: #8a5a1f; }
+.persona-mood.determined { background: #e2ebf3; color: #35587a; }
+.persona-mood.tired { background: #eceae6; color: #6e6a62; }
+.persona-section { display: grid; gap: 7px; }
+.persona-bar { display: grid; grid-template-columns: 78px 1fr 34px; align-items: center; gap: 8px; font-size: 11px; color: #5d6e56; text-transform: capitalize; }
+.persona-bar-track { position: relative; height: 6px; border-radius: 3px; background: #edf1eb; }
+.persona-bar-fill { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: #6f9a78; }
+.persona-bar-baseline { position: absolute; top: -3px; width: 2px; height: 12px; background: #344b3e66; }
+.persona-bar-value { text-align: right; font-variant-numeric: tabular-nums; }
+.persona-person { display: grid; gap: 2px; padding: 8px 10px; border-radius: 7px; background: #f6f8f4; font-size: 12px; }
+.persona-moment { margin: 0; font-size: 12px; color: #4f5f49; line-height: 1.5; }
+.persona-empty { margin: 0; font-size: 12px; color: #84937b; }
+
+/* Talk to Kip */
+.chat-log { display: flex; flex-direction: column; gap: 8px; max-height: 300px; min-height: 120px; overflow-y: auto; margin: 10px 0; padding-right: 4px; scrollbar-width: thin; }
+.chat-log #chat-empty { margin: auto 0; }
+.chat-bubble { max-width: 88%; padding: 8px 12px; border-radius: 12px; font-size: 13px; line-height: 1.5; }
+.chat-bubble p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-bubble.user { align-self: flex-end; background: #365f50; color: #fff; border-bottom-right-radius: 4px; }
+.chat-bubble.kip { align-self: flex-start; background: #edf1eb; color: #24352d; border-bottom-left-radius: 4px; }
+.chat-bubble.narration { background: #f6f8f4; border: 1px dashed #c9d4c3; color: #4f5f49; font-size: 12px; }
+.chat-bubble.thinking p { color: #84937b; font-style: italic; }
+.chat-bubble.error { background: #f8e9e6; color: #8a3a2c; }
+.chat-task { display: block; margin-top: 4px; font-size: 11px; color: #52795e; }
+.chat-sources { display: grid; gap: 3px; margin-top: 6px; }
+.chat-sources a { font-size: 11px; color: #365f50; overflow-wrap: anywhere; }
+.chat-form { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
+.chat-form textarea { resize: none; }
+.direct-task { margin-top: 10px; font-size: 12px; }
+.direct-task summary { cursor: pointer; color: #6c7d64; }
+.direct-task[open] summary { margin-bottom: 8px; }
+
+/* Memories tab */
+.memories-panel { flex: 1; overflow-y: auto; padding: 12px 24px 16px; display: grid; gap: 10px; align-content: start; scrollbar-width: thin; }
+.memories-panel[hidden] { display: none; }
+.memory-search input { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #d4ddcd; border-radius: 7px; font: inherit; font-size: 12px; }
+.memory-results { display: grid; gap: 8px; }
+.memory-item { padding: 8px 10px; border-radius: 7px; background: #f6f8f4; font-size: 12px; }
+.memory-item p { margin: 4px 0 0; line-height: 1.5; color: #24352d; }
+.memory-top { display: flex; justify-content: space-between; gap: 8px; }
+.memory-kind { text-transform: uppercase; letter-spacing: .04em; font-size: 10px; font-weight: 600; color: #52795e; }
+.memory-kind.skill { color: #35587a; }
+.memory-kind.preference { color: #8a5a1f; }
+.memory-kind.episode { color: #6e4a7a; }
+.memory-tags { display: block; margin-top: 3px; font-size: 10px; color: #84937b; }

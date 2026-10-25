@@ -96,6 +96,8 @@ async def test_task_trailer_starts_an_errand_and_queues_the_next():
     assert list(session.pending_goals) == ["Find Neave and tell him dinner is ready."]
     assert "right after my current errand" in session.history()[-1]["text"]
     await manager.cancel(manager.active_id)
+    await session.close()
+    await manager.close()
 
 
 @pytest.mark.asyncio
@@ -154,6 +156,113 @@ def test_chat_prompt_stays_small():
     assert len(messages[0]["content"]) < 3500
     assert len(messages) == 1 + 8 + 1
     assert sum(len(m["content"]) for m in messages) < 9000
+    assert messages[-1]["content"] == "z" * 2000
+
+
+@pytest.mark.asyncio
+async def test_current_message_keeps_trailing_constraints_and_code_formatting():
+    session, model, _, _ = make_session([reply("Understood.")])
+    text = "A" * 450 + "\nPlease preserve this constraint.\nfor i in range(2):\n    print(i)"
+    session.submit(text)
+    await session.drain()
+    assert model.prompts[0][-1]["content"] == text
+    assert session.history()[0]["text"] == text
+
+
+@pytest.mark.asyncio
+async def test_rapid_messages_keep_each_question_and_reply_in_order():
+    session, model, _, _ = make_session([reply("First reply"), reply("Second reply"), reply("Third reply")])
+    session.submit("First message")
+    session.submit("Second message")
+    session.submit("Third message")
+    await session.drain()
+    assert [m["content"].split("\n###")[0] for m in model.prompts[0][1:]] == ["First message"]
+    assert [m["content"].split("\n###")[0] for m in model.prompts[1][1:]] == [
+        "First message", "First reply", "Second message"]
+    assert [m["content"].split("\n###")[0] for m in model.prompts[2][1:]] == [
+        "First message", "First reply", "Second message", "Second reply", "Third message"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["recall", "add"])
+async def test_memory_failure_does_not_block_reply_or_promised_errand(failure):
+    store = MemoryStore(":memory:")
+    async def broken(*args, **kwargs):
+        raise OSError("database unavailable")
+    setattr(store, failure, broken)
+    session, model, manager, _ = make_session([
+        reply("I'll find the keys.", task="Find keys.", remember=["Neave likes tea"]), reply("Still here.")], store)
+    session.submit("Remember I like tea, and find my keys.")
+    await session.drain()
+    assert manager.active()["goal"] == "Find keys."
+    assert any(t["text"] == "I'll find the keys." for t in session.history())
+    session.submit("Are you still there?")
+    await session.drain()
+    assert session.history()[-1]["text"] == "Still here."
+    assert len(model.prompts) == 2 and not session.busy
+    await session.close()
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_errand_starts_the_next_queued_errand():
+    session, _, manager, _ = make_session([
+        reply("On it.", task="Find keys."), reply("Next.", task="Tell Neave dinner is ready.")])
+    session.submit("Find keys")
+    await session.drain()
+    first = manager.active_id
+    session.submit("Then tell Neave dinner is ready")
+    await session.drain()
+    await manager.cancel(first)
+    await asyncio.wait_for(session.drain(), 1)
+    assert manager.active()["goal"] == "Tell Neave dinner is ready."
+    assert manager.active_id != first
+    assert not session.pending_goals
+    await session.close()
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_close_cancels_generation_and_pending_messages_without_starting_work():
+    session, model, manager, _ = make_session([])
+    entered, stopped = asyncio.Event(), asyncio.Event()
+    async def blocked(*args, **kwargs):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+        yield "never"
+    model.stream_text = blocked
+    session.submit("Hello")
+    session.submit("Follow up")
+    session.pending_goals.append("Find keys.")
+    await entered.wait()
+    await asyncio.wait_for(session.close(), 1)
+    assert stopped.is_set() and not session.busy and not session.pending_goals
+    manager.bus.emit("task_completed", task={}, summary="Done")
+    assert manager.active_id is None
+    with pytest.raises(ValueError, match="shutting down"):
+        session.submit("After shutdown")
+
+
+@pytest.mark.asyncio
+async def test_reset_discards_old_pending_work_and_accepts_new_chat():
+    session, _, manager, _ = make_session([reply("Hello again.")])
+    session.pending_goals.append("Old world errand")
+    await session.reset_pending()
+    session.submit("New world")
+    await session.drain()
+    assert session.history()[-1]["text"] == "Hello again."
+    assert not session.pending_goals and manager.active_id is None
+
+
+def test_memory_tags_match_names_and_ids_without_substring_collisions():
+    session, _, _, _ = make_session([])
+    session.engine = WorldEngine()
+    assert "minu" not in session._mentioned("Calculate the minutes; minimum effort.")
+    assert "paul" not in session._mentioned("Pauline likes tea.")
+    assert set(session._mentioned("MINU, could you ask Neave's friend Paul?")) == {"neave", "paul", "minu"}
 
 
 @pytest.mark.asyncio
@@ -180,6 +289,34 @@ async def test_colibri_streams_server_sent_events():
     assert "".join([chunk async for chunk in client.stream_text([{"role": "user", "content": "hi"}])]) == "Hello"
     assert seen["stream"] is True and seen["enable_thinking"] is False
     assert "first_token_seconds" in client.last_metrics
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_colibri_records_stream_usage_without_changing_the_reply():
+    events = [{"choices": [{"delta": {"content": "Hello"}}]},
+              {"choices": [], "usage": {"prompt_tokens": 120, "completion_tokens": 7}}]
+    body = "".join("data: " + json.dumps(event) + "\n\n" for event in events) + "data: [DONE]\n\n"
+    def respond(request):
+        assert json.loads(request.content)["stream_options"] == {"include_usage": True}
+        return httpx.Response(200, text=body)
+    client = ColibriClient(Settings())
+    client.http = httpx.AsyncClient(transport=httpx.MockTransport(respond), base_url="http://colibri/")
+    assert "".join([chunk async for chunk in client.stream_text([])]) == "Hello"
+    assert client.last_metrics["prompt_tokens"] == 120
+    assert client.last_metrics["completion_tokens"] == 7
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_colibri_truncated_reply_is_reported_as_an_error():
+    body = 'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'
+    client = ColibriClient(Settings())
+    client.http = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, text=body)), base_url="http://colibri/")
+    with pytest.raises(ModelError, match="reply limit"):
+        async for _ in client.stream_text([]):
+            pass
     await client.close()
 
 
