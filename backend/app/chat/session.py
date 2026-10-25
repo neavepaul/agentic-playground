@@ -34,6 +34,8 @@ class ChatSession:
         self.last_activity = 0.0
         self._closed = False
         self._announced: set[str] = set()
+        # An errand Kip offered but nobody has agreed to yet. Lasts one turn.
+        self.pending_offer: str | None = None
 
     def attach(self) -> None:
         self.bus.add_listener(self._narrate)
@@ -98,9 +100,12 @@ class ChatSession:
     def _status(self) -> dict:
         status = self.engine.get_status()
         active = self.manager.active()
-        status["current_errand"] = errand_progress(active) if active else None
+        # "none", not null: models repeat null verbatim ("my current errand is null").
+        status["current_errand"] = errand_progress(active) if active else "none"
         if self.pending_goals:
             status["queued_errands"] = list(self.pending_goals)
+        if self.pending_offer:
+            status["offered_errand_awaiting_yes"] = self.pending_offer
         people = known_people(self.manager.persistent)
         if people:
             status["people_i_know"] = people
@@ -166,29 +171,41 @@ class ChatSession:
 
     async def _act(self, action: ChatAction, said: str, reply: str) -> None:
         goal = " ".join(action.task.split())
+        offer, self.pending_offer = self.pending_offer, None
+        agreed = bool(offer) and is_affirmative(said)
+        if agreed and not goal:
+            goal = offer  # "Yes please" is enough, even if the model forgot the task line
         if goal and not self._closed:
+            authorized = self.settings.chat_autonomy == "act" or agreed or is_request(said)
             if self._already_planned(goal):
                 _log.info("Ignoring a repeated errand request: %s", goal)
-            else:
+            elif authorized:
                 self._start_or_queue(goal)
+            else:
+                # The model proposed an errand nobody asked for: Kip's words may offer it,
+                # but code decides. It waits for a yes on the next turn.
+                self.pending_offer = goal
+                _log.info("Holding unrequested errand as an offer: %s", goal)
         if self.store:
             about = self._mentioned(said + " " + reply)
-            # Retract before remembering, so a correction never deletes its own fix.
-            for wrong in action.forget:
-                if wrong.strip():
-                    try:
-                        removed = await self.store.forget(wrong)
-                        if removed:
-                            _log.info("Forgot corrected memory %s", removed["id"])
-                    except Exception:
-                        _log.exception("Could not retract a memory")
+            added = []
             for fact in action.remember:
                 if fact.strip():
                     try:
-                        await self.store.add("fact", fact, about=self._mentioned(fact) or about,
-                                             importance=0.7, source="conversation")
+                        added.append(await self.store.add("fact", fact, about=self._mentioned(fact) or about,
+                                                          importance=0.7, source="conversation"))
                     except Exception:
                         _log.exception("Could not save a conversational fact")
+            # Corrections retire the wrong memory (kept as history), never the fix itself.
+            for wrong in action.forget:
+                if wrong.strip():
+                    try:
+                        retired = await self.store.supersede(wrong, by=added[0] if added else None,
+                                                             exclude=set(added))
+                        if retired:
+                            _log.info("Memory %s superseded by a correction", retired["id"])
+                    except Exception:
+                        _log.exception("Could not retire a corrected memory")
             try:
                 await self.store.add("conversation", f"They said: {said} | I replied: {reply}", about=about,
                                      importance=0.3, source="conversation")
@@ -338,3 +355,26 @@ def describe_findings(task: dict) -> str:
         parts.append("I saw " + ", ".join(f"{name} {where}"
                                          for name, where in list(progress["people_seen"].items())[:3]) + ".")
     return " ".join(parts)
+
+
+# ── consent (deterministic) ──────────────────────────────────────────────────
+_POLITE_REQUEST = re.compile(
+    r"\b(please|could you|can you|would you|will you|would you mind|i need you to|i want you to|"
+    r"i'd like you to|go and|help me)\b")
+_IMPERATIVE = re.compile(
+    r"(?:^|[.!?;]\s+|,\s*|\band\s+|\bthen\s+)(?:also\s+|just\s+|now\s+|quickly\s+)?(find|bring|fetch|get|grab|take|tell|let|check|look|search|"
+    r"calculate|compute|use|run|read|deliver|give|go|ask|remind|put|place|carry|work out|figure out|"
+    r"notify|inform|show|count)\b")
+_AFFIRMATIVE = re.compile(
+    r"^\W*(yes|yeah|yep|yup|sure|ok|okay|please|please do|go ahead|do it|go for it|sounds good|"
+    r"that would be (great|lovely|nice)|absolutely|of course|definitely|why not|alright|all right)\b")
+
+
+def is_request(text: str) -> bool:
+    """Does the person's message itself ask Kip to do something?"""
+    lowered = " ".join(text.casefold().split())
+    return bool(_POLITE_REQUEST.search(lowered) or _IMPERATIVE.search(lowered))
+
+
+def is_affirmative(text: str) -> bool:
+    return bool(_AFFIRMATIVE.search(" ".join(text.casefold().split())))

@@ -66,8 +66,12 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app):
         if embedder:
-            # Load the embedding model in the background so the first reply doesn't wait.
-            app.state.embedder_warmup = asyncio.create_task(asyncio.to_thread(embedder.embed_sync, ["warm up"]))
+            # Load the embedding model in the background so the first reply doesn't wait,
+            # then index any memories saved while meaning search was unavailable.
+            async def prepare_memory():
+                await asyncio.to_thread(embedder.embed_sync, ["warm up"])
+                await store.backfill()
+            app.state.memory_ready = asyncio.create_task(prepare_memory())
         mind.start()
         yield
         await chat.close()
@@ -97,7 +101,8 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/chat")
     async def chat_history():
-        return {"turns": chat.history(), "busy": chat.busy, "name": chat.name}
+        return {"turns": chat.history(), "busy": chat.busy, "name": chat.name,
+                "queued_errands": list(chat.pending_goals), "offered_errand": chat.pending_offer}
 
     @app.get("/api/memories")
     async def memories(q: str = "", kind: str = "", limit: int = 20):

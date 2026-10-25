@@ -78,15 +78,22 @@ class CapabilityTools:
         evidence = [by_id[key] for key in args.evidence_ids]
         required = {tool for c in context.conditions if c.kind == "answer" for tool in c.required_tools}
         missing = required - {a["tool"] for a in evidence}
+        # A required tool that genuinely succeeded in this task but was not cited is
+        # attached automatically: the guard exists to stop claims about tools that never
+        # ran, not to reject a correct answer over citation bookkeeping.
+        ran = {a["tool"]: a for a in by_id.values()}
+        attached = [ran[tool] for tool in sorted(missing) if tool in ran]
+        missing -= {a["tool"] for a in attached}
         if missing:
             raise ValueError("Answer is missing cited tool evidence for: " + ", ".join(sorted(missing))
                              + ". Run any unfinished tools and cite their successful evidence IDs.")
         sources = []
-        for item in evidence:
+        for item in evidence + [a for a in attached if a["tool"] == "read_webpage"]:
             obs = item["observation"]
             candidates = obs.get("results", []) if item["tool"] == "web_search" else (
                 [obs] if item["tool"] == "read_webpage" else [])
             for source in candidates:
                 if not any(s["url"] == source["url"] for s in sources):
                     sources.append({"title": source.get("title", source["url"]), "url": source["url"]})
-        return {"answer": args.answer, "sources": sources, "evidence_ids": args.evidence_ids}
+        return {"answer": args.answer, "sources": sources,
+                "evidence_ids": args.evidence_ids + [a["evidence_id"] for a in attached]}

@@ -67,27 +67,6 @@
   },
   "recent_tasks": [
     {
-      "task_id": "0e7681a0-4a89-4cb3-b08e-66a9325e5894",
-      "goal": "Try again.",
-      "outcome": "cancelled",
-      "timestamp": "2026-10-25T07:32:10.733509+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "bbb42ba6-e7ea-410c-a363-6d70b37ce6e6",
-      "goal": "Read https://example.com and use Python to calculate 6 × 7. Tell me both results.",
-      "outcome": "completed",
-      "timestamp": "2026-10-25T07:53:42.811233+00:00",
-      "summary": "Answer ready. All requested outcomes completed."
-    },
-    {
-      "task_id": "84e80ebc-e837-43d2-a56c-443984b8b841",
-      "goal": "what is the current AQI of mumbai? and use Python to calculate 6 × 7. Tell me both results.",
-      "outcome": "completed",
-      "timestamp": "2026-10-25T08:06:31.705349+00:00",
-      "summary": "Answer ready. All requested outcomes completed."
-    },
-    {
       "task_id": "f9f0c497-7e6d-4154-afde-fef0e126f727",
       "goal": "Read https://example.com and use Python to calculate 6 × 7. Tell me both results.",
       "outcome": "completed",
@@ -205,6 +184,27 @@
       "outcome": "cancelled",
       "timestamp": "2026-10-25T14:33:29.747640+00:00",
       "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "7d86cb7c-2ea4-4e95-a754-657cd9ecb90f",
+      "goal": "Find charger.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T15:49:21.818392+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "07d37d29-90f9-4c2e-bdbb-cfd1bc162467",
+      "goal": "Find charger.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T15:51:33.797248+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "e9273df0-5b3f-4518-9514-e301c970afb8",
+      "goal": "Try again.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T15:51:33.813427+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
     }
   ],
   "self_model": {
@@ -234,9 +234,9 @@
       "caution": 0.51
     },
     "mood": {
-      "valence": -0.1488917738137257,
-      "energy": 0.5004432904745096,
-      "updated_at": 461231.59718400013
+      "valence": -0.14845349415699524,
+      "energy": 0.5006186023372018,
+      "updated_at": 461236.17407400004
     },
     "relationships": {
       "moira": {
@@ -275,6 +275,6 @@
       }
     ],
     "followups": [],
-    "age_seconds": 461231.59718400013
+    "age_seconds": 461236.17407400004
   }
 }

@@ -318,3 +318,16 @@ async def test_invalid_arguments_explain_the_reason():
     assert not result['success']
     assert result['error'].startswith('Invalid tool arguments: url: String should have at most 2048 characters')
     assert 'aaaa' not in result['error']
+
+
+def test_answer_citing_the_page_but_not_the_search_is_accepted():
+    """Live weather run: the search ran and the page was read, but only the page was cited."""
+    context = TaskContext(goal='Weather', conditions=[
+        GoalCondition(kind='answer', required_tools=['web_search', 'read_webpage'])])
+    evidence(context, 'web_search', {'query': 'Mumbai weather', 'results': [
+        {'title': 'AccuWeather', 'url': 'https://accuweather.example', 'snippet': '...'}]}, 'search-id')
+    evidence(context, 'read_webpage', {'url': 'https://toi.example/mumbai', 'title': 'Mumbai forecast'}, 'page-id')
+    result = CapabilityTools.finish_answer(
+        AnswerAction(tool='finish_answer', answer='29.3°C at 7:30 PM', evidence_ids=['page-id']), context)
+    assert result['evidence_ids'] == ['page-id', 'search-id']
+    assert [s['url'] for s in result['sources']] == ['https://toi.example/mumbai']

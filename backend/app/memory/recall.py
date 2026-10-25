@@ -133,6 +133,11 @@ class MemoryStore:
                 INSERT INTO memories_fts(rowid, text, about) VALUES (new.id, new.text, new.about);
             END;
         """)
+        columns = {row[1] for row in db.execute("PRAGMA table_info(memories)")}
+        if "superseded_by" not in columns:
+            # 0 = retracted without a replacement; otherwise the id of the correction.
+            db.execute("ALTER TABLE memories ADD COLUMN superseded_by INTEGER")
+            db.commit()
         if self.embedder is None:
             return
         try:
@@ -160,12 +165,14 @@ class MemoryStore:
     def _add(self, kind, text, about, importance, source, meta, vector) -> int:
         with self._lock:
             db = self._db
-            duplicate = db.execute("SELECT id FROM memories WHERE kind = ? AND text = ?", (kind, text)).fetchone()
+            duplicate = db.execute("SELECT id FROM memories WHERE kind = ? AND text = ? AND superseded_by IS NULL",
+                                   (kind, text)).fetchone()
             if duplicate is None and vector is not None and self.vectors:
                 import sqlite_vec
                 nearest = db.execute(
                     "SELECT v.rowid, v.distance, m.kind, m.text FROM memories_vec v JOIN memories m ON m.id = v.rowid "
-                    "WHERE v.embedding MATCH ? AND k = 1", (sqlite_vec.serialize_float32(vector),)).fetchone()
+                    "WHERE v.embedding MATCH ? AND k = 1 AND m.superseded_by IS NULL",
+                    (sqlite_vec.serialize_float32(vector),)).fetchone()
                 # Similar meaning alone is not enough: "tea in the morning" and "tea after
                 # dinner" are different facts. Merge only rewordings of the same words.
                 if (nearest and nearest["kind"] == kind and 1 - nearest["distance"] >= DUPLICATE_SIMILARITY
@@ -198,14 +205,16 @@ class MemoryStore:
 
     # ── recall ──────────────────────────────────────────────────────────────
     async def recall(self, query: str, about: list[str] | None = None, kinds: list[str] | None = None,
-                     k: int = 6, touch: bool = True) -> list[dict]:
+                     k: int = 6, touch: bool = True, include_superseded: bool = False) -> list[dict]:
         vector = await self._embed(query) if query.strip() else None
-        return await asyncio.to_thread(self._recall, query, about, kinds, k, touch, vector)
+        return await asyncio.to_thread(self._recall, query, about, kinds, k, touch, vector, include_superseded)
 
-    def _recall(self, query, about, kinds, k, touch, vector) -> list[dict]:
+    def _recall(self, query, about, kinds, k, touch, vector, include_superseded=False) -> list[dict]:
         with self._lock:
             db = self._db
             kind_sql = f" AND m.kind IN ({','.join('?' * len(kinds))})" if kinds else ""
+            if not include_superseded:
+                kind_sql += " AND m.superseded_by IS NULL"
             kind_args = list(kinds or [])
             keyword, semantic = {}, {}
             words = _WORD.findall(query.casefold())
@@ -256,30 +265,59 @@ class MemoryStore:
                 db.commit()
             return results
 
-    def recent(self, limit: int = 20, kind: str | None = None) -> list[dict]:
+    def recent(self, limit: int = 20, kind: str | None = None, include_superseded: bool = True) -> list[dict]:
+        where = [clause for clause in ("kind = ?" if kind else "",
+                                       "" if include_superseded else "superseded_by IS NULL") if clause]
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM memories" + (" WHERE kind = ?" if kind else "") + " ORDER BY id DESC LIMIT ?",
-                ([kind] if kind else []) + [limit]).fetchall()
+                "SELECT * FROM memories" + (" WHERE " + " AND ".join(where) if where else "")
+                + " ORDER BY id DESC LIMIT ?", ([kind] if kind else []) + [limit]).fetchall()
         return [{"id": row["id"], "kind": row["kind"], "text": row["text"], "about": json.loads(row["about"]),
-                 "importance": round(row["importance"], 2), "created_at": row["created_at"]} for row in rows]
+                 "importance": round(row["importance"], 2), "created_at": row["created_at"],
+                 "superseded_by": row["superseded_by"]} for row in rows]
 
-    def delete(self, memory_id: int) -> None:
+    async def backfill(self, batch: int = 32) -> int:
+        """Index memories saved while meaning search was unavailable. Returns how many."""
+        if self.embedder is None or not self.vectors:
+            return 0
+        def missing() -> list[tuple[int, str]]:
+            with self._lock:
+                return [(row["id"], row["text"]) for row in self._db.execute(
+                    "SELECT id, text FROM memories WHERE id NOT IN (SELECT rowid FROM memories_vec)")]
+        def store(pairs: list[tuple[int, list[float]]]) -> None:
+            import sqlite_vec
+            with self._lock:
+                self._db.executemany("INSERT INTO memories_vec(rowid, embedding) VALUES (?, ?)",
+                                     [(key, sqlite_vec.serialize_float32(vector)) for key, vector in pairs])
+                self._db.commit()
+        rows, done = await asyncio.to_thread(missing), 0
+        for start in range(0, len(rows), batch):
+            chunk = rows[start:start + batch]
+            vectors = await self.embedder.embed([text for _, text in chunk])
+            if not vectors:
+                break
+            await asyncio.to_thread(store, [(key, vector) for (key, _), vector in zip(chunk, vectors)])
+            done += len(chunk)
+        if done:
+            _log.info("Indexed %d memories for meaning search.", done)
+        return done
+
+    def _mark_superseded(self, memory_id: int, by: int) -> None:
         with self._lock:
-            db = self._db
-            db.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
-            if self.vectors:
-                db.execute("DELETE FROM memories_vec WHERE rowid = ?", (memory_id,))
-            db.commit()
+            self._db.execute("UPDATE memories SET superseded_by = ? WHERE id = ?", (by, memory_id))
+            self._db.commit()
 
-    async def forget(self, text: str, kinds: list[str] | None = None) -> dict | None:
-        """Retract the memory a correction refers to. Requires clear word overlap, so a
-        loosely worded request cannot erase an unrelated memory."""
-        candidates = await self.recall(text, kinds=kinds or ["fact", "preference"], k=5, touch=False)
+    async def supersede(self, text: str, by: int | None = None, kinds: list[str] | None = None,
+                        exclude: set[int] | frozenset = frozenset()) -> dict | None:
+        """Mark the memory a correction refers to as superseded. It stays stored as history
+        but no longer answers questions. Requires clear word overlap, so a loosely
+        worded correction cannot retire an unrelated memory."""
+        candidates = [m for m in await self.recall(text, kinds=kinds or ["fact", "preference"], k=5, touch=False)
+                      if m["id"] not in exclude]
         best = max(candidates, key=lambda m: _overlap(m["text"], text), default=None)
         if best is None or _overlap(best["text"], text) < FORGET_OVERLAP:
             return None
-        await asyncio.to_thread(self.delete, best["id"])
+        await asyncio.to_thread(self._mark_superseded, best["id"], by or 0)
         return best
 
     def count(self) -> int:

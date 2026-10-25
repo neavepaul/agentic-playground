@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     chat_base_url: str | None = None
     chat_max_tokens: int = Field(default=300, ge=50, le=2000)
     chat_temperature: float = Field(default=0.6, ge=0, le=1.5)
+    # confirm: errands start only when asked or after a yes to Kip's offer.
+    # act: any errand the chat model proposes starts immediately (less safe).
+    chat_autonomy: Literal["confirm", "act"] = "confirm"
     # Seconds after the last chat activity before the idle mind may use the model again.
     chat_quiet_seconds: float = Field(default=90.0, ge=0)
     # Searchable long-term memory (SQLite + FTS5 + sqlite-vec)

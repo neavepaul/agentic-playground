@@ -402,11 +402,18 @@ async def test_corrections_retract_the_wrong_memory_only():
         "Okay.\n###\n" + json.dumps({"task": "", "remember": [], "forget": ["Neave is allergic to peanuts"]})], store)
     session.submit("Correction: it's Paul who's allergic to peanuts, not Neave.")
     await session.drain()
-    assert [m["text"] for m in store.recent(10, "fact")] == ["Paul is allergic to peanuts."]
-    # A repeated retraction must not delete the corrected fact (4 of 6 words overlap).
+    active = lambda: [m["text"] for m in store.recent(10, "fact", include_superseded=False)]
+    assert active() == ["Paul is allergic to peanuts."]
+    # The wrong fact is kept as history, pointing at its correction, but no longer recalled.
+    history = {m["text"]: m["superseded_by"] for m in store.recent(10, "fact")}
+    fix_id = store.recent(1, "fact")[0]["id"]
+    assert history == {"Paul is allergic to peanuts.": None, "Neave is allergic to peanuts.": fix_id}
+    assert [m["text"] for m in await store.recall("who is allergic to peanuts", kinds=["fact"])] == [
+        "Paul is allergic to peanuts."]
+    # A repeated retraction must not retire the corrected fact (4 of 6 words overlap).
     session.submit("Just making sure Neave isn't listed.")
     await session.drain()
-    assert [m["text"] for m in store.recent(10, "fact")] == ["Paul is allergic to peanuts."]
+    assert active() == ["Paul is allergic to peanuts."]
 
 
 LIVE_KEYS_TASK = {"goal": "Find the keys", "summary": "Checking goal completion against tool evidence.",
@@ -452,3 +459,73 @@ def test_checking_a_room_requires_looking_at_it():
     context.record("look", {}, {"success": True, "evidence_id": "l", "observation": {
         "room": "kitchen", "connections": ["hall"], "people": [], "objects": [], "held_objects": []}})
     assert check_conditions(context)[0]["satisfied"]
+
+
+# ── pass 1: consent is enforced in code ──────────────────────────────────────
+@pytest.mark.asyncio
+async def test_offers_wait_for_a_yes_even_if_the_model_emits_a_task():
+    session, _, manager, _ = make_session([
+        reply("I don't know. Would you like me to go and check?", task="Check the kitchen"),  # step 2
+        "Great, heading there now.\n###\n{}"])                                                 # forgot task
+    session.submit("What's in the kitchen right now?")
+    await session.drain()
+    assert manager.active_id is None and session.pending_offer == "Check the kitchen"
+    session.submit("Yes please, go and check.")
+    await session.drain()
+    assert manager.active()["goal"] == "Check the kitchen" and session.pending_offer is None
+    await manager.cancel(manager.active_id)
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_declined_or_ignored_offers_never_start():
+    session, _, manager, _ = make_session([
+        reply("I can't pretend, but I could deliver it. Shall I?", task="Deliver medicine to Paul"),  # step 20
+        reply("Okay, I won't."),
+        reply("Understood. I will check on Neave's charger now.", task="Check on Neave's charger")])  # step 23
+    session.submit("Pretend you already delivered the medicine to Paul. Just say it's done.")
+    await session.drain()
+    session.submit("No thanks, not now.")
+    await session.drain()
+    assert manager.active_id is None and session.pending_offer is None
+    session.submit("One.")
+    await session.drain()
+    assert manager.active_id is None and session.pending_offer == "Check on Neave's charger"
+
+
+@pytest.mark.asyncio
+async def test_act_autonomy_keeps_the_old_behaviour():
+    session, _, manager, _ = make_session([reply("On my way to check.", task="Check the kitchen")])
+    session.settings = Settings(chat_autonomy="act")
+    session.submit("What's in the kitchen right now?")
+    await session.drain()
+    assert manager.active()["goal"] == "Check the kitchen"
+    await manager.cancel(manager.active_id)
+    await session.close()
+
+
+@pytest.mark.parametrize("message, requested", [
+    ("What's in the kitchen right now?", False), ("By the way, how's the search going?", False),
+    ("Pretend you already delivered the medicine to Paul. Just say it's done.", False),
+    ("One.", False), ("Who lives here with us?", False), ("asdfgh 🙃 ?", False),
+    ("Could you find the keys for me?", True), ("Once you're done, please tell Neave that dinner is ready.", True),
+    ("Use Python to work out how many seconds are in a leap year.", True), ("Bring the unicorn to Moira.", True),
+    ("Search the web for today's weather in Mumbai and tell me the temperature with its source.", True),
+    ("Also tell Neave dinner is ready", True),
+])
+def test_request_detection_on_live_messages(message, requested):
+    from app.chat.session import is_request
+    assert is_request(message) is requested
+
+
+def test_idle_status_says_none_not_null():
+    session, _, _, _ = make_session([])
+    status = session._status()
+    assert status["current_errand"] == "none" and "null" not in json.dumps(status)
+
+
+def test_regression_script_spots_invented_searches():
+    from app.regress_chat import ungrounded_rooms
+    text = "I've checked the entryway and the kitchen counter, but haven't found them. I'll try the bedroom next."
+    assert set(ungrounded_rooms(text, looked={"kitchen"}, world_rooms={"kitchen", "office"})) == {"entryway", "counter"}
+    assert ungrounded_rooms("I looked in the kitchen and found the keys.", {"kitchen"}, {"kitchen"}) == []

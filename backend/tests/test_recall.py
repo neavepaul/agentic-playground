@@ -135,3 +135,48 @@ async def test_next_task_recalls_relevant_skills(store):
     items = context.long_term_memory["relevant_memories"]["items"]
     assert "found the charger in the office" in items[0]["text"]
     await manager.cancel(context.id)
+
+
+@pytest.mark.asyncio
+async def test_superseded_memories_stay_as_history_but_leave_recall(store):
+    wrong = await store.add("fact", "Neave is allergic to peanuts", ["neave"])
+    fix = await store.add("fact", "Paul is allergic to peanuts", ["paul"])
+    retired = await store.supersede("Neave is allergic to peanuts", by=fix, exclude={fix})
+    assert retired["id"] == wrong
+    assert [m["id"] for m in await store.recall("peanuts allergy")] == [fix]
+    assert [m["id"] for m in await store.recall("peanuts allergy", include_superseded=True)] == [fix, wrong] or \
+        {m["id"] for m in await store.recall("peanuts allergy", include_superseded=True)} == {fix, wrong}
+    assert {m["id"]: m["superseded_by"] for m in store.recent(5)} == {fix: None, wrong: fix}
+    # Re-stating a superseded fact stores it afresh rather than reviving the old row silently.
+    again = await store.add("fact", "Neave is allergic to peanuts", ["neave"])
+    assert again not in {wrong, fix}
+
+
+@pytest.mark.asyncio
+async def test_existing_databases_gain_the_superseded_column(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.db"
+    legacy = sqlite3.connect(path)
+    legacy.execute("CREATE TABLE memories (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, text TEXT NOT NULL, "
+                   "about TEXT NOT NULL DEFAULT '[]', importance REAL NOT NULL DEFAULT 0.5, source TEXT NOT NULL "
+                   "DEFAULT '', created_at TEXT NOT NULL, last_recalled TEXT, recall_count INTEGER NOT NULL "
+                   "DEFAULT 0, meta TEXT NOT NULL DEFAULT '{}')")
+    legacy.execute("INSERT INTO memories(kind, text, created_at) VALUES ('fact', 'Old fact', '2026-10-25T00:00:00+00:00')")
+    legacy.commit(); legacy.close()
+    store = MemoryStore(path)
+    assert store.recent(1)[0]["superseded_by"] is None
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_backfill_indexes_memories_saved_without_embeddings(tmp_path):
+    path = tmp_path / "kip.db"
+    plain = MemoryStore(path)
+    await plain.add("episode", "Neave looked exhausted after work", ["neave"])
+    plain.close()
+    store = MemoryStore(path, FakeEmbedder())
+    assert (await store.recall("is he sleepy", k=1))[0]["score"] < 0.45  # no meaning match yet
+    assert await store.backfill() == 1
+    assert await store.backfill() == 0
+    assert (await store.recall("is he sleepy", k=1))[0]["score"] >= 0.45
+    store.close()
