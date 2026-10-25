@@ -5,8 +5,9 @@ from app.agents.coordinator import Coordinator
 from app.agents.explorer import Explorer
 from app.agents.conversation import classify_conversation_move, interpret_conversation
 from app.agents.prompts import CRITIC
-from app.agents.schemas import CriticReview
+from app.agents.schemas import CoordinatorDecision, CriticReview
 from app.config import Settings
+from app.capabilities.tools import CapabilityTools, DIGITAL_TOOLS
 from app.events.bus import EventBus
 from app.llm.base import LLMClient, ModelError, structured
 from app.memory.store import PersistentMemory
@@ -59,7 +60,8 @@ class TaskManager:
         self.tools, self.bus, self.settings = tools, bus, settings
         self.client = client
         self.persistent = persistent
-        self.coordinator = Coordinator(client)
+        self.coordinator = Coordinator(client, digital_enabled=settings.digital_tools_enabled)
+        self.capabilities = CapabilityTools(bus, enabled=settings.digital_tools_enabled)
         self.explorer = Explorer(client, tools.schemas())
         self.tasks: dict[str, TaskContext] = {}
         self.active_id: str | None = None
@@ -142,6 +144,18 @@ class TaskManager:
         self.bus.emit("critic_review", "critic", task_id=context.id, **review.model_dump())
         return review.approved
 
+    async def call_capability(self, context: TaskContext, tool: str, arguments: dict) -> dict:
+        if context.tool_count >= self.settings.max_tool_calls:
+            raise LimitReached("Maximum total tool calls reached.")
+        context.tool_count += 1
+        result = await self.capabilities.execute(tool, arguments, context)
+        context.record(tool, arguments, result)
+        if not result["success"]:
+            context.feedback(result["error"])
+            self.message(context, "system", "Tool attempt rejected; continuing with the error feedback.")
+        self.bus.emit("task_updated", task=context.public())
+        return result
+
     def _progress_changed(self, context: TaskContext, previous: tuple | None = None) -> bool:
         signature = context.progress_signature()
         current = previous if previous is not None else context.last_progress_signature
@@ -160,7 +174,14 @@ class TaskManager:
             context.cycle_count = cycle + 1
             self.bus.emit("task_updated", task=context.public())
             self.bus.emit("agent_active", "coordinator", task_id=context.id)
-            decision = await self.coordinator.decide(context)
+            # GoalPlan already interpreted the complete goal. Hand it directly
+            # to Explorer instead of paying for a second initial planning call.
+            # Later cycles still use the Coordinator for recovery/replanning.
+            if cycle == 0 and self.settings.direct_initial_delegation:
+                decision = CoordinatorDecision(action="delegate", summary="Execute the required outcomes.",
+                                               task=context.goal)
+            else:
+                decision = await self.coordinator.decide(context)
             public_summary = {
                 "complete": "Checking goal completion against tool evidence.",
                 "delegate": "Delegating: " + decision.task,
@@ -287,6 +308,14 @@ class TaskManager:
                                 or (action.tool == "move_to"
                                     and action.arguments.get("room") not in context.memory.rooms))
                     revisit = action.arguments.get("room") in context.memory.visited_rooms
+                    if action.tool in DIGITAL_TOOLS:
+                        result = await self.call_capability(context, action.tool, action.arguments)
+                        if result.get("success"):
+                            context.metrics.useful_observations += 1
+                        if result.get("success") and not [c for c in check_conditions(context) if not c["satisfied"]]:
+                            self.finish(context, "completed", "Answer ready. All requested outcomes completed.")
+                            return
+                        continue
                     result = self.call_tool(context, action.tool, action.arguments)
                     if result.get("success") and action.tool == "give":
                         # Delivery conditions are machine-checkable from world tool

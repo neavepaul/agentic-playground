@@ -1,3 +1,66 @@
+# Digital tools — 2026-10-25
+
+- Follow-up user run `b414cab9-90df-4071-8840-8ffd16b147f4` read example.com,
+  then attempted a final answer claiming Python execution without having run it.
+  The evidence guard rejected that attempt. The existing task recovered, ran
+  `print(6 * 7)` with observed stdout `42`, and completed with both evidence IDs.
+  Its completed audit is saved in `artifacts/digital-tools-user-run.json`.
+- Completion choices now omit finish_answer until the required tools have
+  successful observations. The model sees an explicit remaining-tool list and
+  successful evidence IDs. Missing-evidence errors name only the missing tools;
+  rejected answer prose is not replayed as factual context. Tool failures update
+  public status and decision feedback. Regression coverage brings the suite to
+  238 passing tests. The fix was applied after the user's run completed.
+
+- Added public internet search (DDGS), bounded HTML/plain-text webpage reading,
+  and small Python programs in Monty's restricted interpreter. No MCP service
+  or search API key is needed. Colibri remains the configured local model.
+- All 236 backend tests pass, including original robot behavior, digital-only
+  tasks, a combined webpage-reading/physical-delivery task, failure recovery,
+  cancellation propagation, output/execution limits, public-address checking,
+  redirect validation, and task-local answer evidence. The frontend builds.
+- Live public search returned Raspberry Pi documentation links; the real reader
+  fetched example.com with TLS verification and a checked, pinned destination.
+- An isolated task through the actual Colibri model completed: “Read
+  https://example.com and use Python to calculate 6 * 7. Tell me the page title
+  and the calculation result.” It chose read_webpage, run_python with
+  `print(6 * 7)`, and finish_answer with both evidence IDs. It returned “Example
+  Domain” and 42 with the source link. No tool failures or output repairs occurred.
+- This live test used a separate in-memory robot world, no persistent memory,
+  and action-driven time. The avatar did not move and simulated time remained
+  08:00. Detailed results are in `artifacts/digital-tools-live-result.json`.
+- The four model requests took about 399 seconds total: 112.56 seconds for goal
+  interpretation and 286.33 seconds for the three Explorer calls. Existing task
+  metrics omit the initial GoalPlan request, so their three-call count is not
+  the total. This is a functional smoke test, not a performance benchmark.
+- Python is a restricted subset, not arbitrary CPython/package execution. Web
+  content is untrusted; provenance checks do not prove every answer factually
+  correct. Existing skills/personality behavior has not been expanded here.
+
+# Colibri execution and latency — 2026-10-25
+
+- The live goal "Neave needs the medicine. Find it and bring it to him." completed
+  with all conditions met after 12 tool calls. Its result is saved locally in
+  `artifacts/medicine-delivery-completed-20261025.json`. This run preceded the speed
+  changes and hit the local eight-action delegation limit before its final scan/give.
+- Local `.env` now uses 40 actions per delegation. Direct initial delegation gives
+  Explorer the full original goal after GoalPlan interpretation, avoiding the extra
+  initial Coordinator decision. Later replanning and existing tool/stall limits remain.
+- Model prompts use compact JSON and action/evidence references instead of repeating
+  raw observations. The full action history remains available for verification.
+  A representative initial Coordinator input shrank from 12,423 to 9,896 characters.
+- Colibri's saved runtime configuration keeps 32 expert-cache slots per layer and a
+  256 MiB GPU expert tier; maximum prompt batches increased from 128 to 1024 rows.
+  A live goal-interpretation probe returned correct medicine/Neave conditions in
+  65.0 seconds, versus 185.3 seconds for the earlier medicine/Paul probe. These were
+  separate runs, not a controlled benchmark or a full-mission speed measurement.
+- All 209 backend tests passed, including direct-delegation delivery without a
+  redundant Coordinator call and subsequent Coordinator replanning when needed.
+  Legacy scripted cases ran with documented execution limits and direct initial
+  delegation disabled; new cases explicitly exercise the enabled path.
+- Graphify was updated after the code changes. No full live mission has yet been
+  timed using the new execution settings.
+
 # Recipient-question loop recovery
 
 - 51 backend tests passed on the final run. Regression coverage includes normalized

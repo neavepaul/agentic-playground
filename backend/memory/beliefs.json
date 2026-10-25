@@ -1,4 +1,59 @@
 {
   "nodes": {},
-  "edges": []
+  "edges": [
+    {
+      "subject": "paul",
+      "relation": "recurring_need",
+      "target": "laptop",
+      "confidence": 0.8,
+      "last_observed": "2026-10-24T05:33:38.004080+00:00",
+      "observation_count": 1,
+      "reason": "Delivered laptop to paul 2 times."
+    },
+    {
+      "subject": "paul",
+      "relation": "located_in",
+      "target": "office",
+      "confidence": 0.65,
+      "last_observed": "2026-10-24T05:33:38.004080+00:00",
+      "observation_count": 1,
+      "reason": "Paul observed in office 2 out of 3 times (66.7%)."
+    },
+    {
+      "subject": "minu",
+      "relation": "located_in",
+      "target": "second_bedroom",
+      "confidence": 0.8,
+      "last_observed": "2026-10-24T05:33:38.004080+00:00",
+      "observation_count": 1,
+      "reason": "Minu observed in second_bedroom 3 out of 3 times (100%)."
+    },
+    {
+      "subject": "neave",
+      "relation": "located_in",
+      "target": "master_bedroom",
+      "confidence": 0.8,
+      "last_observed": "2026-10-24T05:33:38.004080+00:00",
+      "observation_count": 1,
+      "reason": "Neave observed in master_bedroom 3 out of 3 times (100%)."
+    },
+    {
+      "subject": "medicine",
+      "relation": "located_in",
+      "target": "second_bedroom",
+      "confidence": 0.7,
+      "last_observed": "2026-10-24T05:33:38.004080+00:00",
+      "observation_count": 1,
+      "reason": "Last seen in second_bedroom."
+    },
+    {
+      "subject": "laptop",
+      "relation": "located_in",
+      "target": "office",
+      "confidence": 0.7,
+      "last_observed": "2026-10-24T05:33:38.004080+00:00",
+      "observation_count": 1,
+      "reason": "Last seen in office."
+    }
+  ]
 }

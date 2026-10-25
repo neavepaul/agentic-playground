@@ -27,6 +27,19 @@ export function setTask(next) {
   $('run').disabled = running || !connected;
   $('cancel').hidden = !running;
   renderMemory(task?.task_memory);
+  $('answer-panel').hidden = !task?.answer;
+  $('answer-text').textContent = task?.answer?.answer || '';
+  $('answer-sources').replaceChildren();
+  for (const source of task?.answer?.sources || []) {
+    try {
+      const url = new URL(source.url);
+      if (!['http:', 'https:'].includes(url.protocol)) continue;
+      const link = document.createElement('a');
+      link.href = url.href; link.textContent = source.title || source.url;
+      link.target = '_blank'; link.rel = 'noopener noreferrer';
+      $('answer-sources').append(link);
+    } catch { /* Ignore malformed source URLs. */ }
+  }
   if (!running) setAgent(null);
 }
 export function getTask() { return task; }
@@ -59,6 +72,12 @@ function eventText(event) {
   if (event.type === 'object_dropped') return `Dropped ${o.object} in ${o.room}.`;
   if (event.type === 'object_given') return `Gave ${o.object} to ${o.person}.`;
   if (event.type === 'tool_failed') return `${d.tool}: ${d.error}`;
+  if (event.type === 'capability_observed') {
+    if (d.tool === 'web_search') return `Searched for “${o.query}”: ${o.results.length} results.`;
+    if (d.tool === 'read_webpage') return `Read ${o.title}: ${o.url}`;
+    if (d.tool === 'run_python') return `Python result: ${o.stdout || o.result}`;
+    if (d.tool === 'finish_answer') return 'Answer prepared from the task’s tool results.';
+  }
   if (event.type === 'critic_review') return `${d.approved ? 'Approved' : 'Needs work'}: ${d.summary}${d.suggestion ? ' ' + d.suggestion : ''}`;
   if (['agent_message', 'task_started', 'task_completed', 'task_failed', 'task_cancelled', 'world_reset'].includes(event.type)) return d.summary;
   return null;

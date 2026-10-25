@@ -157,7 +157,7 @@ class AgentMind:
                 if now - self._last_world_push >= 10.0:
                     self._bus.emit("world_tick", world=self._engine.snapshot(), skip_history=True)
                     self._last_world_push = now
-                if not self._manager.active_id:
+                if self._settings.idle_reflection_enabled and not self._manager.active_id:
                     await self._tick()
             except asyncio.CancelledError:
                 raise

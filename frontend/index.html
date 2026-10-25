@@ -24,7 +24,7 @@
             <div class="section-title"><h2>Give it a goal</h2><span class="small-tag">LOCAL INFERENCE</span></div>
             <p class="subtle">Describe what you need. Watch the agents work.</p>
             <form id="goal-form">
-              <label class="sr-only" for="goal">Household goal</label>
+              <label class="sr-only" for="goal">Goal or question</label>
               <textarea id="goal" rows="3" maxlength="1000" required>Neave needs the charger. Find it and bring it to him.</textarea>
               <div class="examples"><span>Try</span><button type="button" data-goal="Find the missing keys.">Find the keys</button><button type="button" data-goal="Find Neave and tell him dinner is ready.">Dinner is ready</button></div>
               <div class="actions"><button id="run" class="primary" type="submit">Run goal <span>↗</span></button><button id="cancel" type="button" hidden>Cancel</button><button id="reset" type="button" title="Cancel current task and restore the initial world">Reset</button></div>
@@ -39,6 +39,11 @@
             <div class="agent-strip"><span data-agent="coordinator">Coordinator</span><span data-agent="explorer">Explorer</span><span data-agent="critic">Critic</span></div>
             <p id="budget" class="budget">0 cycles · 0 tool calls</p>
           </section>
+          <section id="answer-panel" class="answer-panel" aria-label="Answer" hidden>
+            <h2>Answer</h2>
+            <div id="answer-text"></div>
+            <div id="answer-sources"></div>
+          </section>
           <section class="activity-panel" aria-label="Agent activity">
             <div class="section-title">
               <div class="activity-tabs" role="tablist">
@@ -50,7 +55,7 @@
             <div id="feed" role="log" aria-live="polite"><div id="feed-empty" class="empty-feed"><span class="empty-icon">↳</span><p>The next move starts here.</p><span>Submit a goal to see actions and discoveries.</span></div></div>
             <div id="beliefs-panel" class="beliefs-panel" role="tabpanel" hidden></div>
           </section>
-          <footer>Ollama on your machine <span>·</span> No cloud models</footer>
+          <footer>Local model on your machine <span>·</span> No cloud models</footer>
         </aside>
       </main>
       <div id="memory-overlay" class="memory-overlay" hidden>

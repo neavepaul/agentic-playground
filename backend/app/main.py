@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import Settings, get_settings
 from app.events.bus import EventBus
-from app.llm.ollama import OllamaClient
+from app.llm.factory import create_client
 from app.memory.graph import BeliefGraph
 from app.memory.store import PersistentMemory
 from app.mind.agent import AgentMind
@@ -32,7 +32,7 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
     clock = WorldClock(speed=config.clock_speed, start_hour=config.clock_start_hour,
                        mode=config.simulation_mode, action_seconds=config.action_seconds)
     bus, engine = EventBus(), WorldEngine(config.world_file, clock=clock)
-    llm = client or OllamaClient(config)
+    llm = client if client is not None else create_client(config)
     persistent = PersistentMemory.load(config.memory_file)
     graph = BeliefGraph.load(config.graph_file)
     manager = TaskManager(llm, WorldTools(engine, bus), bus, config, persistent)
@@ -62,8 +62,8 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/health")
     async def health():
-        model = await llm.health() if isinstance(llm, OllamaClient) else {"mode": "test"}
-        return {"status": "ok", "ollama": model}
+        model = await llm.health() if client is None else {"mode": "test"}
+        return {"status": "ok", "llm": {"provider": config.llm_provider, **model}}
 
     @app.get("/api/world")
     async def world():

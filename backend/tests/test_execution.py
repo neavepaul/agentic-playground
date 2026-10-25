@@ -347,6 +347,33 @@ class TestDelegationLifetime:
         assert task.metrics.explorer_llm_calls == 2
         assert task.metrics.reflex_actions + task.metrics.route_actions == 14
 
+    async def test_direct_initial_delegation_delivers_without_extra_coordinator_call(self):
+        manager, engine = self._manager([
+            tool("move_to", room="bedroom_corridor"),
+            tool("move_to", room="second_bedroom"),
+        ], direct_initial_delegation=True, max_explorer_actions=40)
+        task = manager.start("Deliver medicine to paul.")
+        await manager.runner
+        assert task.status == "completed", task.summary
+        assert engine.snapshot()["objects"]["medicine"]["location"] == {"kind": "person", "id": "paul"}
+        assert task.current_plan == task.goal
+        assert task.metrics.coordinator_llm_calls == 0
+        assert task.metrics.explorer_llm_calls == 2
+        assert task.metrics.coordinator_handoffs == 1
+        assert task.tool_count > 8
+
+    async def test_direct_initial_delegation_still_uses_coordinator_for_replanning(self):
+        manager, _ = self._manager([
+            {"action": "report", "summary": "The hall was scanned; target is missing."},
+            {"action": "fail", "summary": "No further search in this test."},
+        ], conditions=[{"kind": "find_person", "person": "visitor"}],
+            direct_initial_delegation=True, max_explorer_actions=40)
+        task = manager.start("Find the visitor.")
+        await manager.runner
+        assert task.status == "failed"
+        assert task.summary == "No further search in this test."
+        assert task.metrics.coordinator_llm_calls == 1
+
     async def test_completed_objective_returns_control_before_the_ceiling(self):
         manager, _ = self._manager([
             {"action": "delegate", "summary": "Scan.", "task": "Visit the kitchen."},

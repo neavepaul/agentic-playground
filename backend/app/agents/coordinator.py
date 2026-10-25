@@ -7,8 +7,9 @@ from .schemas import CoordinatorDecision, GoalCondition, GoalPlan
 
 
 class Coordinator:
-    def __init__(self, client: LLMClient) -> None:
+    def __init__(self, client: LLMClient, digital_enabled: bool = False) -> None:
         self.client = client
+        self.digital_enabled = digital_enabled
 
     async def decide(self, context: TaskContext) -> CoordinatorDecision:
         return await structured(self.client, CoordinatorDecision, COORDINATOR, context.compact(),
@@ -24,12 +25,21 @@ class Coordinator:
 
     async def define_goal(self, goal: str, floor_plan: dict | None = None) -> GoalPlan:
         prompt = GOAL_PLANNER
+        if self.digital_enabled:
+            from .prompts import DIGITAL_GOAL_PLANNER
+            prompt += DIGITAL_GOAL_PLANNER
+        # Goal interpretation needs room names/IDs, not renderer geometry or routes.
+        # Keep the original observed map intact for navigation and the frontend.
+        room_names = {room_id: room.get("name", room_id)
+                      for room_id, room in (floor_plan or {}).get("rooms", {}).items()}
         unknown_recipient = self._requires_recipient_discovery(goal)
         # A narrow consistency check for an explicit delivery clause. This rejects
         # prerequisite-only plans without hardcoding an object, recipient or route.
         explicit_delivery = re.search(r"(?:^\s*(?:please\s+)?|\b(?:and|then)\s+)deliver\b", goal, re.I)
         for attempt in range(2):
-            plan = await structured(self.client, GoalPlan, prompt, {"goal": goal, "floor_plan": floor_plan or {}})
+            plan = await structured(self.client, GoalPlan, prompt,
+                                    {"goal": goal, "floor_plan": {"rooms": room_names}},
+                                    role="coordinator")
             if unknown_recipient:
                 plan = plan.model_copy(update={
                     "conditions": [

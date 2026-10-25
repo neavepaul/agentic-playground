@@ -758,3 +758,10 @@ footer span {
     font-size:14px;
   }
 }
+/* Research and calculation results remain readable beside the robot world. */
+.sidebar:has(.answer-panel:not([hidden])) { overflow-y: auto; }
+.answer-panel { flex: none; padding: 20px 24px; border-bottom: 1px solid #dce2d7; max-height: 320px; overflow: auto; }
+.answer-panel[hidden] { display: none; }
+#answer-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; margin-top: 12px; }
+#answer-sources { display: grid; gap: 6px; margin-top: 12px; }
+#answer-sources a { color: #365f50; overflow-wrap: anywhere; font-size: 12px; }

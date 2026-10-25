@@ -1,4 +1,4 @@
-"""Run with python -m app.evaluate [--mission 1]. Requires local Ollama."""
+"""Run with python -m app.evaluate [--mission 1]. Requires the configured local model."""
 import argparse
 import asyncio
 import json
@@ -7,7 +7,7 @@ import time
 
 from app.config import Settings
 from app.events.bus import EventBus
-from app.llm.ollama import OllamaClient
+from app.llm.factory import create_client
 from app.tasks.manager import TaskManager
 from app.world.clock import WorldClock
 from app.world.engine import WorldEngine
@@ -37,7 +37,7 @@ def mission_satisfied(number: int, context, world: dict) -> bool:
 
 async def evaluate(numbers: list[int]) -> bool:
     settings = Settings()
-    client = OllamaClient(settings)
+    client = create_client(settings)
     results = []
     try:
         for number in numbers:

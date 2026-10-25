@@ -62,10 +62,13 @@ def _record_metrics(client, metrics, role: str, schema_name: str, seconds: float
 async def structured(client: LLMClient, schema: type[T], prompt: str, context: dict,
                      repair_hint: str = "", metrics=None, role: str = "") -> T:
     output_schema = schema.model_json_schema()
-    messages = [{"role": "system", "content": prompt + "\nOutput JSON schema:\n" + json.dumps(output_schema)},
-                {"role": "user", "content": json.dumps(context, ensure_ascii=False)}]
+    messages = [{"role": "system", "content": prompt + "\nOutput JSON schema:\n" + json.dumps(output_schema, separators=(",", ":"))},
+                {"role": "user", "content": json.dumps(context, ensure_ascii=False, separators=(",", ":"))}]
     for attempt in range(2):
         started = time.monotonic()
+        _metrics_log.info("llm_call_started role=%s schema=%s attempt=%d input_chars=%d",
+                          role or "unknown", schema.__name__, attempt + 1,
+                          sum(len(message["content"]) for message in messages))
         raw = await client.generate(messages, output_schema)
         _record_metrics(client, metrics, role, schema.__name__, time.monotonic() - started)
         try:

@@ -133,6 +133,26 @@ async def test_mind_does_not_tick_when_task_running():
     assert llm.calls == 0
 
 
+async def test_disabled_idle_reflection_keeps_world_updates_without_model_calls():
+    llm = _IntentionLLM(None)
+    mind, manager, bus = _mind(llm)
+    mind._settings.idle_reflection_enabled = False
+    ticks = []
+    original_emit = bus.emit
+
+    def capture(event_type, *args, **kwargs):
+        ticks.append(event_type)
+        return original_emit(event_type, *args, **kwargs)
+
+    bus.emit = capture
+    mind.start()
+    await asyncio.sleep(0.12)
+    await mind.close()
+    assert llm.calls == 0
+    assert manager.active_id is None
+    assert "world_tick" in ticks
+
+
 async def test_mind_emits_agent_intention_event():
     """A pursued intention is broadcast on the EventBus."""
     high_priority = {"goal": "Deliver medicine to paul",

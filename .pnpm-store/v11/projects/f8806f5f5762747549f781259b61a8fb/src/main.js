@@ -107,10 +107,11 @@ document.querySelectorAll('[data-goal]').forEach(button => button.addEventListen
 }));
 async function checkModel() {
   try {
-    const { ollama } = await api('/health');
-    document.getElementById('model-status').textContent = ollama.model_available
-      ? `${ollama.model} · ready locally`
-      : ollama.reachable ? `Model missing · run ollama pull ${ollama.model}` : 'Ollama offline · run ollama serve';
+    const { llm } = await api('/health');
+    const provider = llm.provider === 'colibri' ? 'Colibri' : 'Ollama';
+    document.getElementById('model-status').textContent = llm.model_available
+      ? `${llm.model} · ready locally`
+      : llm.reachable ? `Model missing · check ${provider}: ${llm.model}` : `${provider} offline · start the model server`;
   } catch { document.getElementById('model-status').textContent = 'Backend offline'; }
 }
 checkModel();

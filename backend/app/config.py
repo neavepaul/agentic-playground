@@ -11,6 +11,9 @@ _BACKEND_DIR = Path(__file__).resolve().parents[1]
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=_BACKEND_DIR / ".env", extra="ignore")
+    llm_provider: Literal["colibri", "ollama"] = "colibri"
+    colibri_base_url: str = "http://127.0.0.1:8001/v1"
+    colibri_model: str = "qwen3.6-colibri"
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen3:4b"
     world_file: Path | None = None
@@ -21,6 +24,8 @@ class Settings(BaseSettings):
     temperature: float = Field(default=0.1, ge=0, le=1)
     context_tokens: int = Field(default=8192, ge=2048, le=32768)
     decision_thinking: bool = False
+    direct_initial_delegation: bool = False
+    digital_tools_enabled: bool = True
     decision_output_tokens: int = Field(default=4096, ge=1024, le=16384)
     max_coordinator_cycles: int = Field(default=20, ge=1, le=100)
     # A hard safety ceiling, not the normal way a delegation ends. Healthy work
@@ -39,6 +44,7 @@ class Settings(BaseSettings):
     clock_start_hour: float = Field(default=8.0, ge=0, lt=24)
     action_seconds: float = Field(default=60.0, gt=0)  # simulated seconds per action
     # Idle autonomous loop
+    idle_reflection_enabled: bool = True
     idle_tick_seconds: float = Field(default=5.0, gt=0)
     idle_reflection_interval: float = Field(default=120.0, gt=0)
     intention_threshold: float = Field(default=0.6, ge=0, le=1)

@@ -5,16 +5,17 @@
       "name": "Moira",
       "location_tally": {
         "master_bedroom": 1,
-        "kitchen": 1
+        "kitchen": 1,
+        "hall": 1
       },
-      "last_seen_room": "kitchen",
+      "last_seen_room": "hall",
       "known_needs": [],
       "delivery_counts": {}
     },
     "minu": {
       "name": "Minu",
       "location_tally": {
-        "second_bedroom": 2
+        "second_bedroom": 4
       },
       "last_seen_room": "second_bedroom",
       "known_needs": [],
@@ -23,16 +24,7 @@
     "neave": {
       "name": "Neave",
       "location_tally": {
-        "master_bedroom": 2
-      },
-      "last_seen_room": "master_bedroom",
-      "known_needs": [],
-      "delivery_counts": {}
-    },
-    "paul": {
-      "name": "Paul",
-      "location_tally": {
-        "master_bedroom": 1
+        "master_bedroom": 4
       },
       "last_seen_room": "master_bedroom",
       "known_needs": [
@@ -41,12 +33,28 @@
       "delivery_counts": {
         "medicine": 1
       }
+    },
+    "paul": {
+      "name": "Paul",
+      "location_tally": {
+        "master_bedroom": 1,
+        "office": 2
+      },
+      "last_seen_room": "office",
+      "known_needs": [
+        "medicine",
+        "laptop"
+      ],
+      "delivery_counts": {
+        "medicine": 1,
+        "laptop": 2
+      }
     }
   },
   "objects": {
     "medicine": {
       "name": "Medicine",
-      "last_seen_room": "second_bedroom"
+      "last_seen_room": "master_bedroom"
     },
     "laptop": {
       "name": "Laptop",
@@ -59,38 +67,159 @@
   },
   "recent_tasks": [
     {
-      "task_id": "74548245-db40-49d8-a7a6-4ff2670826ad",
-      "goal": "Find the medicine in the second bedroom and give to Paul",
-      "outcome": "completed",
-      "timestamp": "2026-09-26T14:50:48.337473+00:00",
-      "summary": "Medicine delivered to Paul in master bedroom after verification. Goal achieved."
-    },
-    {
-      "task_id": "2aa85b32-5164-4097-abe9-5f928adb2cf9",
-      "goal": "find medicine and give it to paul",
+      "task_id": "84a36854-3d1b-4015-9430-43293a44234d",
+      "goal": "Find charger.",
       "outcome": "cancelled",
-      "timestamp": "2026-09-26T15:56:07.682442+00:00",
+      "timestamp": "2026-10-24T05:14:33.339198+00:00",
       "summary": "Task cancelled. Completed world actions are retained."
     },
     {
-      "task_id": "5e7717a0-89a2-43f3-9083-bf55c92bd319",
-      "goal": "find medicine and give it to paul",
-      "outcome": "failed",
-      "timestamp": "2026-09-26T16:14:25.431414+00:00",
-      "summary": "Maximum total tool calls reached."
+      "task_id": "8bc215ff-c1a9-4d19-ab92-59948c207bec",
+      "goal": "Try again.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-24T05:14:33.345384+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "e7c08de3-aca4-4e6e-b8e4-d31b5c45275a",
+      "goal": "Find charger.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-24T05:15:04.724258+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "0f0c1a1a-e61c-4e93-957b-eaaf9491b047",
+      "goal": "Try again.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-24T05:15:04.735148+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "1bbd48b5-7c4e-4edd-b4c6-025d3529d828",
+      "goal": "Paul needs the medicine. Find it and bring it to him.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-24T05:34:39.067231+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "72972918-dfad-4f3c-a3b7-5a0b51081cac",
+      "goal": "Find charger.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-24T05:35:02.849171+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "bbb4ac5b-93fd-4a43-bcdf-86b8d4a4335c",
+      "goal": "Try again.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-24T05:35:02.860822+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "df83925e-62b8-4a9c-b748-a28de33c1f77",
+      "goal": "Paul needs the medicine. Find it and bring it to him.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T03:12:19.106086+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "6f94a6f0-a2e3-424a-a687-249baa114612",
+      "goal": "Find charger.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T03:12:51.270015+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "2508d8d3-654c-4047-b4b8-6609c1a9afb3",
+      "goal": "Try again.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T03:12:51.288091+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "d02d2a3f-153a-4980-aae1-5ee92b3eade0",
+      "goal": "Neave needs the medicine. Find it and bring it to him.",
+      "outcome": "completed",
+      "timestamp": "2026-10-25T03:50:11.198591+00:00",
+      "summary": "Medicine delivered to neave. All goal conditions met."
+    },
+    {
+      "task_id": "040666de-e6e8-416d-89bb-c834387b5895",
+      "goal": "Find charger.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T03:51:20.595103+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "0e205f43-acd8-4fc2-8ede-0ab8c7db0bb4",
+      "goal": "Try again.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T03:51:20.601103+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "d7714b7b-3149-43be-a51a-327dad659681",
+      "goal": "Find charger.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T06:28:21.464473+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "f80a32b0-3605-49b5-8412-6424ec9d2c4b",
+      "goal": "Try again.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T06:28:21.476030+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "fe528dec-dde1-4007-9477-ece2ed878206",
+      "goal": "Find charger.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T06:32:59.030114+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "3aa571bf-a190-49ba-ae97-1cfbc69705b4",
+      "goal": "Try again.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T06:32:59.049112+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "b414cab9-90df-4071-8840-8ffd16b147f4",
+      "goal": "Read https://example.com and use Python to calculate 6 × 7. Tell me both results.",
+      "outcome": "completed",
+      "timestamp": "2026-10-25T07:31:33.701635+00:00",
+      "summary": "Answer ready. All requested outcomes completed."
+    },
+    {
+      "task_id": "6d14dd42-5700-491a-9e80-5cc31134d2b0",
+      "goal": "Find charger.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T07:32:10.715994+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "0e7681a0-4a89-4cb3-b08e-66a9325e5894",
+      "goal": "Try again.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T07:32:10.733509+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
     }
   ],
   "self_model": {
     "room_visit_counts": {
-      "bedroom_corridor": 23,
-      "second_bedroom": 2,
-      "master_bedroom": 18,
-      "hall": 7,
-      "entrance": 3,
-      "office": 1,
+      "bedroom_corridor": 28,
+      "second_bedroom": 4,
+      "master_bedroom": 20,
+      "hall": 8,
+      "entrance": 4,
+      "office": 2,
       "kitchen": 2
     },
-    "tool_failure_counts": {},
+    "tool_failure_counts": {
+      "finish_answer": 1
+    },
     "entity_search_failures": {
       "paul": 1
     }

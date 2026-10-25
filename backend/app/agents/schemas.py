@@ -68,11 +68,12 @@ class CommandChoice(StrictModel):
 
 class GoalCondition(StrictModel):
     kind: Literal["find_object", "find_person", "identify_recipient", "hold_object", "deliver", "notify",
-                  "notify_everyone", "place_object", "visit_room"]
+                  "notify_everyone", "place_object", "visit_room", "answer"]
     object: str = Field(default="", max_length=40)
     person: str = Field(default="", max_length=40)
     room: str = Field(default="", max_length=40)
     message: str = Field(default="", max_length=500)
+    required_tools: list[Literal["web_search", "read_webpage", "run_python"]] = Field(default_factory=list, max_length=3)
 
     @field_validator("object", "person", "room")
     @classmethod

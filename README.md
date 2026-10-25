@@ -2,27 +2,29 @@
 
 A learning project with one simulated avatar and three software agents: Coordinator,
 Explorer and Critic. Python owns the world. Three.js visualizes it. All model calls
-go to your configured local Ollama server; there are no API keys or cloud model dependencies.
+go to your configured local Colibri server; there are no API keys or cloud model dependencies.
 
 ## Start on Windows
 
 Prerequisites: Python **3.12+**, Node.js **20.19+ or 22.12+** with npm, and
-[Ollama](https://ollama.com/download). Install dependencies once while online.
+[Colibri](https://github.com/JustVugg/colibri) serving Qwen3.6-35B-A3B on port 8001. Install dependencies once while online.
 After dependencies and the model are downloaded, the application works offline.
 
 Run these commands from the project directory unless a `cd` is shown.
 
-**Terminal 1 — Ollama**
+**Terminal 1 — Colibri**
 
 ```powershell
-ollama serve
+# In your Colibri c directory; setup uses the installed engine and model.
+.\coli setup
 ```
 
-If the Ollama desktop app is already serving port 11434, leave it running instead.
-In another terminal, download the default model once:
+Keep your configured Colibri server running at `http://127.0.0.1:8001/v1`.
+The model ID is `qwen3.6-colibri`. Verify the configured model before running goals:
 
 ```powershell
-ollama pull qwen3:4b
+cd backend
+python -m app.check_model
 ```
 
 **Terminal 2 — backend**
@@ -75,7 +77,7 @@ The included pnpm lockfile records the frontend versions used here; npm is also 
 
 ## Use it
 
-1. Check that the sidebar says `qwen3:4b · ready locally`.
+1. Check that the sidebar says `qwen3.6-colibri · ready locally`.
 2. Enter a goal, such as **Neave needs the charger. Find it and bring it to him.**
 3. Click **Run goal**. The feed shows short public agent summaries, tool results,
    NPC responses and Critic reviews. The active role is highlighted.
@@ -93,7 +95,7 @@ are visible to you. Agents receive the static map but must discover people and o
 ```text
 backend/app/
   world/        deterministic models, initial state, simulator, validated tool registry
-  llm/          small LLM protocol, JSON validation/retry, Ollama HTTP adapter
+  llm/          small LLM protocol, JSON validation/retry, Colibri/Ollama adapters
   agents/       distinct role prompts, typed decisions, role-specific model calls
   tasks/        task-scoped memory and explicit bounded asyncio agent loop
   events/       bounded event history and WebSocket subscriber queues
@@ -194,12 +196,15 @@ behind these interfaces; none is implemented or validated by this simulator.
 
 ### Model interface
 
-The adapter uses [Ollama's chat API](https://docs.ollama.com/api/chat) with a
-[JSON schema in `format`](https://docs.ollama.com/capabilities/structured-outputs),
-`stream: false`, `think: false`, low temperature and bounded generation/context.
+The default adapter uses Colibri's OpenAI-compatible `/v1/chat/completions` API,
+with `stream: false`, `enable_thinking: false`, low temperature and bounded output.
+The Qwen engine does not support schema response formats, so the JSON schema is
+included in the prompt. Context capacity is configured on the Colibri server
+(8192 tokens in the current setup), rather than using Ollama's `num_ctx` option.
+Set `LLM_PROVIDER=ollama` to use the existing Ollama adapter with schema-constrained output.
 Pydantic validates the result. Invalid JSON or a schema mismatch gets one retry,
 then a safe task failure. HTTP failures and timeouts also become task failures.
-The optional Ollama `thinking` field is ignored. Invalid raw output, model prompts
+Optional model reasoning fields are ignored. Invalid raw output, model prompts
 and hidden reasoning are never stored in task history, events or application logs.
 Only brief explicitly requested public summaries and validated tool results are shown.
 
@@ -218,10 +223,15 @@ Copy `backend/.env.example` to `backend/.env`. Environment variables override it
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama endpoint |
-| `OLLAMA_MODEL` | `qwen3:4b` | One model shared by all roles |
+| `LLM_PROVIDER` | `colibri` | `colibri` or `ollama`; shared by all roles and idle reflection |
+| `COLIBRI_BASE_URL` | `http://127.0.0.1:8001/v1` | Colibri OpenAI-compatible endpoint |
+| `COLIBRI_MODEL` | `qwen3.6-colibri` | Qwen3.6-35B-A3B model ID reported by Colibri |
+| `IDLE_REFLECTION_ENABLED` | `true` | `.env.example` sets false so idle intention/consolidation calls do not compete with user tasks |
+| `DIRECT_INITIAL_DELEGATION` | `false` | `.env.example` sets true: delegate the full goal after interpretation, saving one initial model call; later replanning still uses Coordinator |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Optional Ollama endpoint |
+| `OLLAMA_MODEL` | `qwen3:4b` | Used only when LLM_PROVIDER=ollama |
 | `WORLD_FILE` | `backend/worlds/house.json` | Optional absolute path to a scenario JSON |
-| `LLM_TIMEOUT_SECONDS` | `120` | Per model HTTP request |
+| `LLM_TIMEOUT_SECONDS` | `120` | Per model HTTP request; `.env.example` uses 600 for Colibri CPU inference |
 | `TASK_TIMEOUT_SECONDS` | `1800` | Entire task, including retries and reviews; allows CPU-only inference |
 | `TEMPERATURE` | `0.1` | Conservative structured generation |
 | `CONTEXT_TOKENS` | `8192` | Ollama context size |
@@ -264,7 +274,7 @@ loopback as shown. There is intentionally no authentication or remote deployment
 
 | Endpoint | Result |
 |---|---|
-| `GET /api/health` | Backend health plus Ollama connectivity/model availability |
+| `GET /api/health` | Backend health plus provider/model availability in `llm` |
 | `GET /api/world` | `{world, sequence, task}` for visualization |
 | `POST /api/world/reset` | Cancel, reset world, clear session tasks and event history |
 | `POST /api/tasks` | `{ "goal": "..." }` → 202 with task state |
@@ -291,7 +301,7 @@ From `backend`, with its virtual environment installed:
 If using this workspace's root virtual environment, substitute
 `..\.venv\Scripts\python.exe` for those commands while in `backend`.
 
-`pytest` uses scripted/mock model responses and does **not** require Ollama.
+`pytest` uses scripted/mock model responses and does **not** require a running model server.
 The smoke check and evaluation commands intentionally call your local model.
 Each evaluation mission starts a fresh independent world and exits nonzero if
 the task fails or its programmatic success condition is unmet.
@@ -319,10 +329,14 @@ the actual validation performed during implementation.
 
 ## Troubleshooting and V1 limits
 
-- **Model missing:** run `ollama pull qwen3:4b`. **Ollama offline:** start its server.
-- **Slow inference:** CPU-only 8B inference may take tens of seconds per decision.
-  The role indicator stays active while waiting. Use a supported smaller local
-  model via `OLLAMA_MODEL`, or increase the task timeout. No fallback to cloud occurs.
+- **Model missing/offline:** start Colibri on port 8001 and check `/v1/models`
+  agrees with `COLIBRI_MODEL`. Restart the backend after changing `.env`.
+- **Slow inference:** CPU inference with a small expert cache can take minutes per
+  decision. The role indicator stays active while waiting. Increase the request/task
+  timeout as needed. Use `SIMULATION_MODE=action_driven` for comparable evaluations.
+- **Truncated model output:** increase Colibri's output/context capacity or shorten
+  the context. The adapter reports truncation as a task failure; it never accepts
+  a partial JSON response as a completed decision.
 - **Failure or cancellation:** completed actions are not rolled back. Inspect the
   activity feed, then Reset for a clean attempt.
 - **Disconnected UI:** it retries automatically and fetches a fresh world snapshot.
@@ -357,3 +371,43 @@ an already investigated topic blocks further dialogue. Failed tool calls are not
 treated as successful observations by the remaining non-conversation repeat check.
 Tool, delegation, cycle and time limits still bound execution; these changes do not
 guarantee that every conversation will make progress.
+## Web research and small Python programs
+
+Colibri remains the local model; the existing robot navigation, search, conversation,
+pickup and delivery tools remain available. You can now also give goals such as:
+
+- “Search the internet for Raspberry Pi 5 power requirements. Read the official source and explain them.”
+- “Read https://www.raspberrypi.com/documentation/ and summarize what it covers.”
+- “Use Python to calculate the average of 12, 18, 21 and 29.”
+
+Install the updated dependencies in the backend's existing environment with
+`python -m pip install -r requirements.txt`, then restart the backend and refresh
+the frontend. No search API key is required. `DIGITAL_TOOLS_ENABLED=true` is the
+default; set it to false to disable the new capabilities. No MCP service is needed
+for this first implementation, and skills/personality loading is not included.
+
+The agent chooses search queries, page URLs and short programs as needed. Search
+uses DDGS (DuckDuckGo/Bing); queries are sent to those external search services,
+and reading a page contacts its website. Model inference stays local. Search may
+be throttled; errors are reported rather than replaced with invented results.
+The webpage reader supports public HTML/plain text, validates every redirect,
+pins connections to checked public addresses, rejects private/local networks,
+and limits download size and reading time. It does not execute JavaScript, sign
+into accounts, or read PDFs. Long pages can be read in successive text windows.
+
+Python runs in Monty 1.3.0, a restricted Python interpreter in a separate worker,
+with a fresh session, a 3-second execution limit, 64 MB interpreter memory limit,
+bounded output, and no exposed host functions, filesystem mounts, network,
+shell, credentials or robot controls. It supports small calculations and data
+transformations, not arbitrary CPython packages or installing dependencies.
+The tool's input dictionary is available as `data`; print a result or end with
+an expression. Failed programs provide errors for correction and do not count
+as successful execution. This is bounded interpreter execution, not an OS-wide
+security guarantee against runtime vulnerabilities.
+
+Research and calculation results appear in the Answer panel with source links;
+tool activity and failures appear in Activity. Final answers must reference
+successful task-local tool evidence and the tools required by the interpreted
+goal. This checks provenance/execution, not the factual correctness of every
+sentence. External page content is treated as untrusted data. Digital tools do
+not move the avatar or advance the simulated world clock in action-driven mode.

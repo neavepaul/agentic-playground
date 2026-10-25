@@ -44,7 +44,10 @@ def check_conditions(context: "TaskContext") -> list[dict]:
     results = []
     for condition in context.conditions:
         kind = condition.kind
-        if kind == "find_object":
+        if kind == "answer":
+            # The capability executor checked task-local evidence and required tools.
+            met = any(a["tool"] == "finish_answer" for a in actions)
+        elif kind == "find_object":
             met = location(condition.object) is not None
         elif kind == "find_person":
             met = any(p["id"] == condition.person for view in looks for p in view["people"])

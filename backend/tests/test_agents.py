@@ -294,6 +294,23 @@ async def test_goal_planner_cannot_invent_unknown_recipient():
     assert plan.conditions[0].person == ""
 
 
+async def test_goal_planner_uses_room_names_without_rendering_geometry():
+    class Planner:
+        async def generate(self, messages, response_schema):
+            import json
+            context = json.loads(messages[1]["content"])
+            assert context["floor_plan"] == {"rooms": {"second_bedroom": "Second bedroom"}}
+            return '{"summary":"Deliver medicine.","conditions":[' \
+                   '{"kind":"deliver","object":"medicine","person":"paul","room":"second_bedroom"}]}'
+
+    floor_plan = {"rooms": {"second_bedroom": {"name": "Second bedroom",
+                  "connections": ["hall"], "outline": [[0, 0]], "color": "blue"}}, "doors": []}
+    plan = await Coordinator(Planner()).define_goal(
+        "Bring Paul the medicine from the second bedroom.", floor_plan)
+    assert plan.conditions[0].room == "second_bedroom"
+    assert floor_plan["rooms"]["second_bedroom"]["outline"] == [[0, 0]]
+
+
 async def test_delivery_end_to_end_with_mock_model():
     # Only genuinely ambiguous steps are scripted. Scanning an unseen room,
     # acquiring the visible required object, walking a committed route and

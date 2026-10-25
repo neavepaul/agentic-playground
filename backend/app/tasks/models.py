@@ -61,6 +61,7 @@ class TaskContext(BaseModel):
     critic_feedback: list[dict] = Field(default_factory=list)
     explorer_reports: list[str] = Field(default_factory=list)
     conditions: list[GoalCondition] = Field(default_factory=list)
+    answer: dict | None = None
     floor_plan: dict = Field(default_factory=dict)
     last_progress_signature: tuple | None = None
     action_feedback: list[str] = Field(default_factory=list)
@@ -431,6 +432,10 @@ class TaskContext(BaseModel):
                 self.memory.rooms.pop(self.memory.robot_room, None)
             return
         self.consecutive_report_rejections = 0
+        if tool in {"web_search", "read_webpage", "run_python", "finish_answer"}:
+            if tool == "finish_answer":
+                self.answer = deepcopy(entry["observation"])
+            return
         if tool in {"move_to", "pick_up", "drop", "give"}:
             self.conversation_rejections.clear()
         elif tool == "talk_to":
@@ -569,7 +574,10 @@ class TaskContext(BaseModel):
                 "action_feedback": self.action_feedback[-6:],
                 "required_outcomes": outcomes, "robot_status": self.robot_status,
                 "known_but_unobserved_rooms": sorted(known_rooms - set(self.memory.rooms)),
-                "recent_actions": self.action_history[-8:],
+                "recent_actions": [
+                    {key: action[key] for key in ("tool", "arguments", "success", "error", "evidence_id")
+                     if key in action}
+                    for action in self.action_history[-8:]],
                 "critic_feedback": [f for f in self.critic_feedback
                                     if f.get("observed_action_count") == len(self.action_history)
                                     and f.get("kind") != "delegation_report"][-2:],
