@@ -12,6 +12,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from app.persona.state import PersonaState
+
 
 class SelfModel(BaseModel):
     """The robot's record of its own performance across tasks."""
@@ -47,6 +49,7 @@ class PersistentMemory(BaseModel):
     objects: dict[str, ObjectMemory] = Field(default_factory=dict)
     recent_tasks: list[TaskRecord] = Field(default_factory=list)
     self_model: SelfModel = Field(default_factory=SelfModel)
+    persona: PersonaState = Field(default_factory=PersonaState)
 
     @classmethod
     def load(cls, path: Path) -> PersistentMemory:

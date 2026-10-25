@@ -11,6 +11,7 @@ from app.llm.factory import create_client
 from app.memory.graph import BeliefGraph
 from app.memory.store import PersistentMemory
 from app.mind.agent import AgentMind
+from app.persona import Persona
 from app.tasks.manager import TaskBusy, TaskManager
 from app.world.clock import WorldClock
 from app.world.engine import WorldEngine
@@ -35,8 +36,13 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
     llm = client if client is not None else create_client(config)
     persistent = PersistentMemory.load(config.memory_file)
     graph = BeliefGraph.load(config.graph_file)
-    manager = TaskManager(llm, WorldTools(engine, bus), bus, config, persistent)
-    mind = AgentMind(llm, manager, engine, bus, config, graph, persistent)
+    persona = None
+    if config.persona_enabled:
+        persona = Persona(persistent.persona, config.persona_name, now=clock.simulated_seconds,
+                          helpfulness_baseline=config.drive_helpfulness)
+        persona.attach(bus)
+    manager = TaskManager(llm, WorldTools(engine, bus), bus, config, persistent, persona=persona)
+    mind = AgentMind(llm, manager, engine, bus, config, graph, persistent, persona=persona)
     mutation_lock = asyncio.Lock()
 
     @asynccontextmanager
@@ -59,6 +65,10 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
     @app.get("/api/beliefs")
     async def get_beliefs():
         return graph.prompt()
+
+    @app.get("/api/persona")
+    async def get_persona():
+        return persona.public() if persona else {"enabled": False}
 
     @app.get("/api/health")
     async def health():

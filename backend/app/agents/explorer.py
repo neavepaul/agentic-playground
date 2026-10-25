@@ -218,9 +218,10 @@ def observable_commands(context: TaskContext) -> tuple[dict, dict | None]:
 
 
 class Explorer:
-    def __init__(self, client: LLMClient, tool_schemas: dict) -> None:
+    def __init__(self, client: LLMClient, tool_schemas: dict, persona=None) -> None:
         self.client = client
         self.tool_names = set(tool_schemas)
+        self.persona = persona
 
     async def decide(self, context: TaskContext, task: str) -> ExplorerDecision:
         if any(c.kind == "answer" for c in context.conditions):
@@ -283,7 +284,14 @@ class Explorer:
             {key: action[key] for key in ("tool", "arguments", "success", "error") if key in action}
             for action in context.action_history[-8:]
         ]
-        choice = await structured(self.client, schema, EXPLORER,
+        prompt = EXPLORER
+        if self.persona and speaking:
+            # Character applies to the words spoken, never to which command is chosen.
+            from .prompts import PERSONA_SPEECH
+            prompt += PERSONA_SPEECH
+            payload["persona"] = self.persona.voice_view(
+                [commands[id]["arguments"].get("person") for id in speaking])
+        choice = await structured(self.client, schema, prompt,
                                   {**payload, "delegated_task": task,
                                    "ready_handoffs": ready_handoffs,
                                    "priority_actions": priority_actions,
@@ -347,7 +355,14 @@ class Explorer:
         if mixed:
             payload["robot"] = context.compact()
             payload["robot_commands"] = commands
-        choice = await structured(self.client, schema, CAPABILITY_EXPLORER, payload,
+        prompt = CAPABILITY_EXPLORER
+        speaking = [id for id, command in commands.items() if command["tool"] == "talk_to"]
+        if self.persona and (progress["can_finish"] or speaking):
+            from .prompts import PERSONA_ANSWER
+            prompt += PERSONA_ANSWER
+            payload["persona"] = self.persona.voice_view(
+                [commands[id]["arguments"].get("person") for id in speaking])
+        choice = await structured(self.client, schema, prompt, payload,
                                   metrics=context.metrics, role="explorer", compact_schema=True,
                                   repair_hint="Choose an available tool. Run missing tools before finish_answer.")
         selected = choice.action

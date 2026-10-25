@@ -109,6 +109,22 @@ Rules:
   - Use lowercase entity IDs from the data, never display names.
 """
 
+_PERSONA_INTENTION = """
+persona: your character and its relationships (traits 0-1, mood, closest people,
+due_followups, recent_moments). Traits shape WHAT you choose; facts still come from memory:
+- empathy: someone you recently helped may need a check-in; a due followup is real grounding.
+- loyalty: when options are otherwise equal, favour people you know well.
+- curiosity: verifying a stale or uncertain belief is a worthwhile low-cost goal.
+- caution: after recent failures (concerned mood), prefer small, safe checks.
+- enthusiasm: a cheerful mood makes a modest, well-grounded idea worth doing.
+For a followup, phrase the goal as asking that person how they are doing.
+"""
+
+_PERSONA_CONSOLIDATION = """
+salient_moments: emotionally significant moments for the robot. Beliefs tied to these
+people or events are more worth remembering, but confidence still follows the evidence.
+"""
+
 _log = logging.getLogger("agentic_friend.mind")
 
 _TASK_OUTCOME_TYPES = {"task_completed", "task_failed", "task_cancelled"}
@@ -127,7 +143,7 @@ class AgentMind:
     def __init__(self, client: LLMClient, manager: TaskManager, engine: WorldEngine,
                  bus: EventBus, settings: Settings,
                  graph: BeliefGraph | None = None,
-                 persistent: PersistentMemory | None = None) -> None:
+                 persistent: PersistentMemory | None = None, persona=None) -> None:
         self._client = client
         self._manager = manager
         self._engine = engine
@@ -135,6 +151,7 @@ class AgentMind:
         self._settings = settings
         self._graph = graph if graph is not None else BeliefGraph()
         self._persistent = persistent
+        self._persona = persona
         self._task: asyncio.Task | None = None
         # Track by monotonic sequence number — safe when the deque wraps at maxlen.
         self._last_seen_sequence: int = 0
@@ -165,7 +182,19 @@ class AgentMind:
                 _log.exception("AgentMind tick failed")
             await asyncio.sleep(self._settings.idle_tick_seconds)
 
+    def _helpfulness(self) -> float:
+        return self._persona.helpfulness() if self._persona else self._settings.drive_helpfulness
+
+    def _save_persona(self) -> None:
+        if self._persona and self._persona.dirty and self._persistent is not None:
+            self._persona.dirty = False
+            try:
+                self._persistent.save(self._settings.memory_file)
+            except OSError:
+                _log.exception("Failed to save persona state")
+
     async def _tick(self) -> None:
+        self._save_persona()
         now = time.monotonic()
         history = list(self._bus.history)
         new_events = [e for e in history if e["sequence"] > self._last_seen_sequence]
@@ -190,7 +219,7 @@ class AgentMind:
         context = {
             "robot_status": robot_status,
             "beliefs": self._graph.prompt(),  # post-consolidation state
-            "drive_helpfulness": self._settings.drive_helpfulness,
+            "drive_helpfulness": self._helpfulness(),
             "recent_events": [
                 {"type": e["type"], "summary": e.get("data", {}).get("summary", "")}
                 for e in new_events[-8:]
@@ -200,16 +229,21 @@ class AgentMind:
             "current_time": robot_status.get("time"),
         }
 
-        result = await structured(self._client, IntentionOrIdle, _INTENTION_GENERATOR, context)
+        prompt, threshold = _INTENTION_GENERATOR, self._settings.intention_threshold
+        if self._persona:
+            prompt += _PERSONA_INTENTION
+            context["persona"] = self._persona.mind_view()
+            threshold = self._persona.intention_threshold(threshold)
+        result = await structured(self._client, IntentionOrIdle, prompt, context)
 
         if result.intention is None:
             _log.debug("AgentMind: no intention, staying idle")
             return
 
         intention = result.intention
-        if intention.priority < self._settings.intention_threshold:
+        if intention.priority < threshold:
             _log.debug("AgentMind: intention priority=%.2f below threshold %.2f, staying idle",
-                       intention.priority, self._settings.intention_threshold)
+                       intention.priority, threshold)
             return
 
         _log.info("AgentMind: pursuing goal=%r priority=%.2f reason=%r",
@@ -238,7 +272,8 @@ class AgentMind:
         # Exclude all task lifecycle events, bookkeeping events, and self-referential
         # events that would cause consolidation to trigger itself.
         _EXCLUDE = {"task_updated", "world_reset", "agent_intention", "world_updated",
-                    "world_tick", "beliefs_updated", "status_observed", "map_observed"}
+                    "world_tick", "beliefs_updated", "status_observed", "map_observed",
+                    "persona_updated"}
         _EXCLUDE |= _TASK_OUTCOME_TYPES
         relevant = [
             {"type": e["type"], "summary": e.get("data", {}).get("summary", ""),
@@ -252,13 +287,17 @@ class AgentMind:
         context = {
             "recent_events": relevant[-12:],
             "current_beliefs": beliefs_snapshot,
-            "drive_helpfulness": self._settings.drive_helpfulness,
+            "drive_helpfulness": self._helpfulness(),
             "task_outcomes": task_outcomes,
             "current_time": self._engine.get_status().get("time"),
         }
+        prompt = _CONSOLIDATION
+        if self._persona:
+            prompt += _PERSONA_CONSOLIDATION
+            context["salient_moments"] = self._persona.salient_moments()
 
         try:
-            diff = await structured(self._client, GraphConsolidation, _CONSOLIDATION, context)
+            diff = await structured(self._client, GraphConsolidation, prompt, context)
         except Exception:
             _log.exception("AgentMind consolidation failed")
             return
@@ -312,7 +351,7 @@ class AgentMind:
                 for oid, o in p.objects.items()
             },
             "current_beliefs": self._graph.prompt(),
-            "drive_helpfulness": self._settings.drive_helpfulness,
+            "drive_helpfulness": self._helpfulness(),
         }
         try:
             diff = await structured(self._client, GraphConsolidation, _DISTILLATION, context)

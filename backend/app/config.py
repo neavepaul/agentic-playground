@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     idle_reflection_interval: float = Field(default=120.0, gt=0)
     intention_threshold: float = Field(default=0.6, ge=0, le=1)
     drive_helpfulness: float = Field(default=0.8, ge=0, le=1)
+    # Persistent personality layer (no extra model calls)
+    persona_enabled: bool = True
+    persona_name: str = Field(default="Kip", min_length=1, max_length=40)
     distillation_task_interval: int = Field(default=5, ge=1)  # run distillation every N completed tasks
 
 

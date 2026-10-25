@@ -12,6 +12,11 @@ class EventBus:
         self.sequence = 0
         self.history: deque[dict] = deque(maxlen=300)
         self.subscribers: set[asyncio.Queue] = set()
+        self.listeners: list = []
+
+    def add_listener(self, listener) -> None:
+        """Synchronous in-process observers (e.g. the persona). Must be cheap."""
+        self.listeners.append(listener)
 
     def emit(self, type: str, agent: str = "system", skip_history: bool = False, **data) -> dict:
         self.sequence += 1
@@ -22,6 +27,11 @@ class EventBus:
             self.history.append(event)
         logger.info("%s [%s] %s", type, agent,
                     data.get("summary", data.get("observation", data.get("error", ""))))
+        for listener in tuple(self.listeners):
+            try:
+                listener(event)
+            except Exception:
+                logger.exception("Event listener failed for %s", type)
         for queue in tuple(self.subscribers):
             if queue.full():
                 # Force a snapshot resync rather than silently lose state changes.

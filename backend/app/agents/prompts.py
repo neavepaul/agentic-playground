@@ -186,3 +186,15 @@ For 'Find who needs an item and deliver it', the final condition is
 {"kind":"deliver","object":"the_requested_item_id","person":""}.
 Finding the item and identifying the recipient WITHOUT delivery is NOT success.
 """
+
+
+PERSONA_SPEECH = """
+persona (present only when speaking) is your character. Write message in its voice, shaped by
+its mood and any relationship with that person. Include requested notification text word for word.
+The persona never changes which command you choose, the facts, or what was promised.
+"""
+
+PERSONA_ANSWER = """
+persona (present only when answering or speaking) is your character. Write finish_answer.answer and
+any spoken message in its voice. Facts, numbers, uncertainty and citations stay exactly as evidenced.
+"""

@@ -4,6 +4,7 @@ import { createScene } from './scene.js';
 import { connectEvents } from './websocket.js';
 import { addEvent, clearFeed, getTask, setAgent, setConnection, setMemoryOpen, setTask, setWorld, showError } from './ui.js';
 import { renderBeliefs } from './beliefs.js';
+import { renderPersona } from './persona.js';
 
 let scene;
 try { scene = createScene(document.getElementById('scene')); }
@@ -11,6 +12,7 @@ catch { showError('The 3D view requires WebGL. Enable hardware acceleration or t
 let sequence = -1;
 let activeTab = 'activity';
 const beliefsPanel = document.getElementById('beliefs-panel');
+const personaPanel = document.getElementById('persona-panel');
 
 async function fetchAndRenderBeliefs() {
   try {
@@ -23,25 +25,30 @@ async function fetchAndRenderBeliefs() {
   }
 }
 
-document.getElementById('tab-activity').addEventListener('click', () => {
-  if (activeTab === 'activity') return;
-  activeTab = 'activity';
-  document.getElementById('tab-activity').classList.add('active');
-  document.getElementById('tab-beliefs').classList.remove('active');
-  document.getElementById('feed').hidden = false;
-  beliefsPanel.hidden = true;
-});
+async function fetchAndRenderPersona() {
+  try { renderPersona(personaPanel, await api('/persona')); }
+  catch { personaPanel.innerHTML = '<p class="beliefs-empty">Could not load the personality.</p>'; }
+}
 
-document.getElementById('tab-beliefs').addEventListener('click', () => {
-  if (activeTab === 'beliefs') return;
-  activeTab = 'beliefs';
-  document.getElementById('tab-beliefs').classList.add('active');
-  document.getElementById('tab-beliefs').classList.remove('has-update');
-  document.getElementById('tab-activity').classList.remove('active');
-  document.getElementById('feed').hidden = true;
-  beliefsPanel.hidden = false;
-  requestAnimationFrame(fetchAndRenderBeliefs);
-});
+const tabs = {
+  activity: { panel: document.getElementById('feed') },
+  beliefs: { panel: beliefsPanel, load: fetchAndRenderBeliefs },
+  persona: { panel: personaPanel, load: fetchAndRenderPersona },
+};
+for (const name of Object.keys(tabs)) {
+  document.getElementById(`tab-${name}`).addEventListener('click', () => {
+    if (activeTab === name) return;
+    activeTab = name;
+    for (const [other, { panel }] of Object.entries(tabs)) {
+      const button = document.getElementById(`tab-${other}`);
+      button.classList.toggle('active', other === name);
+      button.setAttribute('aria-selected', String(other === name));
+      panel.hidden = other !== name;
+    }
+    document.getElementById(`tab-${name}`).classList.remove('has-update');
+    if (tabs[name].load) requestAnimationFrame(tabs[name].load);
+  });
+}
 
 function snapshot(data, events) {
   sequence = data.sequence;
@@ -60,6 +67,11 @@ connectEvents({ snapshot, connection: setConnection, error: showError, event(eve
   if (event.type === 'agent_active' || event.type === 'agent_message' || event.type === 'critic_review') setAgent(event.agent);
   if (event.type === 'agent_message') document.getElementById('task-summary').textContent = d.summary;
   if (event.type === 'world_tick') return;
+  if (event.type === 'persona_updated') {
+    if (activeTab === 'persona') renderPersona(personaPanel, d.persona);
+    else document.getElementById('tab-persona').classList.add('has-update');
+    return;
+  }
   if (event.type === 'beliefs_updated') {
     if (activeTab === 'beliefs') requestAnimationFrame(fetchAndRenderBeliefs);
     else {

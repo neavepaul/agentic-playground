@@ -56,13 +56,14 @@ class LimitReached(RuntimeError):
 
 class TaskManager:
     def __init__(self, client: LLMClient, tools: WorldTools, bus: EventBus, settings: Settings,
-                 persistent: PersistentMemory | None = None) -> None:
+                 persistent: PersistentMemory | None = None, persona=None) -> None:
         self.tools, self.bus, self.settings = tools, bus, settings
         self.client = client
         self.persistent = persistent
+        self.persona = persona
         self.coordinator = Coordinator(client, digital_enabled=settings.digital_tools_enabled)
         self.capabilities = CapabilityTools(bus, enabled=settings.digital_tools_enabled)
-        self.explorer = Explorer(client, tools.schemas())
+        self.explorer = Explorer(client, tools.schemas(), persona=persona)
         self.tasks: dict[str, TaskContext] = {}
         self.active_id: str | None = None
         self.runner: asyncio.Task | None = None
@@ -102,6 +103,11 @@ class TaskManager:
         _log.info("task_metrics task=%s status=%s %s", context.id, status,
                   " ".join(f"{key}={value}" for key, value in report.items() if value not in ("", 0, 0.0)))
         self.bus.emit(f"task_{status}", task=context.public(), summary=summary, metrics=report)
+        # The persona has already appraised the outcome above; voice its reaction
+        # without replacing the factual task summary.
+        reaction = self.persona.reaction(status) if self.persona else None
+        if reaction:
+            self.bus.emit("agent_message", self.persona.name, task_id=context.id, summary=reaction)
 
     async def cancel(self, task_id: str) -> TaskContext:
         context = self.tasks[task_id]
