@@ -60,9 +60,18 @@ def _record_metrics(client, metrics, role: str, schema_name: str, seconds: float
 
 
 async def structured(client: LLMClient, schema: type[T], prompt: str, context: dict,
-                     repair_hint: str = "", metrics=None, role: str = "") -> T:
+                     repair_hint: str = "", metrics=None, role: str = "", compact_schema: bool = False) -> T:
     output_schema = schema.model_json_schema()
-    messages = [{"role": "system", "content": prompt + "\nOutput JSON schema:\n" + json.dumps(output_schema, separators=(",", ":"))},
+    def without_annotations(value):
+        if isinstance(value, list):
+            return [without_annotations(item) for item in value]
+        if isinstance(value, dict):
+            return {key: ({name: without_annotations(item) for name, item in child.items()}
+                          if key in {"properties", "$defs"} else without_annotations(child))
+                    for key, child in value.items() if key not in {"title", "description", "default"}}
+        return value
+    prompt_schema = without_annotations(output_schema) if compact_schema else output_schema
+    messages = [{"role": "system", "content": prompt + "\nOutput JSON schema:\n" + json.dumps(prompt_schema, separators=(",", ":"))},
                 {"role": "user", "content": json.dumps(context, ensure_ascii=False, separators=(",", ":"))}]
     for attempt in range(2):
         started = time.monotonic()

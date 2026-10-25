@@ -23,7 +23,7 @@ class Coordinator:
             re.I,
         ))
 
-    async def define_goal(self, goal: str, floor_plan: dict | None = None) -> GoalPlan:
+    async def define_goal(self, goal: str, floor_plan: dict | None = None, metrics=None) -> GoalPlan:
         prompt = GOAL_PLANNER
         if self.digital_enabled:
             from .prompts import DIGITAL_GOAL_PLANNER
@@ -39,7 +39,7 @@ class Coordinator:
         for attempt in range(2):
             plan = await structured(self.client, GoalPlan, prompt,
                                     {"goal": goal, "floor_plan": {"rooms": room_names}},
-                                    role="coordinator")
+                                    role="coordinator", metrics=metrics, compact_schema=self.digital_enabled)
             if unknown_recipient:
                 plan = plan.model_copy(update={
                     "conditions": [

@@ -1,5 +1,51 @@
 # Digital tools — 2026-10-25
 
+- Current implementation: removed the direct-command parser, execution path,
+  configuration flag and shortcut-specific tests at the user's request. The
+  earlier 0.295-second result below is historical and does NOT describe the
+  current model-led workflow. Every digital request now requires model planning.
+- Independent tools chosen in GoalPlan or a later batch_capabilities decision
+  run concurrently. Full-batch validation/budget checks occur before execution;
+  individual failures remain failures, and cancellation preserves completed
+  evidence. The model chooses all queries, URLs, code and answer text.
+- Digital prompts use bounded page excerpts with continuation offsets, shorter
+  snippets, short evidence aliases resolved back to original IDs, concise tool
+  instructions and schemas without annotation overhead. Full audit data remains.
+- All 247 backend tests pass. Regression coverage verifies a literal URL/Python
+  request requires model planning and can complete in two calls, later model-led
+  batches, concurrent execution, cancellation, budget checks, evidence integrity,
+  schema-property preservation, and existing robot behavior. Metrics now include
+  initial GoalPlan calls; older call counts below excluded them.
+- Live Colibri verification with the bypass removed: the example.com/Python
+  request completed successfully in 294.382 seconds (4m54s), with two actual
+  model requests, a model-selected initial read/Python batch, real stdout `42`,
+  and a model-written answer citing both original evidence IDs. GoalPlan took
+  172.165 seconds; the answer call took 121.982 seconds. Model inference accounted
+  for essentially all wall time. Full audit: `artifacts/model-batching-result.json`;
+  request measurements: `artifacts/model-batching-calls.json`.
+- The earlier four-request model-led probe took about 399 seconds. This new
+  two-request probe was faster, but the runs are not a controlled benchmark and
+  do not establish a stable speedup. Current Colibri inference still takes minutes.
+- Prompt excerpts used short evidence labels; the final answer's stored
+  citations were restored to the actual task-local UUIDs and validated. The
+  isolated test used no persistent personal memory; simulated time stayed 08:00.
+
+- Historical shortcut experiment (removed): the exact user request “Read https://example.com and use
+  Python to calculate 6 × 7. Tell me both results.” completed through the running
+  backend API in 0.295 seconds, with a real page fetch, `print(6 * 7)` execution,
+  both evidence IDs, and zero model requests. Audit:
+  `artifacts/digital-tools-fast-result.json`. This is one warm-service functional
+  timing; network conditions and cold starts can change the latency.
+- In that experiment, fully specified literal URL/arithmetic requests used a bounded direct
+  executor. Other digital goals can batch independent initial tools from their
+  GoalPlan, avoiding separate model selection calls. A scripted integration test
+  verifies a nonliteral read/calculate request uses two model calls (plan/answer).
+  This batching improvement has not been separately timed through the real model.
+- All 258 backend tests pass, covering alternate URLs/expressions, rejection of
+  extra clauses/code/expensive arithmetic, actual restricted Python execution,
+  failure evidence, batching, and the existing robot tests. The direct path does
+  not require the local model and cannot emit an answer after a tool failure.
+
 - Follow-up user run `b414cab9-90df-4071-8840-8ffd16b147f4` read example.com,
   then attempted a final answer claiming Python execution without having run it.
   The evidence guard rejected that attempt. The existing task recovered, ran

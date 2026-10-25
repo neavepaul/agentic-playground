@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from app.agents.schemas import StrictModel
 
@@ -28,7 +28,21 @@ class AnswerAction(StrictModel):
     evidence_ids: list[str] = Field(min_length=1, max_length=20)
 
 
-DigitalAction = Annotated[SearchAction | ReadAction | PythonAction | AnswerAction,
+IndependentAction = Annotated[SearchAction | ReadAction | PythonAction, Field(discriminator="tool")]
+
+
+class BatchAction(StrictModel):
+    tool: Literal["batch_capabilities"]
+    actions: list[IndependentAction] = Field(min_length=1, max_length=4)
+
+    @model_validator(mode="after")
+    def no_duplicates(self):
+        if len({action.model_dump_json() for action in self.actions}) != len(self.actions):
+            raise ValueError("A batch must contain distinct independent calls.")
+        return self
+
+
+DigitalAction = Annotated[SearchAction | ReadAction | PythonAction | AnswerAction | BatchAction,
                           Field(discriminator="tool")]
 
 

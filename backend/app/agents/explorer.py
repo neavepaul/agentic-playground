@@ -307,8 +307,9 @@ class Explorer:
                                 arguments=arguments, summary=choice.summary, source="llm")
 
     async def _decide_capability(self, context: TaskContext, task: str) -> ExplorerDecision:
-        from app.capabilities.schemas import CapabilityChoice, SearchAction, ReadAction, PythonAction, AnswerAction
-        from app.capabilities.tools import DIGITAL_TOOLS, required_tool_progress
+        from app.capabilities.schemas import CapabilityChoice, SearchAction, ReadAction, PythonAction, AnswerAction, BatchAction
+        from app.capabilities.tools import required_tool_progress
+        from app.capabilities.context import evidence_view
         from .prompts import CAPABILITY_EXPLORER
 
         mixed = any(c.kind != "answer" for c in context.conditions)
@@ -322,7 +323,7 @@ class Explorer:
                 setattr(context.metrics, counter, getattr(context.metrics, counter) + 1)
                 return reflex
         progress = required_tool_progress(context)
-        available = SearchAction | ReadAction | PythonAction
+        available = SearchAction | ReadAction | PythonAction | BatchAction
         if progress["can_finish"]:
             available |= AnswerAction
         if commands:
@@ -333,39 +334,25 @@ class Explorer:
         schema = create_model("MixedCapabilityChoice" if commands else "CapabilityChoice",
                               __base__=CapabilityChoice,
                               action=(available, Field(discriminator="tool")))
-        # Keep task-local observations, including IDs, available without replaying
-        # unrelated room geometry or past personal memories into online requests.
-        observations, remaining = [], 16000
-        import json
-        for entry in reversed(context.action_history):
-            if entry["tool"] not in DIGITAL_TOOLS:
-                continue
-            item = {key: entry[key] for key in ("tool", "success", "evidence_id", "observation", "error") if key in entry}
-            if not entry["success"]:
-                arguments = entry["arguments"]
-                if entry["tool"] == "finish_answer":
-                    # Rejected prose is an unsupported model claim, not a fact to
-                    # repeat in subsequent decisions. Retain only its citations.
-                    arguments = {"evidence_ids": arguments.get("evidence_ids", [])}
-                if len(json.dumps(arguments, ensure_ascii=False)) > 4000:
-                    arguments = {"code_excerpt": arguments.get("code", "")[:2000],
-                                 "note": "Large failed input omitted; simplify the program/input from the original goal."}
-                item["arguments"] = arguments
-            encoded = json.dumps(item, ensure_ascii=False)
-            if len(encoded) > remaining:
-                continue
-            observations.append(item)
-            remaining -= len(encoded)
-        payload = {"goal": context.goal, "delegated_task": task,
+        observations, aliases = evidence_view(context)
+        originals = {original: alias for alias, original in aliases.items()}
+        progress["successful_evidence_ids"] = {tool: [originals[key] for key in ids]
+                                               for tool, ids in progress["successful_evidence_ids"].items()}
+        payload = {"goal": context.goal,
                    "required_tool_progress": progress,
                    "required_outcomes": [c.model_dump(exclude_defaults=True) for c in context.conditions],
-                   "tool_observations": list(reversed(observations)), "feedback": context.action_feedback[-3:]}
+                   "tool_observations": observations, "feedback": context.action_feedback[-3:]}
+        if task != context.goal:
+            payload["delegated_task"] = task
         if mixed:
             payload["robot"] = context.compact()
             payload["robot_commands"] = commands
         choice = await structured(self.client, schema, CAPABILITY_EXPLORER, payload,
-                                  metrics=context.metrics, role="explorer")
+                                  metrics=context.metrics, role="explorer", compact_schema=True,
+                                  repair_hint="Choose an available tool. Run missing tools before finish_answer.")
         selected = choice.action
+        if selected.tool == "finish_answer":
+            selected.evidence_ids = [aliases.get(key, key) for key in selected.evidence_ids]
         if selected.tool == "robot_command":
             command = commands[selected.command_id]
             arguments = dict(command["arguments"])

@@ -67,83 +67,6 @@
   },
   "recent_tasks": [
     {
-      "task_id": "84a36854-3d1b-4015-9430-43293a44234d",
-      "goal": "Find charger.",
-      "outcome": "cancelled",
-      "timestamp": "2026-10-24T05:14:33.339198+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "8bc215ff-c1a9-4d19-ab92-59948c207bec",
-      "goal": "Try again.",
-      "outcome": "cancelled",
-      "timestamp": "2026-10-24T05:14:33.345384+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "e7c08de3-aca4-4e6e-b8e4-d31b5c45275a",
-      "goal": "Find charger.",
-      "outcome": "cancelled",
-      "timestamp": "2026-10-24T05:15:04.724258+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "0f0c1a1a-e61c-4e93-957b-eaaf9491b047",
-      "goal": "Try again.",
-      "outcome": "cancelled",
-      "timestamp": "2026-10-24T05:15:04.735148+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "1bbd48b5-7c4e-4edd-b4c6-025d3529d828",
-      "goal": "Paul needs the medicine. Find it and bring it to him.",
-      "outcome": "cancelled",
-      "timestamp": "2026-10-24T05:34:39.067231+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "72972918-dfad-4f3c-a3b7-5a0b51081cac",
-      "goal": "Find charger.",
-      "outcome": "cancelled",
-      "timestamp": "2026-10-24T05:35:02.849171+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "bbb4ac5b-93fd-4a43-bcdf-86b8d4a4335c",
-      "goal": "Try again.",
-      "outcome": "cancelled",
-      "timestamp": "2026-10-24T05:35:02.860822+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "df83925e-62b8-4a9c-b748-a28de33c1f77",
-      "goal": "Paul needs the medicine. Find it and bring it to him.",
-      "outcome": "cancelled",
-      "timestamp": "2026-10-25T03:12:19.106086+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "6f94a6f0-a2e3-424a-a687-249baa114612",
-      "goal": "Find charger.",
-      "outcome": "cancelled",
-      "timestamp": "2026-10-25T03:12:51.270015+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "2508d8d3-654c-4047-b4b8-6609c1a9afb3",
-      "goal": "Try again.",
-      "outcome": "cancelled",
-      "timestamp": "2026-10-25T03:12:51.288091+00:00",
-      "summary": "Task cancelled. Completed world actions are retained."
-    },
-    {
-      "task_id": "d02d2a3f-153a-4980-aae1-5ee92b3eade0",
-      "goal": "Neave needs the medicine. Find it and bring it to him.",
-      "outcome": "completed",
-      "timestamp": "2026-10-25T03:50:11.198591+00:00",
-      "summary": "Medicine delivered to neave. All goal conditions met."
-    },
-    {
       "task_id": "040666de-e6e8-416d-89bb-c834387b5895",
       "goal": "Find charger.",
       "outcome": "cancelled",
@@ -205,6 +128,83 @@
       "outcome": "cancelled",
       "timestamp": "2026-10-25T07:32:10.733509+00:00",
       "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "bbb42ba6-e7ea-410c-a363-6d70b37ce6e6",
+      "goal": "Read https://example.com and use Python to calculate 6 × 7. Tell me both results.",
+      "outcome": "completed",
+      "timestamp": "2026-10-25T07:53:42.811233+00:00",
+      "summary": "Answer ready. All requested outcomes completed."
+    },
+    {
+      "task_id": "84e80ebc-e837-43d2-a56c-443984b8b841",
+      "goal": "what is the current AQI of mumbai? and use Python to calculate 6 × 7. Tell me both results.",
+      "outcome": "completed",
+      "timestamp": "2026-10-25T08:06:31.705349+00:00",
+      "summary": "Answer ready. All requested outcomes completed."
+    },
+    {
+      "task_id": "f9f0c497-7e6d-4154-afde-fef0e126f727",
+      "goal": "Read https://example.com and use Python to calculate 6 × 7. Tell me both results.",
+      "outcome": "completed",
+      "timestamp": "2026-10-25T08:08:56.863707+00:00",
+      "summary": "Answer ready. All requested outcomes completed."
+    },
+    {
+      "task_id": "58afa6d8-5e0c-47cb-98b4-bcd90447c071",
+      "goal": "Read https://example.com and use Python to calculate 6 × 7. Tell me both results.",
+      "outcome": "completed",
+      "timestamp": "2026-10-25T08:09:04.679143+00:00",
+      "summary": "Answer ready. All requested outcomes completed."
+    },
+    {
+      "task_id": "84bd5a37-b229-45ad-ad87-2ad0b53a096f",
+      "goal": "Read https://example.com and use Python to calculate 6 × 7. Tell me both results.",
+      "outcome": "completed",
+      "timestamp": "2026-10-25T08:09:07.658940+00:00",
+      "summary": "Answer ready. All requested outcomes completed."
+    },
+    {
+      "task_id": "754c83dc-80d4-47aa-bf8e-b48f74290fb6",
+      "goal": "Read https://dummyjson.com/products and use Python to calculate 6 × 7. Tell me both results.",
+      "outcome": "failed",
+      "timestamp": "2026-10-25T08:11:39.489560+00:00",
+      "summary": "This reader supports HTML and plain text, not PDFs, images or downloads."
+    },
+    {
+      "task_id": "9bc34ba5-e9c8-4529-809a-112bbd5d8c11",
+      "goal": "Read https://dummyjson.com and use Python to calculate 6 × 7. Tell me both results.",
+      "outcome": "completed",
+      "timestamp": "2026-10-25T08:12:11.663255+00:00",
+      "summary": "Answer ready. All requested outcomes completed."
+    },
+    {
+      "task_id": "a124736a-eb61-4960-978b-553ad4d02033",
+      "goal": "Find charger.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T08:20:58.331891+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "0f751b93-1267-4acf-b27f-5a22f3c542af",
+      "goal": "Try again.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T08:20:58.349532+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "fa9324a4-62c4-49cd-9782-21d3966de055",
+      "goal": "Find charger.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T08:21:55.373626+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
+    },
+    {
+      "task_id": "2e5bf54e-5400-4a34-b314-6a9236d2dbba",
+      "goal": "Try again.",
+      "outcome": "cancelled",
+      "timestamp": "2026-10-25T08:21:55.386076+00:00",
+      "summary": "Task cancelled. Completed world actions are retained."
     }
   ],
   "self_model": {
@@ -218,7 +218,8 @@
       "kitchen": 2
     },
     "tool_failure_counts": {
-      "finish_answer": 1
+      "finish_answer": 1,
+      "read_webpage": 1
     },
     "entity_search_failures": {
       "paul": 1

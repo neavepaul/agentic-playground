@@ -357,7 +357,7 @@ class TestDelegationLifetime:
         assert task.status == "completed", task.summary
         assert engine.snapshot()["objects"]["medicine"]["location"] == {"kind": "person", "id": "paul"}
         assert task.current_plan == task.goal
-        assert task.metrics.coordinator_llm_calls == 0
+        assert task.metrics.coordinator_llm_calls == 1  # Initial GoalPlan is now included.
         assert task.metrics.explorer_llm_calls == 2
         assert task.metrics.coordinator_handoffs == 1
         assert task.tool_count > 8
@@ -372,7 +372,7 @@ class TestDelegationLifetime:
         await manager.runner
         assert task.status == "failed"
         assert task.summary == "No further search in this test."
-        assert task.metrics.coordinator_llm_calls == 1
+        assert task.metrics.coordinator_llm_calls == 2  # GoalPlan plus one replan.
 
     async def test_completed_objective_returns_control_before_the_ceiling(self):
         manager, _ = self._manager([

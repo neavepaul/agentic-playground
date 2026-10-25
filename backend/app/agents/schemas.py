@@ -93,9 +93,15 @@ class GoalCondition(StrictModel):
         return self
 
 
+class InitialCapability(StrictModel):
+    tool: Literal["web_search", "read_webpage", "run_python"]
+    arguments: dict = Field(default_factory=dict)
+
+
 class GoalPlan(StrictModel):
     summary: ShortText
     conditions: list[GoalCondition] = Field(min_length=1, max_length=8)
+    initial_actions: list[InitialCapability] = Field(default_factory=list, max_length=4)
 
 
 class SpokenNeed(StrictModel):

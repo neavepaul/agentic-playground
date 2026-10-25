@@ -373,6 +373,27 @@ Tool, delegation, cycle and time limits still bound execution; these changes do 
 guarantee that every conversation will make progress.
 ## Web research and small Python programs
 
+Every digital request goes through the model, including an explicit URL plus a
+simple calculation. The former direct-command parser and its setting have been
+removed. Colibri chooses the tools, their arguments, and the final answer.
+
+The initial goal plan can request up to four independent tools with fully known
+arguments. Later decisions can use `batch_capabilities` to group independent
+calls too. These public reads/restricted Python calls execute concurrently, with
+the complete batch checked against the remaining tool budget before starting.
+Each actual result retains its own evidence record. Physical actions and final
+answers cannot be batched. A search must finish before the model selects a result
+URL; programs using page data must wait for that data. Cancellation preserves
+completed evidence and cancels unfinished calls. Existing robot actions remain.
+
+Model prompts use smaller page excerpts (with continuation offsets), shorter
+search snippets, and short citation labels. Full tool observations and original
+evidence IDs remain in the audit history; aliases are resolved before validation.
+Schema annotations are omitted from digital prompts while the original schema
+still validates outputs. Metrics now include the initial GoalPlan call. These
+changes reduce inference work and round trips; model/hardware speed still limits
+response time, and general research is not guaranteed to be instantaneous.
+
 Colibri remains the local model; the existing robot navigation, search, conversation,
 pickup and delivery tools remain available. You can now also give goals such as:
 

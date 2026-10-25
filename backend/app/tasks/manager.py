@@ -149,12 +149,39 @@ class TaskManager:
             raise LimitReached("Maximum total tool calls reached.")
         context.tool_count += 1
         result = await self.capabilities.execute(tool, arguments, context)
+        self._record_capability(context, tool, arguments, result)
+        return result
+
+    def _record_capability(self, context: TaskContext, tool: str, arguments: dict, result: dict) -> None:
         context.record(tool, arguments, result)
+        if result["success"]:
+            context.metrics.useful_observations += 1
         if not result["success"]:
             context.feedback(result["error"])
             self.message(context, "system", "Tool attempt rejected; continuing with the error feedback.")
         self.bus.emit("task_updated", task=context.public())
-        return result
+
+    async def call_capability_batch(self, context: TaskContext, calls: list[dict]) -> list[dict]:
+        from app.capabilities.schemas import BatchAction
+        from pydantic import ValidationError
+        try:
+            validated = BatchAction.model_validate({"tool": "batch_capabilities", "actions": [
+                {**call.get("arguments", {}), "tool": call["tool"]} for call in calls]})
+        except ValidationError:
+            raise ModelError("Model requested an invalid tool batch. Calls must be distinct public reads or small Python programs with valid arguments.") from None
+        actions = [(action.tool, action.model_dump(exclude={"tool"})) for action in validated.actions]
+        if context.tool_count + len(actions) > self.settings.max_tool_calls:
+            raise LimitReached("Maximum total tool calls reached; batch was not started.")
+        context.tool_count += len(actions)
+        # Public reads and restricted Python can run independently. Physical
+        # mutations and final answers are excluded by the batch schema.
+        async def execute(tool, arguments):
+            result = await self.capabilities.execute(tool, arguments, context)
+            self._record_capability(context, tool, arguments, result)
+            return result
+        async with asyncio.TaskGroup() as group:
+            running = [group.create_task(execute(tool, arguments)) for tool, arguments in actions]
+        return [task.result() for task in running]
 
     def _progress_changed(self, context: TaskContext, previous: tuple | None = None) -> bool:
         signature = context.progress_signature()
@@ -167,8 +194,16 @@ class TaskManager:
         self.call_tool(context, "get_status", {})
         self.call_tool(context, "get_map", {})
         self.bus.emit("agent_active", "coordinator", task_id=context.id)
-        goal_plan = await self.coordinator.define_goal(context.goal, context.floor_plan)
+        goal_plan = await self.coordinator.define_goal(context.goal, context.floor_plan, metrics=context.metrics)
         context.conditions = goal_plan.conditions
+        digital_only = all(c.kind == "answer" for c in context.conditions)
+        if self.settings.digital_tools_enabled and digital_only:
+            # These initial calls are explicitly independent, fully specified
+            # by the model, and validated by the same capability executor.
+            self.bus.emit("agent_active", "explorer", task_id=context.id)
+            if goal_plan.initial_actions:
+                self.message(context, "explorer", "Running the model's independent tool calls together.")
+                await self.call_capability_batch(context, [action.model_dump() for action in goal_plan.initial_actions])
         self.message(context, "coordinator", "Required outcomes defined. Locating targets requires tool observations.")
         for cycle in range(self.settings.max_coordinator_cycles):
             context.cycle_count = cycle + 1
@@ -177,7 +212,7 @@ class TaskManager:
             # GoalPlan already interpreted the complete goal. Hand it directly
             # to Explorer instead of paying for a second initial planning call.
             # Later cycles still use the Coordinator for recovery/replanning.
-            if cycle == 0 and self.settings.direct_initial_delegation:
+            if cycle == 0 and (self.settings.direct_initial_delegation or digital_only):
                 decision = CoordinatorDecision(action="delegate", summary="Execute the required outcomes.",
                                                task=context.goal)
             else:
@@ -258,6 +293,11 @@ class TaskManager:
                         self.message(context, "explorer", "Returning observations to Coordinator.")
                         break
                     self.message(context, "explorer", f"Next action: {action.tool}.")
+                    if action.tool == "batch_capabilities":
+                        await self.call_capability_batch(context, [
+                            {"tool": call["tool"], "arguments": {k: v for k, v in call.items() if k != "tool"}}
+                            for call in action.arguments["actions"]])
+                        continue
                     previous = context.action_history[-1] if context.action_history else None
                     if (previous and previous["success"] and action.tool != "talk_to"
                             and previous["tool"] == action.tool and previous["arguments"] == action.arguments):
@@ -310,8 +350,6 @@ class TaskManager:
                     revisit = action.arguments.get("room") in context.memory.visited_rooms
                     if action.tool in DIGITAL_TOOLS:
                         result = await self.call_capability(context, action.tool, action.arguments)
-                        if result.get("success"):
-                            context.metrics.useful_observations += 1
                         if result.get("success") and not [c for c in check_conditions(context) if not c["satisfied"]]:
                             self.finish(context, "completed", "Answer ready. All requested outcomes completed.")
                             return
