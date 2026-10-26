@@ -27,6 +27,9 @@ from .prompt import ChatAction, TrailerSplitter, build_messages
 _log = logging.getLogger("agentic_friend.chat")
 
 HISTORY = 50
+# Past exchanges are recalled for what the person said. Kip's own old lines are left out:
+# shown them, the model repeats them word for word.
+_OWN_OLD_LINE = re.compile(r"\s*\|\s*I replied:.*$", re.S)
 _HALF_YES = re.compile(r"^\W*(yes|yeah|yep|sure|ok|okay)\b")  # "Yes? What do you mean?" is not a yes
 FIRST_PERSON = re.compile(r"\b(i|i'm|i've|me|my|mine|myself|the user)\b")
 
@@ -210,6 +213,10 @@ class ChatSession:
                 parts.append(f"This needs you to actually {names(usable)}; an errand starts for it. Say so in a few "
                              "words. Never write its result, output or page content yourself: the real one follows."
                              + (f" You won't {names(off)}: it was ruled out." if off else ""))
+        if intent.greeting:
+            parts.append("A greeting: a line or two in your own dry voice, from something real (the hour, where "
+                         "you are, what's happened). Asked how you are, go by your actual mood and errands, not "
+                         "an invented day. Don't ask them back unless you want to know.")
         if intent.wants_offer:
             parts.append("They want an offer, not action: put it in offer and wait for their yes.")
         if intent.about_past:
@@ -226,8 +233,8 @@ class ChatSession:
             # Durable knowledge first; past chat snippets would otherwise crowd it
             # out, since they often repeat the very facts they mention.
             memories = await self.store.recall(text, kinds=["fact", "preference", "episode", "skill"], k=4)
-            memories += await self.store.recall(text, kinds=["conversation"], k=2)
-            return memories
+            chats = await self.store.recall(text, kinds=["conversation"], k=2)
+            return memories + [{**m, "text": _OWN_OLD_LINE.sub("", m["text"])} for m in chats]
         except Exception:
             _log.exception("Memory recall failed; continuing conversation without recalled memories")
             return []

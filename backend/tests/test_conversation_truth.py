@@ -439,3 +439,36 @@ async def test_kip_looks_things_up_unasked_but_house_errands_still_wait_for_a_ye
     assert session.pending_offer == "Check the kitchen" and len(manager.tasks) == 1
     assert not physical(ran)
     await done(session, manager)
+
+
+# ── 10. greetings: fresh each time, in his own voice ───────────────────────────
+@pytest.mark.asyncio
+async def test_a_repeated_greeting_never_shows_kip_his_old_reply(ran):
+    old = "Better than yesterday, Neave. I'm just here in the hall. How is your morning going?"
+    model = PlanningModel([said(old), said("Still here. The hall hasn't moved either.")])
+    session, manager = session_with(model, world=HOUSE_WORLD, persona=Persona())
+    session.submit("Hi Kip, it's Neave. How are you doing today?")
+    await settle(session, manager)
+    again = ChatSession(model, session.bus, manager, session.engine, session.settings, store=session.store,
+                        persona=session.persona)  # the next test run: same memory, new conversation
+    again.attach()
+    again.submit("Hi Kip, it's Neave. How are you doing today?")
+    await settle(again, manager)
+    prompt = latest_prompt(model)
+    assert "They said: Hi Kip, it's Neave." in prompt   # remembered what she said
+    assert old not in prompt and "I replied" not in prompt  # but not his own line to parrot
+    await again.close()
+    await done(session, manager)
+
+
+@pytest.mark.asyncio
+async def test_a_housemates_greeting_invites_his_dry_voice(ran):
+    model = PlanningModel([said("Neave. Still upright.")])
+    session, manager = session_with(model, world=HOUSE_WORLD, persona=Persona())
+    session.submit("Hi Kip, it's Neave. How are you doing today?")
+    await settle(session, manager)
+    prompt = latest_prompt(model)
+    assert "You live with them" in prompt and "Dry humour suits this" in prompt
+    assert "A greeting:" in prompt and "Don't ask them back unless you want to know" in prompt
+    assert "barely know" not in prompt and "reserved" not in prompt
+    await done(session, manager)

@@ -158,17 +158,18 @@ def test_humour_adapts_to_each_person_from_how_they_respond():
         said(persona, "That's not funny. Be serious.", speaker="paul")
         clock.seconds += 3600
     neave, paul = persona.stance("neave", "What's for dinner?"), persona.stance("paul", "What's for dinner?")
-    assert "dry remark is welcome" in neave and "teasing" in neave
+    assert "Dry humour suits this" in neave and "teasing" in neave
     assert "humour only if they start it" in paul
     assert persona.state.relationships["paul"].humour_reception < 0.2
 
 
-def test_a_stranger_gets_reserve_and_an_unknown_speaker_gets_no_assumptions():
+def test_housemates_get_warmth_and_humour_while_an_unknown_speaker_gets_reserve():
     persona = Persona(now=Clock())
-    assert "barely know them" in persona.stance("minu", "hi")
-    said(persona, "haha", speaker="minu")
-    assert "dry remark is welcome" not in persona.stance("minu", "hi")
-    assert "don't know who is speaking" in persona.stance(None, "hi")
+    stance = persona.stance("minu", "hi")  # no shared history yet, but she lives here
+    assert "You live with them" in stance and "Dry humour suits this" in stance
+    assert "teasing" not in stance  # teasing is still earned
+    unknown = persona.stance(None, "hi")
+    assert "don't know who is speaking" in unknown and "Dry humour suits" not in unknown
 
 
 # ── care: listen first, respect boundaries ─────────────────────────────────────

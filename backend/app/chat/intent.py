@@ -20,6 +20,8 @@ _WANTS_OFFER = re.compile(r"\b(offer to|could you offer|suggest|wait for my (?:o
 _ABOUT_PAST = re.compile(r"\b(what (?:did|have) you (?:do|done|been doing|been up to)|what have you done|"
                          r"did you (?:\w+ ){0,2}(?:speak|talk|go|check|run|read|see|find|look|tell|visit)|"
                          r"have you (?:\w+ ){0,2}(?:spoken|talked|been|checked|run|read|seen|found|told|visited))\b")
+_GREETING = re.compile(r"^\W*(?:hi|hello|hey|hiya|morning|evening|howdy|good (?:morning|afternoon|evening))\b"
+                       r"|\bhow are you\b|\bhow'?s it going\b|\bhow'?s your (?:day|morning|evening)\b")
 _INTRODUCES = re.compile(r"\b(?:it'?s|this is|i'?m|i am|me,)\s+([a-z][a-z'-]+)\b")
 
 
@@ -34,6 +36,7 @@ class Intent:
     wants_offer: bool = False      # "offer to…", "wait for my confirmation before going"
     about_past: bool = False       # "what did you do today?"
     needs_tools: list[str] = field(default_factory=list)  # tools their own words ask to run
+    greeting: bool = False         # "hi", "how are you"
 
     @property
     def changes_state_only(self) -> bool:
@@ -60,7 +63,7 @@ def read_intent(text: str, granted: list[str] = (), revoked: list[str] = ()) -> 
     return Intent(request=request and not wants_offer, question=not request and is_question(text),
                   granted=list(granted), revoked=list(revoked), declines=bool(_DECLINES.match(lowered)),
                   cancel=cancel, wants_offer=wants_offer, about_past=bool(_ABOUT_PAST.search(lowered)),
-                  needs_tools=needs)
+                  needs_tools=needs, greeting=bool(_GREETING.search(lowered)))
 
 
 def introduced_as(text: str, people: dict) -> str | None:

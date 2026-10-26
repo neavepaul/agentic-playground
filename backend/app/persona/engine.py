@@ -268,8 +268,10 @@ class Persona:
         parts = []
         if speaker is None:
             parts.append("You don't know who is speaking: don't assume, and don't attach what they say to anyone.")
-        elif bond is None or bond.familiarity < STRANGER:
-            parts.append("You barely know them yet: friendly, a little reserved.")
+        elif bond is None or bond.familiarity < WELL_KNOWN:
+            # Anyone Kip can identify lives here: a housemate, not a stranger, even before
+            # much shared history. Familiarity deepens the shorthand; it doesn't unlock warmth.
+            parts.append("You live with them: at ease and warm, without much shared history to lean on yet.")
         elif bond.familiarity >= WELL_KNOWN:
             parts.append("You know them well: relaxed, the shorthand of shared history.")
         label = self.mood_label()
@@ -285,16 +287,17 @@ class Persona:
         elif cues.humour_unwanted:
             parts.append("They don't want jokes right now: plain and sincere.")
         else:
-            # Humour is earned: until Kip knows someone, he holds back whatever they laughed at once.
-            known = bool(bond and bond.familiarity >= STRANGER)
-            reception = 0.5 + (bond.humour_reception if known else 0.3)
+            # Housemates get his humour from the start; how they react tunes it per person.
+            # Only an unidentified speaker gets the reserved version. Teasing is still earned.
+            reception = (0.5 + (bond.humour_reception if bond else 0.5)) if speaker else 0.8
             mood_factor = {"tired": 0.6, "concerned": 0.4, "determined": 0.7}.get(label, 1.0)
             score = self.trait("dry_humour") * reception * mood_factor
             tease = bool(bond and bond.familiarity >= WELL_KNOWN and bond.humour_reception >= 0.55
                          and self.trait("mischief") >= 0.5)
             if score >= 0.8:
-                parts.append("A dry remark is welcome if the moment genuinely offers one"
-                             + (", and gentle teasing suits them." if tease else "."))
+                parts.append("Dry humour suits this: deadpan understatement or a literal-minded take on "
+                             "something real here (the hour, the room, what just happened). Not every line, "
+                             "never at their expense" + ("; gentle teasing suits them." if tease else "."))
             elif score >= 0.5:
                 parts.append("At most one understated aside, if any.")
             else:
