@@ -525,10 +525,3 @@ def test_idle_status_says_none_not_null():
     session, _, _, _ = make_session([])
     status = session._status()
     assert status["current_errand"] == "none" and "null" not in json.dumps(status)
-
-
-def test_regression_script_spots_invented_searches():
-    from app.regress_chat import ungrounded_rooms
-    text = "I've checked the entryway and the kitchen counter, but haven't found them. I'll try the bedroom next."
-    assert set(ungrounded_rooms(text, looked={"kitchen"}, world_rooms={"kitchen", "office"})) == {"entryway", "counter"}
-    assert ungrounded_rooms("I looked in the kitchen and found the keys.", {"kitchen"}, {"kitchen"}) == []

@@ -20,6 +20,11 @@ _WANTS_OFFER = re.compile(r"\b(offer to|could you offer|suggest|wait for my (?:o
 _ABOUT_PAST = re.compile(r"\b(what (?:did|have) you (?:do|done|been doing|been up to)|what have you done|"
                          r"did you (?:\w+ ){0,2}(?:speak|talk|go|check|run|read|see|find|look|tell|visit)|"
                          r"have you (?:\w+ ){0,2}(?:spoken|talked|been|checked|run|read|seen|found|told|visited))\b")
+# Things that change by the hour: answering them from the model's memory is inventing them.
+_LIVE_FACT = re.compile(r"\b(weather|forecast|temperature|raining|humidity|aqi|air quality|stocks?|shares?|share price|"
+                        r"stock price|price of|trading at|sensex|nifty|nasdaq|dow jones|bitcoin|crypto|exchange rate|"
+                        r"scores?|cricket|ipl|test match|odi|t20|innings|wickets?|football|premier league|who won|"
+                        r"headlines|the news|news today)\b")
 _GREETING = re.compile(r"^\W*(?:hi|hello|hey|hiya|morning|evening|howdy|good (?:morning|afternoon|evening))\b"
                        r"|\bhow are you\b|\bhow'?s it going\b|\bhow'?s your (?:day|morning|evening)\b")
 _INTRODUCES = re.compile(r"\b(?:it'?s|this is|i'?m|i am|me,)\s+([a-z][a-z'-]+)\b")
@@ -37,6 +42,7 @@ class Intent:
     about_past: bool = False       # "what did you do today?"
     needs_tools: list[str] = field(default_factory=list)  # tools their own words ask to run
     greeting: bool = False         # "hi", "how are you"
+    live_fact: bool = False        # weather, prices, scores, news: must be looked up
 
     @property
     def changes_state_only(self) -> bool:
@@ -63,7 +69,8 @@ def read_intent(text: str, granted: list[str] = (), revoked: list[str] = ()) -> 
     return Intent(request=request and not wants_offer, question=not request and is_question(text),
                   granted=list(granted), revoked=list(revoked), declines=bool(_DECLINES.match(lowered)),
                   cancel=cancel, wants_offer=wants_offer, about_past=bool(_ABOUT_PAST.search(lowered)),
-                  needs_tools=needs, greeting=bool(_GREETING.search(lowered)))
+                  needs_tools=needs, greeting=bool(_GREETING.search(lowered)),
+                  live_fact=bool(_LIVE_FACT.search(lowered)) and not cancel)
 
 
 def introduced_as(text: str, people: dict) -> str | None:

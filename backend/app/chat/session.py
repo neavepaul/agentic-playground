@@ -22,7 +22,9 @@ from .consent import Offer, classify_reply, is_request, task_identity  # noqa: F
 from .evidence import (capabilities, contradicted_presence, denied_capabilities, last_seen, room_scans,
                        task_record, unsupported_execution)
 from .intent import Intent, introduced_as, read_intent
+from app.agents.schemas import GoalCondition, GoalPlan, InitialCapability
 from .prompt import ChatAction, TrailerSplitter, build_messages
+from .spoken import spoken
 
 _log = logging.getLogger("agentic_friend.chat")
 
@@ -30,6 +32,9 @@ HISTORY = 50
 # Past exchanges are recalled for what the person said. Kip's own old lines are left out:
 # shown them, the model repeats them word for word.
 _OWN_OLD_LINE = re.compile(r"\s*\|\s*I replied:.*$", re.S)
+# A reading, price or score: a number with a unit or a currency.
+_FIGURE = re.compile(r"\d[\d,.]*\s*(?:°|degrees?|celsius|fahrenheit|%|percent|runs?|wickets?|overs?|points?|goals?|"
+                     r"rupees?|dollars?|pounds?|euros?|crore|lakh)|[₹$£€]\s*\d|\b\d{1,3}\s*(?:/|for)\s*\d{1,2}\b")
 _HALF_YES = re.compile(r"^\W*(yes|yeah|yep|sure|ok|okay)\b")  # "Yes? What do you mean?" is not a yes
 FIRST_PERSON = re.compile(r"\b(i|i'm|i've|me|my|mine|myself|the user)\b")
 
@@ -152,6 +157,8 @@ class ChatSession:
         job.add_done_callback(self._jobs.discard)
 
     def _add_turn(self, role: str, text: str, **extra) -> dict:
+        if role != "user":
+            text = spoken(text)  # Kip talks; code, markdown and links never reach the voice
         turn = {"id": str(uuid4()), "role": role, "text": text,
                 "at": datetime.now(timezone.utc).isoformat(), **extra}
         self.turns.append(turn)
@@ -213,6 +220,9 @@ class ChatSession:
                 parts.append(f"This needs you to actually {names(usable)}; an errand starts for it. Say so in a few "
                              "words. Never write its result, output or page content yourself: the real one follows."
                              + (f" You won't {names(off)}: it was ruled out." if off else ""))
+        if intent.live_fact and not intent.changes_state_only:
+            parts.append("This is live information (weather, a price, a score, news): a lookup starts now. Say so "
+                         "in a few words, in character. Never state a figure yourself; the real one follows.")
         if intent.greeting:
             parts.append("A greeting: a line or two in your own dry voice, from something real (the hour, where "
                          "you are, what's happened). Asked how you are, go by your actual mood and errands, not "
@@ -303,7 +313,7 @@ class ChatSession:
                 text = text or "Sorry, I lost my words for a moment. Could you say that again?"
                 reply_turn = self._finish_turn(user_turn, reply_id, text, action, metrics, action_error=action_error)
                 finished = True
-                await self._act(action, user_turn, reply_turn)
+                await self._act(action, user_turn, reply_turn, written=text)
         except ModelError as exc:
             self._finish_turn(user_turn, reply_id, "I can't think clearly right now: my language model isn't "
                                                    "answering. Please check that it's running.", None, {},
@@ -334,10 +344,12 @@ class ChatSession:
                               **{k: v for k, v in extra.items() if v})
 
     # ── acting on a reply ───────────────────────────────────────────────────
-    async def _act(self, action: ChatAction | None, user_turn: dict, reply_turn: dict) -> None:
+    async def _act(self, action: ChatAction | None, user_turn: dict, reply_turn: dict, written: str = "") -> None:
         said, reply = user_turn["text"], reply_turn["text"]
+        intent = self._intents.get(user_turn["id"]) or read_intent(said)
         self._decide_errands(action, user_turn)
-        self._check_claims(reply)
+        # Claims are judged on what the model wrote, before it was tidied for speech.
+        self._check_claims(written or reply, intent)
         self._intents.pop(user_turn["id"], None)
         if self.store:
             await self._remember(action, user_turn, reply)
@@ -407,6 +419,14 @@ class ChatSession:
             # Permissions changed or something was turned down: nothing new to do, and no
             # earlier request is replayed, whatever the model wrote.
             return
+        if (intent.live_fact and not intent.needs_tools and self.settings.digital_tools_enabled
+                and not self.manager.restrictions.forbids_tool("web_search") and not intent.wants_offer
+                and not self._involves_the_house(said)):
+            # Weather, prices, scores, news: always looked up, never recited from memory. A pure
+            # lookup's plan is known, so it starts straight away without a planning call.
+            goal = next((g for g in (proposed, offered) if g and digital_scope(g)), f"Look up online: {said}")
+            self._start_or_queue(goal, user_turn["id"], Grant.read_only(said), plan=_lookup_plan(said))
+            return
         needs = intent.needs_tools
         if needs:
             usable = [t for t in needs if self.settings.digital_tools_enabled
@@ -449,6 +469,15 @@ class ChatSession:
         if not refusing:
             self._make_offer(suggestion, user_turn, asked_for=False, small_talk=intent.small_talk)
 
+    def _involves_the_house(self, text: str) -> bool:
+        """Mentions someone or somewhere in the house ("...and tell Paul"): not a pure lookup."""
+        world = self.engine.snapshot()
+        lowered = text.casefold().replace("_", " ")
+        names = [str(v.get("name", k)).casefold() for k, v in {**world.get("people", {}),
+                                                                 **world.get("rooms", {})}.items()]
+        names += [k.replace("_", " ") for k in {**world.get("people", {}), **world.get("rooms", {})}]
+        return any(re.search(r"\b" + re.escape(name) + r"\b", lowered) for name in names if name)
+
     def _make_offer(self, goal: str, user_turn: dict, asked_for: bool, small_talk: bool = False) -> None:
         identity = task_identity(goal)
         if not goal or identity in self._declined:
@@ -481,10 +510,13 @@ class ChatSession:
                 self._add_turn("kip", f"Stopped: {goal}", source="narration")
             self._spawn(stop(self.manager.active_id))
 
-    def _check_claims(self, reply: str) -> None:
+    def _check_claims(self, reply: str, intent: Intent | None = None) -> None:
         """Kip must not claim actions, runs or sightings his tool evidence does not support."""
         world = self.engine.snapshot()
         found, notes = unsupported_claims(reply, evidence_ledger(self.manager), world), []
+        if intent is not None and intent.live_fact and _FIGURE.search(reply.casefold()):
+            # A live figure before any lookup came back is a guess wearing a number.
+            notes.append("that figure was a guess; I'm looking up the real one now")
         if found:
             notes.append("I haven't actually done that; there's no record of it")
         running = (self.manager.active() or {}).get("requested_tools", [])
@@ -502,7 +534,7 @@ class ChatSession:
                          f"{names.get(person, person)} wasn't there; anything older is only a record")
         if notes:
             _log.warning("Unsupported claims in reply: %s", notes)
-            self._add_turn("kip", "Correction: " + "; ".join(notes) + ".", source="correction", claims=notes)
+            self._add_turn("kip", "Scratch that: " + "; ".join(notes) + ".", source="correction", claims=notes)
 
     async def _remember(self, action: ChatAction | None, user_turn: dict, reply: str) -> None:
         said, speaker = user_turn["text"], user_turn.get("speaker")
@@ -587,7 +619,8 @@ class ChatSession:
         identity = task_identity(goal)
         return any(task_identity(other) == identity for other in planned)
 
-    def _start_or_queue(self, goal: str, origin_turn: str | None = None, grant: Grant | None = None) -> None:
+    def _start_or_queue(self, goal: str, origin_turn: str | None = None, grant: Grant | None = None,
+                        plan: GoalPlan | None = None) -> None:
         if self._closed:
             return
         # Without a grant this is an explicit request (e.g. queued directly).
@@ -603,7 +636,7 @@ class ChatSession:
         try:
             # Kip's own reply already acknowledged this errand; skip "On it".
             self._announced.add(task_identity(goal))
-            self.manager.start(goal, grant)
+            self.manager.start(goal, grant, plan=plan)
         except TaskBusy:
             # It will start later, when an "On it" is genuinely news again. It keeps the
             # grant it was given; restrictions are re-checked when its tools run.
@@ -677,6 +710,13 @@ class ChatSession:
         self.offer = Offer(goal=goal, reply_turn_id="", generation=self.generation, effects=frozenset(needs) | READ_ONLY)
         self._add_turn("kip", f"I can't answer that from here: it would mean {plain(needs)}. Want me to?",
                        source="narration")
+
+
+def _lookup_plan(said: str) -> GoalPlan:
+    """A plain web lookup of what they asked, searched in their own words."""
+    query = re.sub(r"^\W*(?:hey |ok |so )?kip\W+", "", said.strip(), flags=re.I)[:200]
+    return GoalPlan(summary="Look it up.", conditions=[GoalCondition(kind="answer", required_tools=["web_search"])],
+                    initial_actions=[InitialCapability(tool="web_search", arguments={"query": query})])
 
 
 # ── status and narration helpers (deterministic, no model calls) ───────────────

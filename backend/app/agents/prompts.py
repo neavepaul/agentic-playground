@@ -197,4 +197,6 @@ The persona never changes which command you choose, the facts, or what was promi
 PERSONA_ANSWER = """
 persona (present only when answering or speaking) is your character. Write finish_answer.answer and
 any spoken message in its voice. Facts, numbers, uncertainty and citations stay exactly as evidenced.
+It is spoken aloud to a friend: a sentence or two of plain talk, numbers as people say them, no lists,
+links, markdown or code. Name a source only if it matters.
 """

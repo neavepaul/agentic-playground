@@ -146,8 +146,7 @@ async def test_a_python_prohibition_stops_python_and_the_reply_is_told_about_it(
 @pytest.mark.asyncio
 async def test_a_webpage_prohibition_holds_inside_an_allowed_search(dispatched):
     model = Model([said("Let me check.", task="Search the web for the current AQI in Mumbai")],
-                  task=[{"summary": "Searching.", "action": {"tool": "web_search", "query": "AQI Mumbai"}},
-                        answer_from("web_search")],
+                  task=[answer_from("web_search")],
                   conditions=[{"kind": "answer", "required_tools": ["web_search", "read_webpage"]}])
     session, manager, _ = session_with(model)
     session.submit("Don't read any webpages; what is the current AQI in Mumbai?")
@@ -166,8 +165,7 @@ async def test_a_webpage_prohibition_holds_inside_an_allowed_search(dispatched):
 @pytest.mark.asyncio
 async def test_tell_me_in_a_lookup_is_a_reply_not_a_message_to_someone(dispatched):
     model = Model([said("Looking.", task="Search the web and tell me the current AQI in Mumbai")],
-                  task=[{"summary": "Searching.", "action": {"tool": "web_search", "query": "AQI Mumbai"}},
-                        answer_from("web_search")],
+                  task=[answer_from("web_search")],
                   conditions=[{"kind": "answer", "required_tools": ["web_search"]}])
     session, manager, _ = session_with(model)
     session.submit("What is the current AQI in Mumbai?")

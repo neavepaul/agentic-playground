@@ -110,7 +110,7 @@ class TaskManager:
         # including ones already queued or running, at the moment a tool would run.
         self.restrictions = Restrictions()
 
-    def start(self, goal: str, grant: Grant | None = None) -> TaskContext:
+    def start(self, goal: str, grant: Grant | None = None, plan=None) -> TaskContext:
         """Start a task. Without a grant it is a direct instruction (API): the goal
         text is the person's own words and authorizes every kind of action."""
         if self.active_id:
@@ -137,7 +137,7 @@ class TaskManager:
         self.tasks[context.id] = context
         self.active_id = context.id
         self.bus.emit("task_started", task=context.public(), summary=goal)
-        self.runner = asyncio.create_task(self._run(context), name=f"task-{context.id}")
+        self.runner = asyncio.create_task(self._run(context, plan), name=f"task-{context.id}")
         return context
 
     def active(self) -> dict | None:
@@ -279,8 +279,8 @@ class TaskManager:
         if not output:
             return False
         code = run["arguments"].get("code", "").strip()
-        shown = f"`{code}`" if "\n" not in code and len(code) <= 80 else f"\n```python\n{code}\n```\n"
-        text = f"Ran it. {shown} {'printed' if stdout else 'returned'} {output}."
+        # Said aloud: the result, not the program. The code stays in the task record.
+        text = f"Ran the numbers: {output}."
         result = await self.call_capability(context, "finish_answer", {"answer": text,
                                                                       "evidence_ids": [run["evidence_id"]]})
         if result.get("success") and not [c for c in check_conditions(context) if not c["satisfied"]]:
@@ -398,12 +398,14 @@ class TaskManager:
         context.last_progress_signature = signature
         return current != signature
 
-    async def _loop(self, context: TaskContext) -> None:
+    async def _loop(self, context: TaskContext, plan=None) -> None:
         # Bootstrap through a permitted tool; no agent gets an omniscient snapshot.
         self.call_tool(context, "get_status", {})
         self.call_tool(context, "get_map", {})
         self.bus.emit("agent_active", "coordinator", task_id=context.id)
-        goal_plan = await self.coordinator.define_goal(context.goal, context.floor_plan, metrics=context.metrics)
+        # A plan known in advance (a plain lookup of a live fact) needs no planning call.
+        goal_plan = plan or await self.coordinator.define_goal(context.goal, context.floor_plan,
+                                                               metrics=context.metrics)
         context.conditions = goal_plan.conditions
         if self._outside_grant(context):
             return
@@ -679,11 +681,11 @@ class TaskManager:
         except Exception:
             logging.getLogger("agentic_friend.tasks").exception("Failed to store task memories")
 
-    async def _run(self, context: TaskContext) -> None:
+    async def _run(self, context: TaskContext, plan=None) -> None:
         try:
             async with asyncio.timeout(self.settings.task_timeout_seconds):
                 await self._recall_for(context)
-                await self._loop(context)
+                await self._loop(context, plan)
         except asyncio.CancelledError:
             self.finish(context, "cancelled", "Task cancelled. Completed world actions are retained.")
         except TimeoutError:

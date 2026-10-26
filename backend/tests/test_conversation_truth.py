@@ -117,7 +117,7 @@ async def test_asking_to_run_python_runs_it_and_fabricated_output_is_corrected(r
     task = next(iter(manager.tasks.values()))
     assert task.requested_tools == ["run_python"] and task.status == "completed"
     assert ran.count("run_python") == 1
-    assert task.answer["answer"] == "Ran it. `print(3 * 60 * 60)` printed 10800."
+    assert task.answer["answer"] == "Ran the numbers: 10800."  # said aloud: the result, not the code
     assert kip_lines(session, "narration")[-1] == task.answer["answer"]
     assert model.titles.count("GoalPlan") == 1 and len(model.titles) == 1  # no extra model call to restate it
     await done(session, manager)
@@ -135,7 +135,7 @@ async def test_a_calculation_request_is_not_answered_by_a_guess(ran):
     assert not manager.restrictions  # the grant was applied first
     await manager.runner
     assert ran.count("run_python") == 1
-    assert kip_lines(session, "narration")[-1].endswith("printed 10800.")
+    assert kip_lines(session, "narration")[-1] == "Ran the numbers: 10800."
     await done(session, manager)
 
 
@@ -417,7 +417,7 @@ async def test_kip_runs_python_on_his_own_when_he_decides_it_helps(ran):
     await manager.runner
     task = next(iter(manager.tasks.values()))
     assert task.grant.source == "question" and ran.count("run_python") == 1  # read-only, no yes needed
-    assert kip_lines(session, "narration")[-1] == "Ran it. `print(366 * 24)` printed 8784."
+    assert kip_lines(session, "narration")[-1] == "Ran the numbers: 8784."
     assert len(model.titles) == 1  # planned once; the run itself is the answer
     await done(session, manager)
 
@@ -471,4 +471,40 @@ async def test_a_housemates_greeting_invites_his_dry_voice(ran):
     assert "You live with them" in prompt and "Dry humour suits this" in prompt
     assert "A greeting:" in prompt and "Don't ask them back unless you want to know" in prompt
     assert "barely know" not in prompt and "reserved" not in prompt
+    await done(session, manager)
+
+
+# ── 11. a voice companion: live facts looked up, everything said aloud ─────────
+@pytest.mark.asyncio
+async def test_live_facts_are_looked_up_at_once_and_a_guessed_figure_is_retracted(ran):
+    def answer(payload):
+        ids = [o["evidence_id"] for o in payload["tool_observations"] if o["success"]]
+        return {"summary": "Ready.", "action": {"tool": "finish_answer", "evidence_ids": ids, "answer":
+                "**31°C** and muggy, says [the forecast](https://example.com/mumbai). Umbrella optional."}}
+    model = PlanningModel([said("Probably 31 degrees and muggy.")], task=[answer])
+    session, manager = session_with(model)
+    session.submit("What's the weather like in Mumbai today?")
+    await settle(session, manager)
+    assert "This is live information" in latest_prompt(model)
+    assert "that figure was a guess" in kip_lines(session, "correction")[0]
+    await manager.runner
+    task = next(iter(manager.tasks.values()))
+    assert task.grant.source == "question" and task.status == "completed"
+    assert ran[:3] == ["get_status", "get_map", "web_search"]
+    assert "GoalPlan" not in model.titles  # the plan was known: no planning call
+    spoken_answer = kip_lines(session, "narration")[-1]
+    assert spoken_answer == "31°C and muggy, says the forecast. Umbrella optional."
+    await done(session, manager)
+
+
+@pytest.mark.asyncio
+async def test_nothing_unspeakable_reaches_the_conversation(ran):
+    written = "Sure thing.\n\n```python\nprint(2 + 2)\n```\n\n- first point\n- **second** point, see https://example.com/x."
+    model = PlanningModel([said(written)])
+    session, manager = session_with(model)
+    session.submit("Tell me something.")
+    await settle(session, manager)
+    for line in [t["text"] for t in session.history() if t["role"] == "kip"]:
+        assert "```" not in line and "**" not in line and "http" not in line and "\n" not in line, line
+    assert kip_lines(session)[0] == "Sure thing. first point. second point, see example.com."
     await done(session, manager)
