@@ -23,6 +23,8 @@ from app.world.tools import WorldTools
 class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     message: str = Field(min_length=1, max_length=1000)
+    # Who is talking (a person id from the world), so "I"/"my" facts are filed under them.
+    speaker: str | None = Field(default=None, max_length=40)
 
 
 class GoalRequest(BaseModel):
@@ -74,6 +76,10 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
             app.state.memory_ready = asyncio.create_task(prepare_memory())
         mind.start()
         yield
+        memory_ready = getattr(app.state, "memory_ready", None)
+        if memory_ready and not memory_ready.done():
+            memory_ready.cancel()  # never let a backfill touch the store after shutdown
+            await asyncio.gather(memory_ready, return_exceptions=True)
         await chat.close()
         await mind.close()
         await manager.close()
@@ -97,12 +103,14 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/chat", status_code=202)
     async def send_chat(request: ChatRequest):
-        return chat.submit(request.message)
+        try:
+            return chat.submit(request.message, request.speaker)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
 
     @app.get("/api/chat")
     async def chat_history():
-        return {"turns": chat.history(), "busy": chat.busy, "name": chat.name,
-                "queued_errands": list(chat.pending_goals), "offered_errand": chat.pending_offer}
+        return {"turns": chat.history(), "busy": chat.busy, "name": chat.name, **chat.state()}
 
     @app.get("/api/memories")
     async def memories(q: str = "", kind: str = "", limit: int = 20):
@@ -119,7 +127,10 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
     @app.get("/api/health")
     async def health():
         model = await llm.health() if client is None else {"mode": "test"}
-        return {"status": "ok", "llm": {"provider": config.llm_provider, **model}}
+        memory = {"meaning_search": store.vectors and bool(embedder and embedder.available),
+                  "keyword_search": True, "persistent_error": persistent.load_error or None}
+        return {"status": "ok" if not persistent.load_error else "degraded",
+                "llm": {"provider": config.llm_provider, **model}, "memory": memory}
 
     @app.get("/api/world")
     async def world():
@@ -177,21 +188,18 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
                 else:
                     await socket.send_json(event)
 
-        async def receive():
-            while True:
-                await socket.receive_text()
-
-        sender, receiver = asyncio.create_task(send()), asyncio.create_task(receive())
+        # Receive in the handler itself: a disconnect then ends the handler in one step,
+        # instead of waking a separate receiver task first (which raced with shutdown).
+        sender = asyncio.create_task(send())
         try:
-            done, _ = await asyncio.wait([sender, receiver], return_when=asyncio.FIRST_COMPLETED)
-            for future in done:
-                future.result()
+            while not sender.done():
+                await socket.receive_text()
+            sender.result()  # surface a send failure
         except (WebSocketDisconnect, RuntimeError):
             pass
         finally:
             sender.cancel()
-            receiver.cancel()
-            await asyncio.gather(sender, receiver, return_exceptions=True)
+            await asyncio.gather(sender, return_exceptions=True)
             bus.unsubscribe(queue)
 
     return app

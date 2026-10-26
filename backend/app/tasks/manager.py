@@ -54,6 +54,26 @@ class LimitReached(RuntimeError):
     pass
 
 
+TERMINAL = {"completed", "failed", "cancelled"}
+# Outcomes that rest on interpretation (who needs something) still get a Critic review;
+# everything else is decided by deterministic checks against tool evidence.
+JUDGMENT_KINDS = {"identify_recipient"}
+
+
+def verified_complete(context: TaskContext) -> bool:
+    """Every required outcome is satisfied by tool evidence and none needs judgment."""
+    outcomes = check_conditions(context)
+    return (bool(outcomes) and all(c["satisfied"] for c in outcomes)
+            and not any(c.kind in JUDGMENT_KINDS for c in context.conditions))
+
+
+def relevant_evidence(context: TaskContext, limit: int = 12) -> list[dict]:
+    """Recent, task-relevant observations for a review; never the whole map or history."""
+    useful = [e for e in context.action_history
+              if e["success"] and e["tool"] not in {"get_status", "get_map"}]
+    return useful[-limit:]
+
+
 class TaskManager:
     def __init__(self, client: LLMClient, tools: WorldTools, bus: EventBus, settings: Settings,
                  persistent: PersistentMemory | None = None, persona=None, memory_store=None) -> None:
@@ -96,6 +116,10 @@ class TaskManager:
         self.bus.emit("agent_message", agent, task_id=context.id, summary=summary)
 
     def finish(self, context: TaskContext, status: str, summary: str) -> None:
+        if context.status in TERMINAL:
+            # Terminal transitions happen once; a late cancel cannot rewrite an outcome.
+            _log.info("Ignoring %s for task %s, already %s", status, context.id, context.status)
+            return
         context.status = status
         context.summary = summary
         context.metrics.tool_actions = context.tool_count
@@ -200,6 +224,21 @@ class TaskManager:
             running = [group.create_task(execute(tool, arguments)) for tool, arguments in actions]
         return [task.result() for task in running]
 
+    def _check_model_budget(self, context: TaskContext) -> None:
+        if context.metrics.llm_calls >= self.settings.max_task_llm_calls:
+            raise LimitReached(f"Model-call budget ({self.settings.max_task_llm_calls}) used up before the task "
+                               "finished; stopping. The task is incomplete.")
+
+    def _rejected(self, context: TaskContext, count: int, correction: str) -> int:
+        """Record one rejected suggestion; too many in a row means the plan is stuck."""
+        context.feedback(correction)
+        self.message(context, "system", correction)
+        count += 1
+        if count >= self.settings.max_consecutive_rejections:
+            raise LimitReached(f"{count} suggestions in a row were rejected without progress; stopping. "
+                               f"Last reason: {correction}")
+        return count
+
     def _progress_changed(self, context: TaskContext, previous: tuple | None = None) -> bool:
         signature = context.progress_signature()
         current = previous if previous is not None else context.last_progress_signature
@@ -222,9 +261,24 @@ class TaskManager:
                 self.message(context, "explorer", "Running the model's independent tool calls together.")
                 await self.call_capability_batch(context, [action.model_dump() for action in goal_plan.initial_actions])
         self.message(context, "coordinator", "Required outcomes defined. Locating targets requires tool observations.")
+        disagreements = 0
+        rejections = 0                     # consecutive rejected suggestions, reset by real progress
+        stagnant_cycles, last_evidence = 0, -1
         for cycle in range(self.settings.max_coordinator_cycles):
             context.cycle_count = cycle + 1
             self.bus.emit("task_updated", task=context.public())
+            if verified_complete(context):
+                # Every outcome is proven by tool evidence: done. No further review can add
+                # information, and extra actions could only undo verified progress.
+                self.finish(context, "completed", "All requested outcomes are verified by tool evidence.")
+                return
+            evidence_count = sum(1 for e in context.action_history if e["success"])
+            stagnant_cycles = stagnant_cycles + 1 if evidence_count == last_evidence else 0
+            last_evidence = evidence_count
+            if stagnant_cycles >= self.settings.max_cycles_without_progress:
+                raise LimitReached(f"No new evidence after {stagnant_cycles} planning cycles; stopping instead of "
+                                   "reasoning in circles. The task is incomplete.")
+            self._check_model_budget(context)
             self.bus.emit("agent_active", "coordinator", task_id=context.id)
             # GoalPlan already interpreted the complete goal. Hand it directly
             # to Explorer instead of paying for a second initial planning call.
@@ -262,11 +316,18 @@ class TaskManager:
                 # are advisory hints that help the Critic focus its review. If the model
                 # cited valid IDs use those; otherwise fall back to all successful
                 # observations so a hallucinated UUID cannot block a verified completion.
+                if verified_complete(context):
+                    self.finish(context, "completed", decision.summary)
+                    return
                 cited = [by_id[id] for id in decision.evidence_ids if id in by_id]
-                evidence = cited if cited else list(by_id.values())
+                evidence = cited[-12:] if cited else relevant_evidence(context)
                 if await self.review(context, decision.summary, "completion", evidence):
                     self.finish(context, "completed", decision.summary)
                     return
+                disagreements += 1
+                if disagreements >= self.settings.max_critic_disagreements:
+                    raise LimitReached("The reviewer kept rejecting completion although the checks pass; "
+                                       "stopping instead of debating. The outcome needs a person's judgment.")
             elif decision.action == "delegate":
                 context.current_plan = decision.task
                 starting_tool_count = context.tool_count
@@ -277,14 +338,14 @@ class TaskManager:
                         self.message(context, "system",
                                      "Delegated objective satisfied; returning to Coordinator.")
                         break
+                    self._check_model_budget(context)
                     self.bus.emit("agent_active", "explorer", task_id=context.id)
                     action = await self.explorer.decide(context, decision.task)
                     if action.action == "report":
                         if (any(condition.kind == "deliver" for condition in context.conditions)
                             and context.robot_status.get("room") not in context.memory.rooms):
-                            correction = "Report rejected: the current room has not been observed. Scan it before reporting or replanning."
-                            context.feedback(correction)
-                            self.message(context, "system", correction)
+                            rejections = self._rejected(context, rejections, "Report rejected: the current room has "
+                                                        "not been observed. Scan it before reporting or replanning.")
                             continue
                         if context.tool_count == starting_tool_count:
                             previous_rejection = next((review for review in reversed(context.critic_feedback)
@@ -303,8 +364,7 @@ class TaskManager:
                                               "Choose a tool action to continue the unfinished work; "
                                               "an intention to search is not an executed search. "
                                               f"Rooms without a look observation: {unexplored}.")
-                                context.feedback(correction)
-                                self.message(context, "system", correction)
+                                rejections = self._rejected(context, rejections, correction)
                                 continue
                         context.explorer_reports.append(action.summary)
                         self.message(context, "explorer", "Returning observations to Coordinator.")
@@ -318,9 +378,8 @@ class TaskManager:
                     previous = context.action_history[-1] if context.action_history else None
                     if (previous and previous["success"] and action.tool != "talk_to"
                             and previous["tool"] == action.tool and previous["arguments"] == action.arguments):
-                        correction = "Repeated identical command rejected. Use its existing observation and choose a different action."
-                        context.feedback(correction)
-                        self.message(context, "system", correction)
+                        rejections = self._rejected(context, rejections, "Repeated identical command rejected. Use "
+                                                    "its existing observation and choose a different action.")
                         continue
                     conversation_move = None
                     conversation_thread_id = None
@@ -339,8 +398,7 @@ class TaskManager:
                                 f"Conversation move rejected: it repeats or does not advance {target}. "
                                 "Choose a movement or object action next; speech resumes after successful physical action."
                             )
-                            context.feedback(correction)
-                            self.message(context, "system", correction)
+                            rejections = self._rejected(context, rejections, correction)
                             continue
                         known = context.memory.people.get(action.arguments["person"])
                         if (conversation_move.existing_thread_id and known
@@ -367,11 +425,15 @@ class TaskManager:
                     revisit = action.arguments.get("room") in context.memory.visited_rooms
                     if action.tool in DIGITAL_TOOLS:
                         result = await self.call_capability(context, action.tool, action.arguments)
+                        if result.get("success"):
+                            rejections = 0
                         if result.get("success") and not [c for c in check_conditions(context) if not c["satisfied"]]:
                             self.finish(context, "completed", "Answer ready. All requested outcomes completed.")
                             return
                         continue
                     result = self.call_tool(context, action.tool, action.arguments)
+                    if result.get("success"):
+                        rejections = 0
                     if result.get("success") and action.tool == "give":
                         # Delivery conditions are machine-checkable from world tool
                         # evidence: no LLM can add information the state machine
@@ -475,12 +537,16 @@ class TaskManager:
             logging.getLogger("agentic_friend.tasks").exception("Unexpected task failure")
             self.finish(context, "failed", "Unexpected task error. Check the backend log.")
         finally:
-            if self.active_id == context.id:
-                self.active_id = None
-            await self._remember(context)
-            if self.persistent:
-                try:
-                    self.persistent.update_from_task(context)
-                    self.persistent.save(self.settings.memory_file)
-                except Exception:
-                    logging.getLogger("agentic_friend.tasks").exception("Failed to save persistent memory")
+            # Save what this task learned BEFORE releasing the robot, so a queued or
+            # autonomous errand that starts next sees today's locations and failures.
+            try:
+                await self._remember(context)
+                if self.persistent:
+                    try:
+                        self.persistent.update_from_task(context)
+                        self.persistent.save(self.settings.memory_file)
+                    except Exception:
+                        logging.getLogger("agentic_friend.tasks").exception("Failed to save persistent memory")
+            finally:
+                if self.active_id == context.id:
+                    self.active_id = None

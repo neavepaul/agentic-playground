@@ -4,7 +4,14 @@ let connected = false;
 let eventCount = 0;
 const seen = new Set();
 
-export function showError(message = '') { $('error').hidden = !message; $('error').textContent = message; }
+let errorSource = '';
+/** Show or clear the alert. Clearing with a source only clears that source's message. */
+export function showError(message = '', source = 'app') {
+  if (!message && source !== 'app' && errorSource !== source) return;
+  errorSource = message ? source : '';
+  $('error').hidden = !message;
+  $('error').textContent = message;
+}
 export function setConnection(value) {
   connected = value;
   $('connection').textContent = value ? 'Live connection' : 'Reconnecting…';

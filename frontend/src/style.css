@@ -818,3 +818,7 @@ footer span {
 .memory-kind.preference { color: #8a5a1f; }
 .memory-kind.episode { color: #6e4a7a; }
 .memory-tags { display: block; margin-top: 3px; font-size: 10px; color: #84937b; }
+
+/* Who is talking to Kip */
+.chat-speaker { display: flex; align-items: center; gap: 8px; margin: 2px 0 6px; font-size: 11px; color: #6c7d64; }
+.chat-speaker select { font: inherit; font-size: 12px; padding: 3px 6px; border: 1px solid #d4ddcd; border-radius: 6px; background: #fff; color: #24352d; }

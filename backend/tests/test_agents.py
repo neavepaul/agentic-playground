@@ -410,7 +410,8 @@ async def test_ollama_contract_and_thinking_exclusion():
     await client.close()
 
 
-async def test_critic_rejection_returns_to_coordinator():
+async def test_verified_find_completes_without_critic_debate():
+    """Seven-act keys run: once the charger is seen, a Critic cannot keep the task open."""
     fake = ScriptedLLM([
         {"action": "delegate", "summary": "Observe.", "task": "Find charger."},
         tool("move_to", room="study"), complete,
@@ -419,9 +420,9 @@ async def test_critic_rejection_returns_to_coordinator():
     mgr, _, _ = manager(fake)
     task = mgr.start("Find charger.")
     await mgr.runner
-    assert task.status == "failed" and task.cycle_count == 3
-    assert task.critic_feedback[0]["approved"] is False
-    assert task.critic_count == 1
+    assert task.status == "completed", task.summary
+    assert task.critic_count == 0
+    assert "verified by tool evidence" in task.summary
 
 
 async def test_empty_speech_is_repaired_before_tool_execution():
@@ -499,7 +500,8 @@ async def test_no_progress_report_is_reviewed_and_recovers():
     task = mgr.start("Find charger.")
     await mgr.runner
     assert task.status == "completed"
-    assert task.critic_count == 2
+    # One review challenged the unsupported report; the verified find then needed none.
+    assert task.critic_count == 1
     # Recovery happened inside the second delegation: no extra planning cycle.
     assert task.cycle_count == 3
     assert any("Report rejected" in message for message in task.action_feedback)
@@ -597,7 +599,7 @@ async def test_distinct_followup_can_be_spoken_without_critic_debate():
     task = mgr.start("Find Neave and tell him dinner is ready.")
     await mgr.runner
     assert task.status == "completed", task.summary
-    assert task.critic_count == 1
+    assert task.critic_count == 0  # the notification is verified by the talk_to transcript
     assert sum(a["tool"] == "talk_to" for a in task.action_history) == 3
     assert not task.action_feedback
 

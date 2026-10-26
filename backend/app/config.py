@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     max_critic_reviews: int = Field(default=8, ge=1, le=20)
     # Physical actions yielding no semantic progress before the strategy is replanned.
     max_semantic_stall: int = Field(default=3, ge=1, le=20)
+    # Reasoning budgets. They stop loops that make no progress; long tasks that keep
+    # producing new evidence are bounded only by the wall-clock timeout.
+    max_task_llm_calls: int = Field(default=60, ge=5, le=500)
+    max_consecutive_rejections: int = Field(default=6, ge=2, le=50)
+    max_cycles_without_progress: int = Field(default=5, ge=2, le=50)
+    max_critic_disagreements: int = Field(default=3, ge=1, le=20)
     # Actions after which a room scan is treated as stale and worth repeating.
     search_stale_after: int = Field(default=12, ge=1, le=200)
     log_level: str = "INFO"
@@ -61,6 +67,12 @@ class Settings(BaseSettings):
     chat_autonomy: Literal["confirm", "act"] = "confirm"
     # Seconds after the last chat activity before the idle mind may use the model again.
     chat_quiet_seconds: float = Field(default=90.0, ge=0)
+    # How long an offer Kip made can still be accepted with a plain "yes".
+    chat_offer_seconds: float = Field(default=600.0, gt=0)
+    # Person id assumed to be talking when the UI does not say (empty = unknown speaker).
+    chat_default_speaker: str = ""
+    # Idle initiative: may the idle mind start errands on its own?
+    autonomous_errands: bool = True
     # Searchable long-term memory (SQLite + FTS5 + sqlite-vec)
     memory_db_file: Path = _BACKEND_DIR / "memory" / "kip.db"
     embeddings_enabled: bool = True

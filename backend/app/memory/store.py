@@ -10,7 +10,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+import logging
+
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
+
+from app.memory.durable import UnreadableStoreError, atomic_write_text
 
 from app.persona.state import PersonaState
 
@@ -50,20 +54,49 @@ class PersistentMemory(BaseModel):
     recent_tasks: list[TaskRecord] = Field(default_factory=list)
     self_model: SelfModel = Field(default_factory=SelfModel)
     persona: PersonaState = Field(default_factory=PersonaState)
+    # Monotonic count of finished tasks; recent_tasks is capped, this is not.
+    tasks_recorded: int = 0
+    _load_error: str = PrivateAttr(default="")
+
+    @property
+    def task_total(self) -> int:
+        """Finished tasks ever recorded (never capped like recent_tasks)."""
+        return max(self.tasks_recorded, len(self.recent_tasks))
+
+    @model_validator(mode="after")
+    def _count_existing_history(self):
+        # Older files lack the counter: start from the history they do contain.
+        self.tasks_recorded = max(self.tasks_recorded, len(self.recent_tasks))
+        return self
+
+    @property
+    def load_error(self) -> str:
+        return self._load_error
 
     @classmethod
     def load(cls, path: Path) -> PersistentMemory:
-        """Load from disk; return a blank instance if the file is missing or corrupt."""
-        if path.exists():
-            try:
-                return cls.model_validate_json(path.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-        return cls()
+        """Load from disk. A missing file starts a fresh memory.
+
+        An unreadable or incompatible file is NOT treated as empty: the app runs with a
+        blank in-memory store, the error is reported, and saving is refused so the
+        original file (and Kip's real memories) stay untouched until someone fixes it.
+        """
+        if not path.exists():
+            return cls()
+        try:
+            return cls.model_validate_json(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logging.getLogger("agentic_friend.memory").error(
+                "Persistent memory at %s could not be read (%s). It will not be overwritten; "
+                "restore it from %s.bak or memory/backups/.", path, type(exc).__name__, path.name)
+            memory = cls()
+            memory._load_error = f"{path.name} could not be read ({type(exc).__name__}); saving is disabled."
+            return memory
 
     def save(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(self.model_dump_json(indent=2), encoding="utf-8")
+        if self._load_error:
+            raise UnreadableStoreError(self._load_error)
+        atomic_write_text(path, self.model_dump_json(indent=2))
 
     def update_from_task(self, context) -> None:
         """Extract durable facts from a finished task and merge them in.
@@ -132,6 +165,7 @@ class PersistentMemory(BaseModel):
             summary=context.summary,
         ))
         self.recent_tasks[:] = self.recent_tasks[-20:]
+        self.tasks_recorded += 1
 
     def self_model_prompt(self) -> dict:
         """Compact self-model payload for the Coordinator. Empty when no task history exists."""

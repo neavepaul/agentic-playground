@@ -1,5 +1,7 @@
 import { api } from './api.js';
 
+const UNREACHABLE = 'Cannot reach the backend. Start FastAPI on port 8000.';
+
 export function connectEvents({ snapshot, event, connection, error }) {
   let retries = 0;
   let socket;
@@ -12,7 +14,8 @@ export function connectEvents({ snapshot, event, connection, error }) {
       snapshot(await api('/world'));
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
       socket = new WebSocket(`${protocol}//${location.host}/ws`);
-      socket.onopen = () => { retries = 0; connection(true); error(''); };
+      // Only clear the connection error; unrelated messages (e.g. a failed cancel) stay.
+      socket.onopen = () => { retries = 0; connection(true); error('', 'connection'); };
       socket.onmessage = ({ data }) => {
         const message = JSON.parse(data);
         if (message.type === 'snapshot') snapshot(message.data, message.events);
@@ -21,7 +24,7 @@ export function connectEvents({ snapshot, event, connection, error }) {
       socket.onclose = reconnect;
       socket.onerror = () => socket.close();
     } catch {
-      error('Cannot reach the backend. Start FastAPI on port 8000.');
+      error(UNREACHABLE, 'connection');
       reconnect();
     }
   }

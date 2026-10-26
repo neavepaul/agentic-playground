@@ -33,27 +33,33 @@ class BeliefGraph:
         self._path = path
         self.nodes: dict[str, dict] = {}
         self.edges: list[dict] = []
+        self.load_error = ""
 
     @classmethod
     def load(cls, path: Path) -> BeliefGraph:
+        """An unreadable file is reported and protected, never silently replaced."""
         g = cls(path)
         if path.exists():
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 g.nodes = data.get("nodes", {})
                 g.edges = data.get("edges", [])
-            except Exception:
-                pass
+            except Exception as exc:
+                import logging
+                logging.getLogger("agentic_friend.memory").error(
+                    "Belief graph at %s could not be read (%s); it will not be overwritten.", path,
+                    type(exc).__name__)
+                g.load_error = f"{path.name} could not be read ({type(exc).__name__}); saving is disabled."
         return g
 
     def save(self) -> None:
         if self._path is None:
             return
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(
-            json.dumps({"nodes": self.nodes, "edges": self.edges}, indent=2),
-            encoding="utf-8",
-        )
+        if self.load_error:
+            from app.memory.durable import UnreadableStoreError
+            raise UnreadableStoreError(self.load_error)
+        from app.memory.durable import atomic_write_text
+        atomic_write_text(self._path, json.dumps({"nodes": self.nodes, "edges": self.edges}, indent=2))
 
     def upsert_node(self, entity_id: str, entity_type: str) -> None:
         self.nodes.setdefault(entity_id, {"id": entity_id, "type": entity_type})

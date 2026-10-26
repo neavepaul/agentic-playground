@@ -1,6 +1,11 @@
 """An ongoing conversation with Kip. One streamed model call per message; errands run
 in the background through the existing TaskManager, and progress is narrated without
-any model calls."""
+any model calls.
+
+The chat model only *proposes* errands and memories. Code decides what may start
+(see consent.py), checks Kip's claims about its own actions against tool evidence, and
+never runs a half-written or invalid action.
+"""
 import asyncio
 import logging
 import re
@@ -12,11 +17,13 @@ from uuid import uuid4
 from app.llm.base import ModelError
 from app.memory.recall import prompt_memories
 from app.tasks.manager import TaskBusy
-from .prompt import ChatAction, TrailerSplitter, build_messages, parse_action
+from .consent import Offer, classify_reply, is_request, task_identity
+from .prompt import ChatAction, TrailerSplitter, build_messages
 
 _log = logging.getLogger("agentic_friend.chat")
 
 HISTORY = 50
+FIRST_PERSON = re.compile(r"\b(i|i'm|i've|me|my|mine|myself|the user)\b")
 
 
 class ChatSession:
@@ -33,9 +40,16 @@ class ChatSession:
         self.replying = False
         self.last_activity = 0.0
         self._closed = False
-        self._announced: set[str] = set()
-        # An errand Kip offered but nobody has agreed to yet. Lasts one turn.
-        self.pending_offer: str | None = None
+        # Bumped by every world reset: offers, queued errands and narration from an
+        # older world are never acted on.
+        self.generation = 0
+        self.session_id = str(uuid4())
+        self._announced: set[tuple[str, ...]] = set()
+        self.offer: Offer | None = None
+        self.offer_log: deque[dict] = deque(maxlen=20)
+        self._offer_seen: dict[str, str | None] = {}  # user turn id -> offer visible when sent
+        self._started_by_turn: set[str] = set()
+        self._remembered: list[str] = []
 
     def attach(self) -> None:
         self.bus.add_listener(self._narrate)
@@ -45,10 +59,14 @@ class ChatSession:
     def busy(self) -> bool:
         return self.replying or any(not job.done() for job in self._jobs)
 
+    @property
+    def pending_offer(self) -> str | None:
+        return self.offer.goal if self._offer_valid() else None
+
     def quiet_seconds(self) -> float:
         return time.monotonic() - self.last_activity if self.last_activity else float("inf")
 
-    def submit(self, text: str) -> dict:
+    def submit(self, text: str, speaker: str | None = None) -> dict:
         text = text.strip()
         if not text:
             raise ValueError("Say something first.")
@@ -56,12 +74,19 @@ class ChatSession:
             raise ValueError("Conversation is shutting down.")
         self.last_activity = time.monotonic()
         earlier = list(self.turns)
-        turn = self._add_turn("user", text)
+        turn = self._add_turn("user", text, speaker=self._speaker_id(speaker))
+        # Consent is judged against the offer the person could actually see when they
+        # sent this message; a message queued earlier can never approve a later offer.
+        self._offer_seen[turn["id"]] = self.offer.id if self._offer_valid() else None
         self._spawn(self._respond(turn, earlier))
         return turn
 
     def history(self) -> list[dict]:
         return list(self.turns)
+
+    def state(self) -> dict:
+        return {"queued_errands": list(self.pending_goals), "offered_errand": self.pending_offer,
+                "offer": self.offer.public() if self.offer else None, "generation": self.generation}
 
     async def drain(self) -> None:
         while self._jobs:
@@ -72,6 +97,7 @@ class ChatSession:
     async def close(self) -> None:
         self._closed = True
         self.pending_goals.clear()
+        self._expire_offer("expired")
         jobs = list(self._jobs)
         for job in jobs:
             job.cancel()
@@ -79,8 +105,11 @@ class ChatSession:
         self._jobs.difference_update(jobs)
 
     async def reset_pending(self) -> None:
-        """Discard replies and queued work tied to the old world, then accept chat again."""
+        """Discard replies, offers and queued work tied to the old world, then accept chat again."""
         await self.close()
+        self.generation += 1
+        self._announced.clear()
+        self._offer_seen.clear()
         self._closed = False
 
     # ── replying ────────────────────────────────────────────────────────────
@@ -97,8 +126,19 @@ class ChatSession:
         self.bus.emit("chat_message", speaker, turn=turn, summary=f"{speaker}: {text}")
         return turn
 
-    def _status(self) -> dict:
+    def _speaker_id(self, speaker: str | None) -> str | None:
+        """A known person id, or None when we don't know who is talking."""
+        speaker = (speaker or self.settings.chat_default_speaker or "").strip().casefold()
+        people = self.engine.snapshot().get("people", {})
+        return speaker if speaker in people else None
+
+    def _speaker_name(self, speaker_id: str | None) -> str:
+        people = self.engine.snapshot().get("people", {})
+        return people[speaker_id].get("name", speaker_id) if speaker_id in people else "unknown person"
+
+    def _status(self, speaker_id: str | None = None) -> dict:
         status = self.engine.get_status()
+        status["talking_with"] = self._speaker_name(speaker_id)
         active = self.manager.active()
         # "none", not null: models repeat null verbatim ("my current errand is null").
         status["current_errand"] = errand_progress(active) if active else "none"
@@ -106,30 +146,38 @@ class ChatSession:
             status["queued_errands"] = list(self.pending_goals)
         if self.pending_offer:
             status["offered_errand_awaiting_yes"] = self.pending_offer
+        recent = recent_errands(self.manager)
+        if recent:
+            status["recent_errands"] = recent
         people = known_people(self.manager.persistent)
         if people:
             status["people_i_know"] = people
         return status
 
+    async def _recall(self, text: str) -> list[dict]:
+        if not self.store:
+            return []
+        try:
+            # Durable knowledge first; past chat snippets would otherwise crowd it
+            # out, since they often repeat the very facts they mention.
+            memories = await self.store.recall(text, kinds=["fact", "preference", "episode", "skill"], k=4)
+            memories += await self.store.recall(text, kinds=["conversation"], k=2)
+            return memories
+        except Exception:
+            _log.exception("Memory recall failed; continuing conversation without recalled memories")
+            return []
+
     async def _respond(self, user_turn: dict, earlier: list[dict]) -> None:
-        async with self._lock:  # FIFO: one reply at a time, in order
-            self.replying = True
-            reply_id = str(uuid4())
-            waiting = self.shares_task_model and self.manager.active_id is not None
-            self.bus.emit("chat_thinking", self.name, skip_history=True, reply_id=reply_id,
-                          waiting_on_errand=waiting)
-            try:
-                memories = []
+        reply_id = str(uuid4())
+        finished = False
+        try:
+            async with self._lock:  # FIFO: one reply at a time, in order
+                self.replying = True
+                waiting = self.shares_task_model and self.manager.active_id is not None
+                self.bus.emit("chat_thinking", self.name, skip_history=True, reply_id=reply_id,
+                              waiting_on_errand=waiting)
                 recall_started = time.monotonic()
-                if self.store:
-                    # Durable knowledge first; past chat snippets would otherwise crowd it
-                    # out, since they often repeat the very facts they mention.
-                    try:
-                        memories = await self.store.recall(
-                            user_turn["text"], kinds=["fact", "preference", "episode", "skill"], k=4)
-                        memories += await self.store.recall(user_turn["text"], kinds=["conversation"], k=2)
-                    except Exception:
-                        _log.exception("Memory recall failed; continuing conversation without recalled memories")
+                memories = await self._recall(user_turn["text"])
                 recall_seconds = time.monotonic() - recall_started
                 voice = self.persona.voice_view() if self.persona else None
                 # Include replies to preceding messages that finished while this one
@@ -139,78 +187,213 @@ class ChatSession:
                 anchors = {t["id"]: index for index, t in enumerate(earlier)}
                 earlier.sort(key=lambda t: (anchors.get(t.get("in_reply_to"), anchors[t["id"]]),
                                            bool(t.get("in_reply_to")), anchors[t["id"]]))
-                messages = build_messages(self.name, voice, prompt_memories(memories), self._status(),
-                                          earlier, user_turn["text"])
+                messages = build_messages(self.name, voice, prompt_memories(memories),
+                                          self._status(user_turn.get("speaker")), earlier, user_turn["text"])
                 splitter = TrailerSplitter()
-                async for chunk in self.client.stream_text(messages, max_tokens=self.settings.chat_max_tokens,
-                                                           temperature=self.settings.chat_temperature):
-                    visible = splitter.feed(chunk)
-                    if visible:
-                        self.bus.emit("chat_delta", self.name, skip_history=True, reply_id=reply_id, text=visible)
-                remaining, reply, trailer = splitter.finish()
+                try:
+                    async for chunk in self.client.stream_text(messages, max_tokens=self.settings.chat_max_tokens,
+                                                               temperature=self.settings.chat_temperature):
+                        visible = splitter.feed(chunk)
+                        if visible:
+                            self.bus.emit("chat_delta", self.name, skip_history=True, reply_id=reply_id,
+                                          text=visible)
+                except ModelError as exc:
+                    if not splitter.text.strip():
+                        raise
+                    # The model started answering, then failed: keep what was said,
+                    # report the interruption honestly, and run no action.
+                    _log.warning("Chat stream failed mid-reply: %s", exc)
+                    remaining, parsed = splitter.finish()
+                    finished = self._finish_turn(user_turn, reply_id, parsed.visible + " …", None,
+                                                 {"interrupted": True}, error=str(exc))
+                    return
+                remaining, parsed = splitter.finish()
                 if remaining:
                     self.bus.emit("chat_delta", self.name, skip_history=True, reply_id=reply_id, text=remaining)
-                action = parse_action(trailer)
                 metrics = dict(getattr(self.client, "last_metrics", {}) or {})
                 metrics["memory_recall_seconds"] = round(recall_seconds, 3)
                 metrics["input_chars"] = sum(len(m["content"]) for m in messages)
-                _log.info("chat_reply first_token_seconds=%s total_seconds=%s memories=%d task=%s recall_seconds=%.3f input_chars=%d",
-                          metrics.get("first_token_seconds"), metrics.get("total_seconds"),
-                          len(memories), bool(action.task), recall_seconds, metrics["input_chars"])
-                reply = reply or "Sorry, I lost my words for a moment. Could you say that again?"
-                self._add_turn("kip", reply, reply_id=reply_id, in_reply_to=user_turn["id"],
-                               action=action.model_dump(), metrics=metrics)
-                await self._act(action, user_turn["text"], reply)
-            except ModelError as exc:
-                self._add_turn("kip", "I can't think clearly right now: my language model isn't answering. "
-                               "Please check that it's running.", reply_id=reply_id,
-                               in_reply_to=user_turn["id"], error=str(exc))
-            finally:
-                self.replying = False
-                self.last_activity = time.monotonic()
+                action, action_error = parsed.action, parsed.error
+                text = parsed.visible
+                if metrics.get("truncated"):
+                    # A cut-off reply is shown as cut off; a half-written action never runs.
+                    text = (text + " …").strip()
+                    action, action_error = None, "The reply was cut off before its action line finished."
+                if action_error:
+                    _log.warning("Chat action not executed: %s", action_error)
+                _log.info("chat_reply first_token_seconds=%s total_seconds=%s memories=%d task=%s recall_seconds=%.3f "
+                          "input_chars=%d truncated=%s", metrics.get("first_token_seconds"),
+                          metrics.get("total_seconds"), len(memories), bool(action and action.task), recall_seconds,
+                          metrics["input_chars"], bool(metrics.get("truncated")))
+                text = text or "Sorry, I lost my words for a moment. Could you say that again?"
+                reply_turn = self._finish_turn(user_turn, reply_id, text, action, metrics, action_error=action_error)
+                finished = True
+                await self._act(action, user_turn, reply_turn)
+        except ModelError as exc:
+            self._finish_turn(user_turn, reply_id, "I can't think clearly right now: my language model isn't "
+                                                   "answering. Please check that it's running.", None, {},
+                              error=str(exc))
+            finished = True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _log.exception("Chat reply failed")
+            self._finish_turn(user_turn, reply_id, "Sorry, something went wrong on my side while answering.",
+                              None, {}, error=type(exc).__name__)
+            finished = True
+        finally:
+            self.replying = False
+            self.last_activity = time.monotonic()
+            self._offer_seen.pop(user_turn["id"], None)
+            if not finished:
+                # Cancelled (reset, shutdown): release any "Thinking…" indicator.
+                self.bus.emit("chat_reply_ended", self.name, skip_history=True, reply_id=reply_id,
+                              reason="cancelled")
 
-    async def _act(self, action: ChatAction, said: str, reply: str) -> None:
-        goal = " ".join(action.task.split())
-        offer, self.pending_offer = self.pending_offer, None
-        agreed = bool(offer) and is_affirmative(said)
-        if agreed and not goal:
-            goal = offer  # "Yes please" is enough, even if the model forgot the task line
-        if goal and not self._closed:
-            authorized = self.settings.chat_autonomy == "act" or agreed or is_request(said)
-            if self._already_planned(goal):
-                _log.info("Ignoring a repeated errand request: %s", goal)
-            elif authorized:
-                self._start_or_queue(goal)
-            else:
-                # The model proposed an errand nobody asked for: Kip's words may offer it,
-                # but code decides. It waits for a yes on the next turn.
-                self.pending_offer = goal
-                _log.info("Holding unrequested errand as an offer: %s", goal)
+    def _finish_turn(self, user_turn, reply_id, text, action, metrics, **extra) -> dict:
+        return self._add_turn("kip", text, reply_id=reply_id, in_reply_to=user_turn["id"],
+                              action=action.model_dump() if action else None, metrics=metrics,
+                              **{k: v for k, v in extra.items() if v})
+
+    # ── acting on a reply ───────────────────────────────────────────────────
+    async def _act(self, action: ChatAction | None, user_turn: dict, reply_turn: dict) -> None:
+        said, reply = user_turn["text"], reply_turn["text"]
+        self._decide_errands(action, user_turn)
+        self._check_claims(reply)
         if self.store:
-            about = self._mentioned(said + " " + reply)
-            added = []
-            for fact in action.remember:
-                if fact.strip():
-                    try:
-                        added.append(await self.store.add("fact", fact, about=self._mentioned(fact) or about,
-                                                          importance=0.7, source="conversation"))
-                    except Exception:
-                        _log.exception("Could not save a conversational fact")
-            # Corrections retire the wrong memory (kept as history), never the fix itself.
-            for wrong in action.forget:
-                if wrong.strip():
-                    try:
-                        retired = await self.store.supersede(wrong, by=added[0] if added else None,
-                                                             exclude=set(added))
-                        if retired:
-                            _log.info("Memory %s superseded by a correction", retired["id"])
-                    except Exception:
-                        _log.exception("Could not retire a corrected memory")
+            await self._remember(action, user_turn, reply)
+
+    def _offer_valid(self) -> bool:
+        offer = self.offer
+        return bool(offer and offer.status == "pending" and offer.generation == self.generation
+                    and time.monotonic() - offer.created_at <= self.settings.chat_offer_seconds)
+
+    def _expire_offer(self, status: str) -> None:
+        if self.offer and self.offer.status == "pending":
+            self.offer.status = status
+            self.offer_log.append(self.offer.public())
+
+    def _decide_errands(self, action: ChatAction | None, user_turn: dict) -> None:
+        if self._closed:
+            return
+        said = user_turn["text"]
+        answer = classify_reply(said)
+        proposed = " ".join(action.task.split()) if action else ""
+        offered = " ".join(action.offer.split()) if action else ""
+        seen = self._offer_seen.get(user_turn["id"])
+        if self.offer and not self._offer_valid():
+            self._expire_offer("expired")
+        offer = self.offer if self._offer_valid() else None
+        if offer and seen == offer.id:
+            # This message is the person's answer to Kip's offer.
+            if answer == "yes":
+                offer.status, offer.authorized_by = "consumed", user_turn["id"]
+                self.offer_log.append(offer.public())
+                # Only the offered goal runs, whatever the model wrote this turn.
+                self._start_or_queue(offer.goal, user_turn["id"])
+                return
+            if answer == "no":
+                self._expire_offer("declined")
+                if not is_request(said):
+                    return
+                # "No, please find the keys instead": the offer is declined, and the new
+                # explicit request below is still honoured (negated actions never are).
+            elif not is_request(said):
+                # Ambiguous: keep the offer open and ask, rather than guess.
+                offer.status = "deferred"
+                self.offer_log.append(offer.public())
+                self.offer = Offer(goal=offer.goal, reply_turn_id=offer.reply_turn_id, generation=self.generation)
+                self._add_turn("kip", f"Just to be sure: would you like me to {_lower_first(offer.goal)}?",
+                               source="clarification")
+                return
+            else:
+                self._expire_offer("superseded")  # they asked for something else instead
+        # is_request() already rejects negated actions ("Don't deliver…"), so refusal words
+        # elsewhere in the sentence ("…dinner is NOT ready", "…instead") don't block a request.
+        if offer and offer.status == "declined" and task_identity(proposed) == offer.identity:
+            proposed = ""  # never start the very errand the person just declined
+        if proposed and (is_request(said) or (self.settings.chat_autonomy == "act" and answer != "no")):
+            self._start_or_queue(proposed, user_turn["id"])
+            return
+        suggestion = offered or proposed
+        if suggestion and answer != "no":
+            # Kip may suggest; nothing runs until the person says yes to this offer.
+            self._expire_offer("superseded")
+            self.offer = Offer(goal=suggestion, reply_turn_id=user_turn["id"], generation=self.generation)
+            _log.info("Holding errand as an offer awaiting a yes: %s", suggestion)
+
+    def _check_claims(self, reply: str) -> None:
+        """Kip must not claim physical actions it has no tool evidence for."""
+        world = self.engine.snapshot()
+        unsupported = unsupported_claims(reply, evidence_ledger(self.manager), world)
+        if unsupported:
+            _log.warning("Unsupported action claim in reply: %s", unsupported)
+            self._add_turn("kip", "Sorry, I should correct myself: I don't have any record of actually doing "
+                                  "that yet.", source="correction", claims=unsupported)
+
+    async def _remember(self, action: ChatAction | None, user_turn: dict, reply: str) -> None:
+        said, speaker = user_turn["text"], user_turn.get("speaker")
+        about = self._mentioned(said + " " + reply)
+        added = []
+        for item in (action.remember if action else []):
+            text = item.text.strip()
+            if not text:
+                continue
+            context = item.context
+            if context == "actual" and re.search(r"\b(pretend|imagine|hypothetical(ly)?|fictional|for this test|"
+                                                 r"make[- ]believe|let's say)\b", said, re.I):
+                context = "pretend"  # the person framed it as not real; keep that framing
+            tags = self._mentioned(text)
+            people = set(self.engine.snapshot().get("people", {}))
+            if not people & set(tags) and FIRST_PERSON.search(text.casefold()):
+                # "I like tea" belongs to whoever is speaking, never an arbitrary resident.
+                if speaker:
+                    tags.append(speaker)
+            meta = {"context": context, "speaker": speaker or "unknown", "said_in": user_turn["id"]}
             try:
-                await self.store.add("conversation", f"They said: {said} | I replied: {reply}", about=about,
-                                     importance=0.3, source="conversation")
+                added.append(await self.store.add("preference" if re.search(r"\b(prefer|like|love|favou?rite|"
+                                                                            r"enjoy|hate|dislike)", text, re.I)
+                                                  else "fact", text, about=tags or about, importance=0.7,
+                                                  source="conversation", meta=meta))
+                self._remembered.append(text if context == "actual" else f"{text} ({context})")
             except Exception:
-                _log.exception("Could not save conversation")
+                _log.exception("Could not save a conversational fact")
+        # Corrections retire the wrong memory (kept as history), never the fix itself.
+        for wrong in (action.forget if action else []):
+            if wrong.strip():
+                try:
+                    retired = await self.store.supersede(wrong, by=added[0] if added else None,
+                                                         exclude=set(added), about=self._mentioned(wrong))
+                    if retired:
+                        _log.info("Memory %s superseded by a correction", retired["id"])
+                except Exception:
+                    _log.exception("Could not retire a corrected memory")
+        try:
+            await self.store.add("conversation", f"They said: {said} | I replied: {reply}", about=about,
+                                 importance=0.3, source="conversation", meta={"speaker": speaker or "unknown"})
+            await self.store.set_keyed(f"chat-session:{self.session_id}", "episode", self._session_summary(),
+                                       about=sorted({t for turn in self.turns for t in self._mentioned(turn["text"])}),
+                                       importance=0.5, source="conversation")
+        except Exception:
+            _log.exception("Could not save conversation")
+
+    def _session_summary(self) -> str:
+        """A deterministic episode of this conversation, so it can be recalled after a restart."""
+        turns = list(self.turns)
+        start = turns[0]["at"][:16].replace("T", " ") if turns else ""
+        topics = [_clip(t["text"], 60) for t in turns if t["role"] == "user"][-6:]
+        errands = [f"{t['text'][:80]} ({t['outcome']})" for t in turns if t.get("outcome")][-4:]
+        speakers = [t.get("speaker") for t in turns if t["role"] == "user" and t.get("speaker")]
+        parts = [f"Conversation that started {start} UTC with {self._speaker_name(speakers[-1] if speakers else None)}."]
+        if topics:
+            parts.append("We talked about: " + "; ".join(topics) + ".")
+        if errands:
+            parts.append("Errands: " + "; ".join(errands) + ".")
+        if self._remembered:
+            parts.append("I learned: " + "; ".join(self._remembered[-5:]) + ".")
+        if self.persona:
+            parts.append(f"I felt {self.persona.mood_label()}.")
+        return " ".join(parts)
 
     def _mentioned(self, text: str) -> list[str]:
         """Tag memories with people and objects mentioned by name or ID."""
@@ -227,26 +410,35 @@ class ChatSession:
     # ── errands ─────────────────────────────────────────────────────────────
     def _already_planned(self, goal: str) -> bool:
         active = self.manager.active()
-        planned = [active["goal"]] if active else []
-        return _same_goal(goal, planned + list(self.pending_goals))
+        planned = ([active["goal"]] if active else []) + list(self.pending_goals)
+        identity = task_identity(goal)
+        return any(task_identity(other) == identity for other in planned)
 
-    def _start_or_queue(self, goal: str) -> None:
+    def _start_or_queue(self, goal: str, origin_turn: str | None = None) -> None:
         if self._closed:
+            return
+        if origin_turn is not None:
+            if origin_turn in self._started_by_turn:
+                _log.info("One message starts at most one errand; ignoring %s", goal)
+                return
+            self._started_by_turn.add(origin_turn)
+        if self._already_planned(goal):
+            _log.info("Ignoring a repeated errand request: %s", goal)
             return
         try:
             # Kip's own reply already acknowledged this errand; skip "On it".
-            self._announced.add(_goal_key(goal))
+            self._announced.add(task_identity(goal))
             self.manager.start(goal)
         except TaskBusy:
             # It will start later, when an "On it" is genuinely news again.
-            self._announced.discard(_goal_key(goal))
+            self._announced.discard(task_identity(goal))
             self.pending_goals.append(goal)
             self._add_turn("kip", f"I'll do that right after my current errand: {goal}", source="narration")
 
-    async def _start_next_when_free(self) -> None:
+    async def _start_next_when_free(self, generation: int) -> None:
         while self.manager.active_id is not None and not self._closed:
             await asyncio.sleep(0.05)
-        if self.pending_goals and not self._closed:
+        if self.pending_goals and not self._closed and generation == self.generation:
             self._start_or_queue(self.pending_goals.popleft())
 
     def _narrate(self, event: dict) -> None:
@@ -257,12 +449,12 @@ class ChatSession:
         task = data.get("task") or {}
         if kind == "task_cancelled":
             if self.pending_goals:
-                self._spawn(self._start_next_when_free())
+                self._spawn(self._start_next_when_free(self.generation))
             return
         if kind == "task_started":
             goal = task.get("goal", data.get("summary", ""))
-            if _goal_key(goal) in self._announced:
-                self._announced.discard(_goal_key(goal))
+            if task_identity(goal) in self._announced:
+                self._announced.discard(task_identity(goal))
             else:
                 self._add_turn("kip", f"On it: {goal}", source="narration")
         elif kind in {"task_completed", "task_failed"}:
@@ -279,29 +471,23 @@ class ChatSession:
                 else:
                     detail = found or data.get("summary", "")
                     text = " ".join(part for part in (reaction, detail) if part)
-            self._add_turn("kip", text, source="narration",
-                           sources=answer.get("sources", []), outcome=outcome)
+            self._add_turn("kip", text, source="narration", sources=answer.get("sources", []), outcome=outcome)
             if self.pending_goals:
-                self._spawn(self._start_next_when_free())
+                self._spawn(self._start_next_when_free(self.generation))
         elif kind == "agent_intention":
-            self._announced.add(_goal_key(data.get("summary", "")))
+            self._announced.add(task_identity(data.get("summary", "")))
             self._add_turn("kip", f"I'm going to take care of something: {data.get('summary', '')}. "
                                   f"{data.get('reason', '')}".strip(), source="narration")
 
 
 # ── status and narration helpers (deterministic, no model calls) ───────────────
-def _goal_key(goal: str) -> str:
-    return " ".join(re.findall(r"\w+", goal.casefold()))
+def _clip(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
-def _same_goal(goal: str, others: list[str]) -> bool:
-    """Same errand, allowing small rewordings ("Find the keys" vs "find keys.")."""
-    words = set(_goal_key(goal).split()) - {"the", "a", "an", "my", "please"}
-    for other in others:
-        theirs = set(_goal_key(other).split()) - {"the", "a", "an", "my", "please"}
-        if words and theirs and len(words & theirs) / len(words | theirs) >= 0.75:
-            return True
-    return False
+def _lower_first(text: str) -> str:
+    return text[:1].lower() + text[1:] if text else text
 
 
 def _place(location) -> str | None:
@@ -332,6 +518,18 @@ def errand_progress(task: dict) -> dict:
             "latest": task.get("summary", "")}
 
 
+def recent_errands(manager, limit: int = 3) -> list[dict]:
+    """The last finished errands and what they actually found or answered."""
+    finished = [t for t in manager.tasks.values() if t.status != "running"][-limit:]
+    result = []
+    for context in finished:
+        task = context.public()
+        answer = (task.get("answer") or {}).get("answer", "")
+        result.append({"goal": task["goal"], "outcome": task["status"],
+                       "result": _clip(answer, 160) if answer else describe_findings(task) or task.get("summary", "")})
+    return result
+
+
 def known_people(persistent) -> dict:
     if persistent is None:
         return {}
@@ -357,24 +555,58 @@ def describe_findings(task: dict) -> str:
     return " ".join(parts)
 
 
-# ── consent (deterministic) ──────────────────────────────────────────────────
-_POLITE_REQUEST = re.compile(
-    r"\b(please|could you|can you|would you|will you|would you mind|i need you to|i want you to|"
-    r"i'd like you to|go and|help me)\b")
-_IMPERATIVE = re.compile(
-    r"(?:^|[.!?;]\s+|,\s*|\band\s+|\bthen\s+)(?:also\s+|just\s+|now\s+|quickly\s+)?(find|bring|fetch|get|grab|take|tell|let|check|look|search|"
-    r"calculate|compute|use|run|read|deliver|give|go|ask|remind|put|place|carry|work out|figure out|"
-    r"notify|inform|show|count)\b")
-_AFFIRMATIVE = re.compile(
-    r"^\W*(yes|yeah|yep|yup|sure|ok|okay|please|please do|go ahead|do it|go for it|sounds good|"
-    r"that would be (great|lovely|nice)|absolutely|of course|definitely|why not|alright|all right)\b")
+# ── evidence for Kip's own claims ────────────────────────────────────────────
+def evidence_ledger(manager) -> dict[str, set[str]]:
+    """Everything the robot has actually done or observed in this world, from tool results."""
+    ledger = {"rooms": set(), "objects": set(), "people": set(), "gave": set(), "told": set()}
+    for context in manager.tasks.values():
+        ledger["rooms"] |= set(context.memory.rooms)
+        ledger["objects"] |= set(context.memory.objects)
+        ledger["people"] |= {key for key, person in context.memory.people.items() if person.location}
+        for entry in context.action_history:
+            if not entry.get("success"):
+                continue
+            observation = entry.get("observation") or {}
+            if entry["tool"] == "give":
+                ledger["gave"] |= {observation.get("object", ""), observation.get("person", "")}
+            elif entry["tool"] == "talk_to":
+                ledger["told"].add(observation.get("person", ""))
+    return ledger
 
 
-def is_request(text: str) -> bool:
-    """Does the person's message itself ask Kip to do something?"""
-    lowered = " ".join(text.casefold().split())
-    return bool(_POLITE_REQUEST.search(lowered) or _IMPERATIVE.search(lowered))
+_CLAIM = re.compile(r"\bi(?:'ve| have| just| already|\s)*\s*(checked|looked|searched|found|delivered|brought|gave|"
+                    r"told|visited)\b(.*)")
+_HEDGE = re.compile(r"\b(n't|not|never|haven't|couldn't|didn't|will|'ll|going to|can|could|would|should|"
+                    r"if|when|before|after|yet)\b")
 
 
-def is_affirmative(text: str) -> bool:
-    return bool(_AFFIRMATIVE.search(" ".join(text.casefold().split())))
+def unsupported_claims(reply: str, ledger: dict[str, set[str]], world: dict) -> list[str]:
+    """First-person past-tense claims about physical actions with no matching tool evidence."""
+    rooms = {key: {key.casefold(), room.get("name", key).casefold()} for key, room in world.get("rooms", {}).items()}
+    objects = {key: {key.casefold(), obj.get("name", key).casefold()} for key, obj in world.get("objects", {}).items()}
+    people = {key: {key.casefold(), person.get("name", key).casefold()} for key, person in world.get("people", {}).items()}
+    claims = []
+    for sentence in re.split(r"(?<=[.!?])\s+", reply.casefold().replace("’", "'")):
+        match = _CLAIM.search(sentence)
+        if not match or _HEDGE.search(sentence[:match.start()] + " " + match.group(2)):
+            continue
+        verb, rest = match.group(1), match.group(2)
+        def named(table):
+            return {key for key, names in table.items() if any(re.search(r"\b" + re.escape(n) + r"\b", rest) for n in names)}
+        mentioned_rooms, mentioned_objects, mentioned_people = named(rooms), named(objects), named(people)
+        if verb in {"checked", "looked", "searched", "visited"}:
+            evidence = (mentioned_rooms & ledger["rooms"]) | (mentioned_objects & ledger["objects"]) | \
+                       (mentioned_people & ledger["people"])
+        elif verb == "found":
+            evidence = (mentioned_objects & ledger["objects"]) | (mentioned_people & ledger["people"])
+        elif verb == "told":
+            evidence = mentioned_people & ledger["told"]
+        else:  # delivered / brought / gave
+            evidence = (mentioned_objects | mentioned_people) & ledger["gave"]
+        mentioned = mentioned_rooms | mentioned_objects | mentioned_people
+        unknown_thing = re.search(r"\b(the|his|her|their|your|my)\s+(\w+)", rest)
+        if evidence:
+            continue
+        if mentioned or unknown_thing:
+            claims.append(sentence.strip())
+    return claims

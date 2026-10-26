@@ -1,12 +1,18 @@
 /**
  * Talk to Kip — renders the conversation, streams replies from chat_delta events,
  * and sends messages to POST /api/chat. Replies arrive over the shared WebSocket.
+ *
+ * The server's /api/chat history is authoritative: on load, reconnect and reset the
+ * log is rebuilt from it in server order, so nothing is lost or duplicated.
  */
 import { api } from './api.js';
 
 const $ = (id) => document.getElementById(id);
+const MAX_BUBBLES = 200;
 const seen = new Set();
 const streaming = new Map(); // reply_id -> bubble element
+let reloading = null;        // pending reload promise
+let queued = [];             // live chat events that arrived during a reload
 
 function scrollToEnd(log, force = false) {
   const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
@@ -19,7 +25,10 @@ function bubble(role, extra = '') {
   const text = document.createElement('p');
   node.append(text);
   $('chat-empty')?.remove();
-  $('chat-log').append(node);
+  const log = $('chat-log');
+  log.append(node);
+  while (log.children.length > MAX_BUBBLES) log.firstElementChild.remove();
+  if (seen.size > MAX_BUBBLES * 3) seen.delete(seen.values().next().value);
   return node;
 }
 
@@ -48,6 +57,7 @@ export function renderTurn(turn) {
   else node = bubble(turn.role === 'user' ? 'user' : 'kip');
   node.classList.remove('thinking');
   if (turn.source === 'narration') node.classList.add('narration');
+  if (turn.source === 'correction' || turn.source === 'clarification') node.classList.add('narration');
   if (turn.error) node.classList.add('error');
   node.querySelector('p').textContent = turn.text;
   if (turn.action?.task) {
@@ -63,10 +73,29 @@ export function renderTurn(turn) {
   scrollToEnd(log, turn.role === 'user');
 }
 
+/** Remove "Thinking…"/partial bubbles that will never be finished by this page. */
+function releaseStreaming(note = '') {
+  for (const node of streaming.values()) {
+    if (note && node.querySelector('p').textContent && !node.classList.contains('thinking')) {
+      node.classList.add('error');
+      node.querySelector('p').textContent += ` ${note}`;
+    } else {
+      node.remove();
+    }
+  }
+  streaming.clear();
+}
+
+export function isChatEvent(event) {
+  return event.type.startsWith('chat_');
+}
+
 export function handleChatEvent(event) {
+  if (!isChatEvent(event)) return false;
+  if (reloading) { queued.push(event); return true; }
   const d = event.data || {};
-  if (event.type === 'chat_message') { renderTurn(d.turn); return true; }
-  if (event.type === 'chat_thinking') {
+  if (event.type === 'chat_message') renderTurn(d.turn);
+  else if (event.type === 'chat_thinking') {
     if (!streaming.has(d.reply_id)) {
       const node = bubble('kip', 'thinking');
       node.querySelector('p').textContent = d.waiting_on_errand
@@ -75,9 +104,7 @@ export function handleChatEvent(event) {
       streaming.set(d.reply_id, node);
       scrollToEnd($('chat-log'));
     }
-    return true;
-  }
-  if (event.type === 'chat_delta') {
+  } else if (event.type === 'chat_delta') {
     const node = streaming.get(d.reply_id);
     if (node) {
       const text = node.querySelector('p');
@@ -85,18 +112,71 @@ export function handleChatEvent(event) {
       text.textContent += d.text;
       scrollToEnd($('chat-log'));
     }
-    return true;
+  } else if (event.type === 'chat_reply_ended') {
+    const node = streaming.get(d.reply_id);
+    if (node) {
+      streaming.delete(d.reply_id);
+      if (node.classList.contains('thinking')) node.remove();
+      else { node.classList.add('error'); node.querySelector('p').textContent += ' (reply interrupted)'; }
+    }
   }
-  return false;
+  return true;
 }
 
-export async function initChat() {
-  try {
-    const { turns, name } = await api('/chat');
-    $('chat-name').textContent = name;
-    turns.forEach(renderTurn);
-  } catch { /* The WebSocket snapshot still replays recent chat events. */ }
+/** Rebuild the log from the server's history (load, reconnect, reset). */
+export function reloadChat() {
+  if (reloading) return reloading;
+  queued = [];
+  reloading = (async () => {
+    try {
+      const { turns, name } = await api('/chat');
+      $('chat-name').textContent = name;
+      releaseStreaming();
+      seen.clear();
+      $('chat-log').replaceChildren();
+      turns.forEach(renderTurn);
+      if (!turns.length) {
+        const empty = document.createElement('p');
+        empty.id = 'chat-empty'; empty.className = 'subtle';
+        empty.textContent = 'Say hello, ask a question, or ask for help around the house.';
+        $('chat-log').append(empty);
+      }
+    } catch { /* keep what is shown; the next reconnect retries */ }
+    finally {
+      const pending = queued;
+      reloading = null;
+      queued = [];
+      pending.forEach(handleChatEvent); // events that arrived meanwhile, deduplicated by id
+    }
+  })();
+  return reloading;
+}
 
+export function resetChat() {
+  releaseStreaming();
+  return reloadChat();
+}
+
+/** Offer the people in the world as possible speakers ("Who's talking?"). */
+export function setSpeakers(people) {
+  const select = $('chat-speaker');
+  if (!select) return;
+  const current = select.value;
+  const options = [['', 'Someone (unknown)'],
+    ...Object.entries(people || {}).map(([id, person]) => [id, person.name || id])];
+  const signature = options.map(([id]) => id).join('|');
+  if (select.dataset.signature === signature) return;
+  select.dataset.signature = signature;
+  select.replaceChildren(...options.map(([id, label]) => {
+    const option = document.createElement('option');
+    option.value = id; option.textContent = label;
+    return option;
+  }));
+  select.value = options.some(([id]) => id === current) ? current : '';
+}
+
+export function initChat() {
+  reloadChat();
   const form = $('chat-form');
   const input = $('chat-input');
   form.addEventListener('submit', async (event) => {
@@ -105,7 +185,8 @@ export async function initChat() {
     if (!message) return;
     input.value = '';
     $('chat-send').disabled = true;
-    try { renderTurn(await api('/chat', { message })); }
+    const speaker = $('chat-speaker')?.value || undefined;
+    try { renderTurn(await api('/chat', speaker ? { message, speaker } : { message })); }
     catch (error) {
       const node = bubble('kip', 'error');
       node.querySelector('p').textContent = error.message;
@@ -113,6 +194,8 @@ export async function initChat() {
     } finally { $('chat-send').disabled = false; input.focus(); }
   });
   input.addEventListener('keydown', (event) => {
+    // Never send while an input method (e.g. Chinese/Japanese) is still composing.
+    if (event.isComposing || event.keyCode === 229) return;
     if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); form.requestSubmit(); }
   });
   document.querySelectorAll('[data-say]').forEach(button => button.addEventListener('click', () => {

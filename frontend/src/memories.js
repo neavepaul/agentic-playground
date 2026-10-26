@@ -42,16 +42,21 @@ export function initMemories(panel) {
   });
 }
 
+let latestRequest = 0;
+
 export async function loadMemories(panel) {
   const query = panel.querySelector('#memory-query')?.value.trim() || '';
   const results = panel.querySelector('#memory-results');
+  const request = ++latestRequest;
   try {
     const memories = await api(`/memories?limit=30${query ? `&q=${encodeURIComponent(query)}` : ''}`);
+    if (request !== latestRequest) return; // a newer search has started; never show stale results
     results.replaceChildren(...memories.map(row));
     if (!memories.length) {
       results.innerHTML = '<p class="beliefs-empty">No memories yet. Talk to Kip or give it an errand.</p>';
     }
   } catch {
+    if (request !== latestRequest) return;
     results.innerHTML = '<p class="beliefs-empty">Could not load memories.</p>';
   }
 }

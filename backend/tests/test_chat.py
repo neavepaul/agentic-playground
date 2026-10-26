@@ -86,10 +86,10 @@ async def test_reply_streams_without_leaking_the_trailer():
 def test_splitter_handles_markers_split_across_chunks(chunks):
     splitter = TrailerSplitter()
     visible = "".join(splitter.feed(chunk) for chunk in chunks)
-    remaining, full, trailer = splitter.finish()
+    remaining, parsed = splitter.finish()
     assert "#" not in visible + remaining
-    assert full == ("" if chunks[0].startswith("###") else "Hi")
-    assert parse_action(trailer).task in {"", "x"}
+    assert parsed.visible == ("" if chunks[0].startswith("###") else "Hi")
+    assert (parsed.action.task if parsed.action else "") in {"", "x"}
 
 
 @pytest.mark.asyncio
@@ -127,7 +127,7 @@ async def test_remembered_facts_are_recalled_in_later_turns():
                                          reply("Green tea, after six.")], store)
     session.submit("Remember that Neave prefers green tea after 6pm")
     await session.drain()
-    facts = store.recent(10, "fact")
+    facts = store.recent(10, "preference")  # likes/prefers are filed as preferences
     assert facts[0]["text"] == "Neave prefers green tea after 6pm" and facts[0]["about"] == ["neave"]
     assert store.recent(10, "conversation")
     session.submit("What tea does Neave like?")
@@ -317,14 +317,15 @@ async def test_colibri_records_stream_usage_without_changing_the_reply():
 
 
 @pytest.mark.asyncio
-async def test_colibri_truncated_reply_is_reported_as_an_error():
-    body = 'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'
+async def test_colibri_truncated_reply_is_flagged_not_reported_as_a_dead_model():
+    """A reply cut off at the token limit is still a working model: flag it, keep the text."""
+    body = ('data: {"choices":[{"delta":{"content":"Partial an"}}]}\n\n'
+            'data: {"choices":[{"delta":{"content":"swer"},"finish_reason":"length"}]}\n\n')
     client = ColibriClient(Settings())
     client.http = httpx.AsyncClient(transport=httpx.MockTransport(
         lambda request: httpx.Response(200, text=body)), base_url="http://colibri/")
-    with pytest.raises(ModelError, match="reply limit"):
-        async for _ in client.stream_text([]):
-            pass
+    assert "".join([chunk async for chunk in client.stream_text([])]) == "Partial answer"
+    assert client.last_metrics["truncated"] is True
     await client.close()
 
 
@@ -387,9 +388,9 @@ async def test_copied_errands_are_ignored_but_new_ones_queue():
 def test_inline_action_json_never_reaches_the_reply(raw, visible, task):
     splitter = TrailerSplitter()
     streamed = "".join(splitter.feed(raw[i:i + 3]) for i in range(0, len(raw), 3))
-    remaining, full, trailer = splitter.finish()
-    assert (streamed + remaining).strip() == visible == full
-    assert parse_action(trailer).task == task
+    remaining, parsed = splitter.finish()
+    assert (streamed + remaining).strip() == visible == parsed.visible
+    assert parsed.action.task == task
 
 
 @pytest.mark.asyncio

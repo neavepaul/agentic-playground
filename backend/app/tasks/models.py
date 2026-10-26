@@ -6,7 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, computed_field
 
 from app.agents.schemas import ConversationMeaning, GoalCondition
-from .goals import check_conditions, known_recipients, normalize
+from .goals import check_conditions, contains_phrase, known_recipients, normalize
 from .memory import ReportedNeed, TaskMemory
 
 
@@ -225,7 +225,10 @@ class TaskContext(BaseModel):
         # The coordinator encodes this when the user's request names the source room.
         if kind == "object":
             for condition in self.conditions:
-                if condition.object == target and condition.room and condition.room not in fresh:
+                # Only a *source* room says where the object is. place_object's room is
+                # where it must go, never evidence of where to find it.
+                if (condition.kind in {"find_object", "hold_object"} and condition.object == target
+                        and condition.room and condition.room not in fresh):
                     return {"room": condition.room, "source": "goal_specification",
                             "age_actions": None, "confidence": "explicit_task_fact"}
         store = self.long_term_memory.get("people" if kind == "person" else "objects", {}).get(target, {})
@@ -320,7 +323,7 @@ class TaskContext(BaseModel):
 
     def is_notification(self, person: str, message: str) -> bool:
         return any(c.kind in {"notify", "notify_everyone"} and (c.kind == "notify_everyone" or c.person == person)
-                   and normalize(c.message) in normalize(message) for c in self.conditions)
+                   and contains_phrase(message, c.message) for c in self.conditions)
 
     def remember_meaning(self, evidence_id: str, meaning: ConversationMeaning) -> None:
         source = next((a for a in self.action_history if a["evidence_id"] == evidence_id

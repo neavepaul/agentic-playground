@@ -74,6 +74,8 @@ class OllamaClient:
                         self.last_metrics.setdefault("first_token_seconds", round(time.monotonic() - started, 3))
                         yield delta
                     if chunk.get("done"):
+                        if chunk.get("done_reason") == "length":
+                            self.last_metrics["truncated"] = True
                         break
             self.last_metrics["total_seconds"] = round(time.monotonic() - started, 3)
         except httpx.TimeoutException:

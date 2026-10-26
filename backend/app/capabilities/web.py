@@ -18,11 +18,29 @@ def public_url(value: str) -> httpx.URL:
     return url
 
 
+_NAT64 = (ipaddress.ip_network("64:ff9b::/96"), ipaddress.ip_network("64:ff9b:1::/48"))
+
+
+def embedded_ipv4(ip) -> list:
+    """IPv4 addresses carried inside an IPv6 address (mapped, NAT64, 6to4, Teredo)."""
+    if ip.version != 6:
+        return []
+    found = [ip.ipv4_mapped, ip.sixtofour, ip.teredo[1] if ip.teredo else None]
+    if any(ip in network for network in _NAT64):
+        found.append(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
+    return [address for address in found if address is not None]
+
+
+def is_public(ip) -> bool:
+    # ipaddress calls 64:ff9b::7f00:1 "global", but on a NAT64 network it reaches
+    # 127.0.0.1. Judge translated addresses by the IPv4 address they carry.
+    return ip.is_global and all(inner.is_global for inner in embedded_ipv4(ip))
+
+
 async def public_address(host: str, port: int) -> str:
     addresses = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
     ips = [ipaddress.ip_address(item[4][0]) for item in addresses]
-    if not ips or any(not ip.is_global or (getattr(ip, "ipv4_mapped", None)
-                                          and not ip.ipv4_mapped.is_global) for ip in ips):
+    if not ips or not all(is_public(ip) for ip in ips):
         raise ValueError("Local, private and reserved network addresses are not accessible.")
     return str(ips[0])
 

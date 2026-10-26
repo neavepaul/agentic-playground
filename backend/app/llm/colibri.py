@@ -88,12 +88,14 @@ class ColibriClient:
                     choices = envelope["choices"]
                     if not choices:  # The optional final usage event has no choice.
                         continue
-                    if choices[0].get("finish_reason") == "length":
-                        raise ModelError("Colibri reached its reply limit before finishing. Please try a shorter request.")
                     delta = choices[0].get("delta", {}).get("content")
                     if delta:
                         self.last_metrics.setdefault("first_token_seconds", round(time.monotonic() - started, 3))
                         yield delta
+                    if choices[0].get("finish_reason") == "length":
+                        # The model works; the reply was just cut off. The caller decides
+                        # what to show and never runs a half-written action.
+                        self.last_metrics["truncated"] = True
             self.last_metrics["total_seconds"] = round(time.monotonic() - started, 3)
         except httpx.TimeoutException:
             raise ModelError("Colibri timed out while replying.") from None

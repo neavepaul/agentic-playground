@@ -30,6 +30,24 @@ class WorldEngine:
         self._world = _load_world(world_file)
         self._clock = clock
         self._initial_rooms_until = {}
+        # Bumped by every reset, so decisions made against an older world can be discarded.
+        self.generation = 0
+        # Deliberate (commit aa30271, tests in test_clock.py): a fresh start follows the
+        # schedule immediately, while a reset restores house.json rooms until the next
+        # schedule boundary.
+
+    def _hold_initial_rooms(self) -> None:
+        """After a reset, people stay in their house.json rooms until their next schedule boundary."""
+        self._initial_rooms_until.clear()
+        if not self._clock:
+            return
+        now = self._clock.simulated_seconds()
+        for person in self._world.people.values():
+            boundaries = [hour * 3600 for entry in person.schedule
+                          for hour in (entry.from_hour, entry.to_hour)]
+            if boundaries:
+                delay = min((boundary - now) % 86400 or 86400 for boundary in boundaries)
+                self._initial_rooms_until[person.id] = now + delay
 
     def _effective_room(self, person) -> str:
         """Return the room a person is in, applying their schedule if a clock is present."""
@@ -52,16 +70,10 @@ class WorldEngine:
 
     def reset(self) -> None:
         self._world = _load_world(self.world_file)
-        self._initial_rooms_until.clear()
+        self.generation += 1
         if self._clock:
             self._clock.reset()
-            now = self._clock.simulated_seconds()
-            for person in self._world.people.values():
-                boundaries = [hour * 3600 for entry in person.schedule
-                              for hour in (entry.from_hour, entry.to_hour)]
-                if boundaries:
-                    delay = min((boundary - now) % 86400 or 86400 for boundary in boundaries)
-                    self._initial_rooms_until[person.id] = now + delay
+        self._hold_initial_rooms()
 
     def advance_clock(self, steps: int = 1) -> None:
         """Signal that one agent turn elapsed. Only action-driven clocks react."""

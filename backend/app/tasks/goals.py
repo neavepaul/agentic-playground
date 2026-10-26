@@ -10,6 +10,12 @@ def normalize(text: str) -> str:
     return " ".join(re.findall(r"\w+", text.casefold()))
 
 
+def contains_phrase(text: str, phrase: str) -> bool:
+    """Whole-word containment: "dinner" is not inside "dinnertime", "no" not inside "now"."""
+    phrase = normalize(phrase)
+    return bool(phrase) and f" {phrase} " in f" {normalize(text)} "
+
+
 def known_recipients(context: "TaskContext") -> dict[str, str]:
     # Grounded language interpretations remain fallible; no simulator needs are read.
     return {claim["object"]: claim["person"] for claim in context.interpreted_needs}
@@ -38,7 +44,7 @@ def check_conditions(context: "TaskContext") -> list[dict]:
         return None
 
     def notified(person: str, message: str) -> bool:
-        return any(talk["person"] == person and normalize(message) in normalize(talk["message"])
+        return any(talk["person"] == person and contains_phrase(talk["message"], message)
                    for talk in talks)
 
     results = []
@@ -68,9 +74,10 @@ def check_conditions(context: "TaskContext") -> list[dict]:
         elif kind == "place_object":
             met = location(condition.object) == ("room", condition.room)
         elif kind == "visit_room":
-            # Being there is not enough to report on a room: it must have been looked at.
-            met = (context.robot_status.get("room") == condition.room
-                   and condition.room in context.memory.rooms)
+            # A room counts once it has been observed with a look during this task. Entering
+            # it is not enough, and leaving it later does not undo the observation, so
+            # "check the kitchen and the hall" can finish.
+            met = condition.room in context.memory.rooms
         elif kind == "notify":
             met = notified(condition.person, condition.message)
         else:  # notify_everyone: all reachable rooms must first be observed.

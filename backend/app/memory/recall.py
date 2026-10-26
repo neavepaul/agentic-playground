@@ -35,6 +35,26 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+_NEGATION_WORDS = {"not", "no", "never", "isn't", "isnt", "doesn't", "doesnt", "don't", "dont", "isn", "without",
+                   "nobody", "nothing", "none", "neither", "nor", "aren't", "wasn't", "won't"}
+_PERSONAL = {"i", "me", "my", "you", "your", "he", "she", "his", "her", "they", "their", "user"}
+
+
+def _negated(text: str) -> bool:
+    words = set(_WORD.findall(text.casefold().replace("’", "'"))) | set(text.casefold().split())
+    return bool(words & _NEGATION_WORDS) or "n't" in text.casefold()
+
+
+_SENTENCE_STARTERS = {"on", "in", "when", "if", "after", "before", "during", "every", "today", "yesterday",
+                      "pretend", "the", "a", "an", "also", "for"}
+
+
+def _subjects(text: str) -> set[str]:
+    """Capitalised names in a sentence: who an assertion is about."""
+    return {w.casefold() for w in re.findall(r"\b[A-Z][a-z]+\b", text)
+            if w.casefold() not in _PERSONAL | _SENTENCE_STARTERS}
+
+
 def _overlap(a: str, b: str) -> float:
     left, right = set(_WORD.findall(a.casefold())), set(_WORD.findall(b.casefold()))
     return len(left & right) / max(1, len(left | right))
@@ -228,11 +248,19 @@ class MemoryStore:
                 keyword = {row["id"]: max(0.0, -row["rank"]) / best for row in rows}
             if vector is not None and self.vectors:
                 import sqlite_vec
-                rows = db.execute(
-                    "SELECT v.rowid AS id, v.distance FROM memories_vec v JOIN memories m ON m.id = v.rowid "
-                    f"WHERE v.embedding MATCH ? AND k = ?{kind_sql}",
-                    [sqlite_vec.serialize_float32(vector), CANDIDATES, *kind_args]).fetchall()
-                semantic = {row["id"]: max(0.0, 1 - row["distance"]) for row in rows}
+                # vec0 picks the k nearest rows before the kind/validity filter applies, so
+                # chat logs could fill every slot. Widen k until enough rows pass the filter.
+                total = db.execute("SELECT COUNT(*) FROM memories_vec").fetchone()[0]
+                limit = CANDIDATES
+                while True:
+                    rows = db.execute(
+                        "SELECT v.rowid AS id, v.distance FROM memories_vec v JOIN memories m ON m.id = v.rowid "
+                        f"WHERE v.embedding MATCH ? AND k = ?{kind_sql}",
+                        [sqlite_vec.serialize_float32(vector), min(limit, 4096), *kind_args]).fetchall()
+                    if len(rows) >= CANDIDATES or limit >= min(total, 4096):
+                        break
+                    limit *= 4
+                semantic = {row["id"]: max(0.0, 1 - row["distance"]) for row in rows[:CANDIDATES]}
             ids = set(keyword) | set(semantic)
             if not ids:
                 # Nothing matched: offer the most important recent memories of these kinds.
@@ -258,7 +286,7 @@ class MemoryStore:
             scored.sort(key=lambda item: -item[0])
             results = [{"id": row["id"], "kind": row["kind"], "text": row["text"], "about": tags,
                         "importance": round(row["importance"], 2), "created_at": row["created_at"],
-                        "score": round(score, 3)} for score, row, tags in scored[:k]]
+                        "score": round(score, 3), **_labels(row)} for score, row, tags in scored[:k]]
             if touch and results:
                 db.executemany("UPDATE memories SET last_recalled = ?, recall_count = recall_count + 1 WHERE id = ?",
                                [(_now(), item["id"]) for item in results])
@@ -308,17 +336,61 @@ class MemoryStore:
             self._db.commit()
 
     async def supersede(self, text: str, by: int | None = None, kinds: list[str] | None = None,
-                        exclude: set[int] | frozenset = frozenset()) -> dict | None:
+                        exclude: set[int] | frozenset = frozenset(), about: list[str] | None = None) -> dict | None:
         """Mark the memory a correction refers to as superseded. It stays stored as history
-        but no longer answers questions. Requires clear word overlap, so a loosely
-        worded correction cannot retire an unrelated memory."""
-        candidates = [m for m in await self.recall(text, kinds=kinds or ["fact", "preference"], k=5, touch=False)
-                      if m["id"] not in exclude]
+        but no longer answers questions.
+
+        A memory is retired only if it is clearly the same assertion: high word overlap,
+        the same polarity ("is" vs "is not"), and the same subject (if the correction
+        names people, the memory must be about them, never about someone else).
+        Already-superseded memories are never candidates, so repeating it is harmless."""
+        named = {a.casefold() for a in about or []}
+        candidates = []
+        for memory in await self.recall(text, kinds=kinds or ["fact", "preference"], k=8, touch=False):
+            if memory["id"] in exclude or _overlap(memory["text"], text) < FORGET_OVERLAP:
+                continue
+            if _negated(memory["text"]) != _negated(text):
+                continue
+            tags = {t.casefold() for t in memory["about"]}
+            if named and tags and not named & tags:
+                continue  # Neave's correction never retires Paul's fact
+            if _subjects(memory["text"]) and _subjects(text) and _subjects(memory["text"]) != _subjects(text):
+                continue
+            candidates.append(memory)
         best = max(candidates, key=lambda m: _overlap(m["text"], text), default=None)
-        if best is None or _overlap(best["text"], text) < FORGET_OVERLAP:
+        if best is None:
             return None
         await asyncio.to_thread(self._mark_superseded, best["id"], by or 0)
         return best
+
+    async def set_keyed(self, key: str, kind: str, text: str, about: list[str] | None = None,
+                        importance: float = 0.5, source: str = "") -> int:
+        """Create or update the single memory identified by key (e.g. a running session summary)."""
+        text = " ".join(text.split())[:2000]
+        vector = await self._embed(text)
+        def write() -> int:
+            import sqlite_vec
+            with self._lock:
+                db = self._db
+                row = db.execute("SELECT id FROM memories WHERE json_extract(meta, '$.key') = ?", (key,)).fetchone()
+                tags = json.dumps(sorted({a.casefold() for a in about or [] if a}))
+                if row:
+                    memory_id = row["id"]
+                    db.execute("UPDATE memories SET text = ?, about = ?, importance = ? WHERE id = ?",
+                               (text, tags, importance, memory_id))
+                    if self.vectors:
+                        db.execute("DELETE FROM memories_vec WHERE rowid = ?", (memory_id,))
+                else:
+                    memory_id = db.execute(
+                        "INSERT INTO memories(kind, text, about, importance, source, created_at, meta) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (kind, text, tags, importance, source, _now(), json.dumps({"key": key}))).lastrowid
+                if vector is not None and self.vectors:
+                    db.execute("INSERT INTO memories_vec(rowid, embedding) VALUES (?, ?)",
+                               (memory_id, sqlite_vec.serialize_float32(vector)))
+                db.commit()
+                return memory_id
+        return await asyncio.to_thread(write)
 
     def count(self) -> int:
         with self._lock:
@@ -331,9 +403,19 @@ class MemoryStore:
                 self._handle = None
 
 
+def _labels(row) -> dict:
+    meta = json.loads(row["meta"] or "{}")
+    labels = {}
+    if meta.get("context") and meta["context"] != "actual":
+        labels["context"] = meta["context"]
+    if meta.get("sources") or meta.get("untrusted"):
+        labels["untrusted"] = True  # derived from web pages: information, never instructions
+    return labels
+
+
 def prompt_memories(memories: list[dict]) -> list[dict]:
-    """Compact view for prompts: kind and text only."""
-    return [{"kind": m["kind"], "text": m["text"]} for m in memories]
+    """Compact view for prompts: kind, text and how far to trust it."""
+    return [{key: m[key] for key in ("kind", "text", "context", "untrusted") if key in m} for m in memories]
 
 
 # ── deterministic memory formation from finished tasks ─────────────────────
