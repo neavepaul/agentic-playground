@@ -772,8 +772,7 @@ footer span {
 .persona-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .persona-name { font-size: 18px; color: #24352d; }
 .persona-mood { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #edf1eb; color: #4a5e44; text-transform: capitalize; }
-.persona-mood.pleased { background: #e3f0dc; color: #3e6b3a; }
-.persona-mood.curious { background: #efe6f5; color: #6a4a86; }
+.persona-mood.cheerful { background: #e3f0dc; color: #3e6b3a; }
 .persona-mood.concerned { background: #f6ead9; color: #8a5a1f; }
 .persona-mood.determined { background: #e2ebf3; color: #35587a; }
 .persona-mood.tired { background: #eceae6; color: #6e6a62; }
@@ -819,7 +818,3 @@ footer span {
 .memory-kind.preference { color: #8a5a1f; }
 .memory-kind.episode { color: #6e4a7a; }
 .memory-tags { display: block; margin-top: 3px; font-size: 10px; color: #84937b; }
-
-/* Who is talking to Kip */
-.chat-speaker { display: flex; align-items: center; gap: 8px; margin: 2px 0 6px; font-size: 11px; color: #6c7d64; }
-.chat-speaker select { font: inherit; font-size: 12px; padding: 3px 6px; border: 1px solid #d4ddcd; border-radius: 6px; background: #fff; color: #24352d; }

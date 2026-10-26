@@ -308,7 +308,7 @@ class ChatSession:
                 # Only the offered goal runs, whatever the model wrote this turn, and only
                 # with the effects that were offered.
                 self._start_or_queue(offer.goal, user_turn["id"], Grant(
-                    effects=sorted(offer.effects) if offer.effects else Grant().effects,
+                    effects=sorted(offer.effects) if offer.effects is not None else Grant().effects,
                     source="offer", authorized_text=offer.goal))
                 return
             if answer == "no":
@@ -321,7 +321,8 @@ class ChatSession:
                 # Ambiguous: keep the offer open and ask, rather than guess.
                 offer.status = "deferred"
                 self.offer_log.append(offer.public())
-                self.offer = Offer(goal=offer.goal, reply_turn_id=offer.reply_turn_id, generation=self.generation)
+                self.offer = Offer(goal=offer.goal, reply_turn_id=offer.reply_turn_id, generation=self.generation,
+                                   effects=offer.effects)
                 self._add_turn("kip", f"Just to be sure: would you like me to {_lower_first(offer.goal)}?",
                                source="clarification")
                 return

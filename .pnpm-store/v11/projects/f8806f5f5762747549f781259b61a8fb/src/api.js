@@ -4,7 +4,16 @@ export async function api(path, body) {
     headers: { 'Content-Type': 'application/json' },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  const data = await response.json();
-  if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Please enter a valid household goal.');
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    throw new Error(response.ok
+      ? 'The server response could not be read. Please try again.'
+      : `The server had a problem (HTTP ${response.status}). Please try again.`);
+  }
+  if (!response.ok) throw new Error(typeof data?.detail === 'string'
+    ? data.detail
+    : 'Please check what you entered and try again.');
   return data;
 }

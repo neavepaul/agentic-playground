@@ -5,7 +5,7 @@ import { connectEvents } from './websocket.js';
 import { addEvent, clearFeed, getTask, setAgent, setConnection, setMemoryOpen, setTask, setWorld, showError } from './ui.js';
 import { renderBeliefs } from './beliefs.js';
 import { renderPersona } from './persona.js';
-import { handleChatEvent, initChat, isChatEvent, reloadChat, resetChat, setSpeakers } from './chat.js';
+import { handleChatEvent, initChat } from './chat.js';
 import { initMemories, loadMemories } from './memories.js';
 
 let scene;
@@ -56,33 +56,18 @@ for (const name of Object.keys(tabs)) {
   });
 }
 
-let firstSnapshot = true;
 function snapshot(data, events) {
   sequence = data.sequence;
   scene?.update(data.world, true);
   setWorld(data.world);
-  setSpeakers(data.world.people);
   setTask(data.task);
-  if (events) {
-    clearFeed();
-    // Chat is rebuilt from /api/chat (complete, ordered); replayed chat events are skipped.
-    events.forEach(e => isChatEvent(e) || addEvent(e));
-  }
-  if (!firstSnapshot) {
-    // Reconnected: recover anything missed while away.
-    reloadChat();
-    if (activeTab === 'persona') fetchAndRenderPersona();
-    else document.getElementById('tab-persona').classList.add('has-update');
-    if (activeTab === 'beliefs') fetchAndRenderBeliefs();
-    else document.getElementById('tab-beliefs').classList.add('has-update');
-  }
-  firstSnapshot = false;
+  if (events) { clearFeed(); events.forEach(e => handleChatEvent(e) || addEvent(e)); }
 }
 connectEvents({ snapshot, connection: setConnection, error: showError, event(event) {
   if (event.sequence <= sequence) return;
   sequence = event.sequence;
   const d = event.data;
-  if (event.type === 'world_reset') { clearFeed(); setTask(null); resetChat(); }
+  if (event.type === 'world_reset') { clearFeed(); setTask(null); }
   if (d.world) { scene?.update(d.world, event.type === 'world_reset'); setWorld(d.world); }
   if (d.task) setTask(d.task);
   if (event.type === 'agent_active' || event.type === 'agent_message' || event.type === 'critic_review') setAgent(event.agent);
@@ -118,12 +103,7 @@ document.getElementById('goal-form').addEventListener('submit', async (event) =>
   catch (error) { showError(error.message); setTask(getTask()); }
 });
 document.getElementById('reset').addEventListener('click', async () => {
-  try {
-    snapshot(await api('/world/reset', {}));
-    // The reset's own event may be dropped as already seen (same sequence), so clear here too.
-    clearFeed(); setTask(null); resetChat();
-    showError();
-  }
+  try { snapshot(await api('/world/reset', {})); showError(); }
   catch (error) { showError(error.message); }
 });
 document.getElementById('cancel').addEventListener('click', async () => {

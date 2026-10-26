@@ -195,14 +195,7 @@ export function createScene(container) {
     placePeople();
     placeObjects();
   }
-  let peopleLayoutKey = '';
   function placePeople() {
-    // The layout depends only on who is in which room and (coarsely) the view angle,
-    // so it is recomputed when those change, not on every animation frame.
-    const q = camera.quaternion;
-    const key = JSON.stringify(roomOccupants) + [q.x, q.y, q.z, q.w].map(v => Math.round(v * 40)).join(',');
-    if (key === peopleLayoutKey) return;
-    peopleLayoutKey = key;
     for (const [room, occupants] of Object.entries(roomOccupants)) {
       const positions = occupantPositions(occupants.length, camera, roomDefinitions[room]);
       occupants.forEach(({ kind, id }, index) => {

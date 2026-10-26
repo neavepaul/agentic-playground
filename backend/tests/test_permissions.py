@@ -394,3 +394,78 @@ def test_a_read_only_grant_reports_what_a_physical_plan_would_need():
     assert COMMUNICATION in Grant.read_only("?").uncovered(plan)
     assert not Grant.full("request").uncovered(plan)
     assert set(Grant.full("request").effects) == EVERYTHING
+
+
+@pytest.mark.asyncio
+async def test_clarifying_a_permission_offer_preserves_its_effects(dispatched):
+    model = Model([said("I mean I can look for them."), said("On my way.")])
+    session, manager, _ = session_with(model)
+    session._needs_permission({"goal": "Find the keys", "needs": [NAVIGATION, "physical_observation"]})
+    effects = session.offer.effects
+    session.submit("Huh?")
+    await settle(session, manager)
+    assert session.offer.effects == effects
+    session.submit("Yes")
+    await settle(session, manager)
+    task = manager.tasks[manager.active_id]
+    assert set(task.grant.effects) == effects
+    assert manager.call_tool(task, "pick_up", {"object": "keys"})["refused"]
+    assert not {"pick_up", "talk_to"} & set(dispatched)
+    await finish(session, manager)
+
+
+@pytest.mark.asyncio
+async def test_accepting_an_offer_with_no_effects_does_not_grant_everything(dispatched):
+    from app.chat.consent import Offer
+    session, manager, _ = session_with(Model([said("Understood.")]))
+    session.offer = Offer(goal="Wait here", reply_turn_id="", generation=session.generation,
+                          effects=frozenset())
+    session.submit("Yes")
+    await settle(session, manager)
+    task = next(iter(manager.tasks.values()))
+    assert task.grant.effects == []
+    assert not dispatched
+    await finish(session, manager)
+
+
+def test_task_api_applies_restrictions_from_the_authorizing_goal(dispatched):
+    from fastapi.testclient import TestClient
+    from app.main import create_app
+    from tests.fakes import WaitingLLM
+    app = create_app(client=WaitingLLM(), settings=Settings(world_file=LEGACY_WORLD,
+                                                          idle_reflection_enabled=False))
+    with TestClient(app) as client:
+        response = client.post("/api/tasks", json={"goal": "Find my keys; don't go into the kitchen; don't use Python"})
+        assert response.status_code == 202
+        manager = app.state.manager
+        task = manager.tasks[response.json()["id"]]
+        assert "kitchen" in manager.restrictions.rooms
+        assert manager.restrictions.forbids_tool("run_python")
+        assert manager.call_tool(task, "move_to", {"room": "kitchen"})["refused"]
+        assert manager.tools._engine.get_status()["room"] == "hall"
+        assert "move_to" not in dispatched
+
+
+@pytest.mark.asyncio
+async def test_model_written_goals_do_not_change_standing_restrictions():
+    session, manager, _ = session_with(Model())
+    manager.start("Don't use Python", Grant.full("request", "Find my keys"))
+    assert not manager.restrictions
+    await finish(session, manager)
+
+
+@pytest.mark.asyncio
+async def test_batch_rechecks_restrictions_when_each_worker_starts(dispatched):
+    session, manager, _ = session_with(Model())
+    task = manager.start("Look something up", Grant.read_only("What is it?"))
+    # This runs when the batch yields, before its workers have dispatched anything.
+    asyncio.get_running_loop().call_soon(manager.restrictions.update, "Don't use Python")
+    results = await manager.call_capability_batch(task, [
+        {"tool": "web_search", "arguments": {"query": "test"}},
+        {"tool": "run_python", "arguments": {"code": "6 * 7"}},
+    ])
+    assert [result["success"] for result in results] == [True, False]
+    assert results[1]["refused"]
+    assert dispatched.count("web_search") == 1 and "run_python" not in dispatched
+    assert task.tool_count == len(dispatched)
+    await finish(session, manager)

@@ -98,6 +98,12 @@ class TaskManager:
         text is the person's own words and authorizes every kind of action."""
         if self.active_id:
             raise TaskBusy("One task is already running. Cancel it or wait for completion.")
+        if grant is None:
+            # API goals are the person's own words. Internal/model-written goals carry
+            # an explicit grant and must never change the household's restrictions.
+            rooms = {key: room.get("name", key)
+                     for key, room in self.tools._engine.snapshot().get("rooms", {}).items()}
+            self.restrictions.update(goal, rooms)
         context = TaskContext(goal=goal, search_stale_after=self.settings.search_stale_after,
                               grant=grant or Grant.full("api", goal))
         self._sync_permissions(context)
@@ -280,6 +286,11 @@ class TaskManager:
         # Public reads and restricted Python can run independently. Physical
         # mutations and final answers are excluded by the batch schema.
         async def execute(tool, arguments):
+            # Restrictions may change after preflight but before this worker runs.
+            refused = self._refused(context, tool, arguments)
+            if refused:
+                context.tool_count -= 1  # release the slot reserved for this unexecuted call
+                return refused
             result = await self.capabilities.execute(tool, arguments, context)
             self._record_capability(context, tool, arguments, result)
             return result
