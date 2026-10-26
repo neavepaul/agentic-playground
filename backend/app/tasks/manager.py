@@ -127,12 +127,8 @@ class TaskManager:
         report = context.metrics.model_dump()
         _log.info("task_metrics task=%s status=%s %s", context.id, status,
                   " ".join(f"{key}={value}" for key, value in report.items() if value not in ("", 0, 0.0)))
+        # The persona appraises the outcome from this event; it adds no stock reaction line.
         self.bus.emit(f"task_{status}", task=context.public(), summary=summary, metrics=report)
-        # The persona has already appraised the outcome above; voice its reaction
-        # without replacing the factual task summary.
-        reaction = self.persona.reaction(status) if self.persona else None
-        if reaction:
-            self.bus.emit("agent_message", self.persona.name, task_id=context.id, summary=reaction)
 
     async def cancel(self, task_id: str) -> TaskContext:
         context = self.tasks[task_id]

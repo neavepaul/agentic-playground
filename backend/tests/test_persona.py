@@ -11,7 +11,7 @@ from app.memory.store import PersistentMemory
 from app.mind.agent import AgentMind, _INTENTION_GENERATOR
 from app.persona import Persona
 from app.persona.engine import FOLLOWUP_DELAY, VIEW_LIMIT
-from app.persona.profile import BASELINE, DRIFT_LIMIT
+from app.persona.profile import BASELINE, DRIFT
 from app.tasks.manager import TaskManager
 from app.world.engine import WorldEngine
 from app.world.tools import WorldTools
@@ -32,7 +32,7 @@ def event(kind, **data):
     return {"type": kind, "data": data}
 
 
-def given(person="neave", thing="charger"):
+def given(person="neave", thing="medicine"):
     return event("object_given", arguments={"object": thing, "person": person})
 
 
@@ -43,7 +43,7 @@ def test_delivery_builds_a_relationship_lifts_mood_and_plans_a_check_in():
     persona.observe(given())
     bond = persona.state.relationships["neave"]
     assert bond.times_helped == 1 and bond.warmth > 0.5 and bond.familiarity > 0
-    assert bond.moments == ["brought them the charger"]
+    assert bond.moments == ["brought them the medicine"]
     assert persona.state.mood.valence > before
     assert persona.state.episodes[0].summary == "Met neave for the first time."
     assert persona.due_followups() == []
@@ -54,22 +54,23 @@ def test_delivery_builds_a_relationship_lifts_mood_and_plans_a_check_in():
     assert persona.due_followups() == []
 
 
-def test_failures_make_it_cautious_and_concerned_but_traits_stay_bounded():
+def test_failures_make_it_cautious_and_methodical_but_traits_stay_bounded():
     persona = Persona(now=Clock())
     for _ in range(200):
         persona.observe(event("task_failed", task={"goal": "Find the keys"}))
-    assert persona.mood_label() in {"concerned", "tired"}
-    assert persona.trait("caution") == pytest.approx(BASELINE["caution"] + DRIFT_LIMIT)
+    assert persona.mood_label() in {"determined", "concerned", "tired"}
+    assert persona.trait("caution") == pytest.approx(BASELINE["caution"] + DRIFT["caution"])
+    assert persona.trait("honesty") == BASELINE["honesty"]
     assert persona.state.episodes[-1].summary == "Could not finish: Find the keys"
-    assert len(persona.state.episodes) == 10
-    assert persona.reaction("failed")
+    assert len(persona.state.episodes) == 12
+    assert not hasattr(persona, "reaction")  # no stock reaction lines
 
 
 def test_tool_failure_dips_are_capped_per_task():
     persona = Persona(now=Clock())
     for _ in range(50):
         persona.observe(event("tool_failed", task_id="t1", tool="look", error="x"))
-    assert persona.state.mood.valence == pytest.approx(0.2 - 5 * 0.03)
+    assert persona.state.mood.valence == pytest.approx(0.2 - 5 * 0.02)
 
 
 def test_mood_decays_on_the_simulated_clock_and_survives_clock_resets():
@@ -82,7 +83,8 @@ def test_mood_decays_on_the_simulated_clock_and_survives_clock_resets():
     assert persona.state.mood.valence == pytest.approx(low)
     clock.seconds += 4 * 1800
     persona.due_followups()
-    assert low < persona.state.mood.valence < 0.1
+    # Drifts back toward its resting point (0.1) rather than staying where the failure left it.
+    assert abs(persona.state.mood.valence - 0.1) < abs(low - 0.1) / 10
 
 
 def test_state_persists_and_old_memory_files_still_load(tmp_path):
@@ -161,8 +163,9 @@ async def test_persona_voices_speech_keeps_dictated_text_and_stays_out_of_planni
         if "action" in schema.get("properties", {}):  # Coordinator decisions
             assert "persona" not in json.loads(sent[1]["content"])
     assert "neave" in persona.state.relationships
-    assert any(m["agent"] == "Kip" for m in messages)
-    assert task.summary != persona.reaction("completed")
+    # The outcome is appraised, but no canned reaction line is broadcast after it.
+    assert not any(m["agent"] == "Kip" for m in messages)
+    assert persona.state.skills["passing on messages"].successes == 1
 
 
 @pytest.mark.asyncio
@@ -201,8 +204,8 @@ async def test_idle_mind_uses_persona_for_initiative_and_memory_formation():
     settings = Settings(idle_reflection_interval=0.001)
     mgr = TaskManager(Model(), WorldTools(engine, bus), bus, settings, persona=persona)
     mind = AgentMind(Model(), mgr, engine, bus, settings, persona=persona)
-    bus.emit("object_given", "explorer", arguments={"object": "charger", "person": "neave"},
-             summary="Gave the charger to neave.")
+    bus.emit("object_given", "explorer", arguments={"object": "medicine", "person": "neave"},
+             summary="Gave the medicine to neave.")
     clock.seconds += FOLLOWUP_DELAY
     await mind._tick()
     titles = {title: messages for title, messages in seen}

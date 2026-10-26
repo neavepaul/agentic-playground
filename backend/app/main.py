@@ -83,6 +83,12 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
         await chat.close()
         await mind.close()
         await manager.close()
+        if persona and persona.dirty:
+            # Who Kip is must survive a restart, including what changed since the last save.
+            try:
+                persistent.save(config.memory_file)
+            except Exception:
+                logging.getLogger("agentic_friend").exception("Could not save persona state at shutdown")
         if client is None:
             await llm.close()
             if chat_llm is not llm:

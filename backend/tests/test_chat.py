@@ -160,11 +160,12 @@ async def test_model_errors_become_a_friendly_reply():
 def test_chat_prompt_stays_small():
     memories = [{"kind": "fact", "text": "x" * 1000}] * 6
     turns = [{"role": "user" if i % 2 else "kip", "text": "y" * 1000} for i in range(30)]
-    messages = build_messages("Kip", Persona().voice_view(), memories, {"room": "hall", "inventory": []},
-                              turns, "z" * 2000)
+    # Includes Kip's identity and the per-reply stance line (the character's whole runtime cost).
+    voice = Persona().voice_view(speaker=None, message="z" * 2000)
+    messages = build_messages("Kip", voice, memories, {"room": "hall", "inventory": []}, turns, "z" * 2000)
     assert len(messages[0]["content"]) < 3500
     assert len(messages) == 1 + 8 + 1
-    assert sum(len(m["content"]) for m in messages) < 9000
+    assert sum(len(m["content"]) for m in messages) < 9500
     assert spoken(messages[-1]["content"]) == "z" * 2000
 
 

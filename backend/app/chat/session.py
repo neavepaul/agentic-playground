@@ -179,7 +179,8 @@ class ChatSession:
                 recall_started = time.monotonic()
                 memories = await self._recall(user_turn["text"])
                 recall_seconds = time.monotonic() - recall_started
-                voice = self.persona.voice_view() if self.persona else None
+                voice = (self.persona.voice_view(speaker=user_turn.get("speaker"), message=user_turn["text"])
+                         if self.persona else None)
                 # Include replies to preceding messages that finished while this one
                 # waited, without leaking later user messages into its context.
                 known = {t["id"] for t in earlier}
@@ -252,6 +253,7 @@ class ChatSession:
 
     def _finish_turn(self, user_turn, reply_id, text, action, metrics, **extra) -> dict:
         return self._add_turn("kip", text, reply_id=reply_id, in_reply_to=user_turn["id"],
+                              to=user_turn.get("speaker"),
                               action=action.model_dump() if action else None, metrics=metrics,
                               **{k: v for k, v in extra.items() if v})
 
@@ -464,13 +466,13 @@ class ChatSession:
                 # The answer is already written in Kip's voice; no stock opener.
                 text = answer["answer"]
             else:
+                # Plain facts, no stock reaction: character belongs in replies, not templates.
                 found = describe_findings(task)
-                reaction = self.persona.reaction(outcome) if self.persona else None
-                if outcome == "completed" and found:
-                    text = found
+                if outcome == "completed":
+                    text = found or data.get("summary", "") or "Done."
                 else:
-                    detail = found or data.get("summary", "")
-                    text = " ".join(part for part in (reaction, detail) if part)
+                    text = " ".join(part for part in ("I couldn't finish that.", found, data.get("summary", ""))
+                                    if part)
             self._add_turn("kip", text, source="narration", sources=answer.get("sources", []), outcome=outcome)
             if self.pending_goals:
                 self._spawn(self._start_next_when_free(self.generation))

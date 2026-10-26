@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import time
 
 from app.config import Settings
@@ -113,12 +114,14 @@ Rules:
 
 _PERSONA_INTENTION = """
 persona: your character and its relationships (traits 0-1, mood, closest people,
-due_followups, recent_moments). Traits shape WHAT you choose; facts still come from memory:
-- empathy: someone you recently helped may need a check-in; a due followup is real grounding.
+due_followups, noticed, recent_moments). Traits shape WHAT you choose; facts still come from memory:
+- empathy: a due followup is real grounding for a short check-in.
 - loyalty: when options are otherwise equal, favour people you know well.
-- curiosity: verifying a stale or uncertain belief is a worthwhile low-cost goal.
-- caution: after recent failures (concerned mood), prefer small, safe checks.
-- enthusiasm: a cheerful mood makes a modest, well-grounded idea worth doing.
+- curiosity: checking something in noticed, or a stale belief, is a worthwhile low-cost goal.
+  noticed items are your own unconfirmed suspicions, never facts.
+- caution: after recent failures (determined or concerned mood), prefer small, safe checks.
+- initiative: how readily a modest, well-grounded idea is worth doing. Downtime is normal.
+Never pursue anything involving a person marked do_not_disturb: they asked for space.
 For a followup, phrase the goal as asking that person how they are doing.
 """
 
@@ -179,6 +182,8 @@ class AgentMind:
                 if now - self._last_world_push >= 10.0:
                     self._bus.emit("world_tick", world=self._engine.snapshot(), skip_history=True)
                     self._last_world_push = now
+                # Conversations change Kip too: save that even while nobody lets him idle.
+                self._save_persona()
                 if (self._settings.idle_reflection_enabled and not self._manager.active_id
                         and not self._in_conversation()):
                     await self._tick()
@@ -204,7 +209,7 @@ class AgentMind:
             except Exception:
                 _log.exception("Failed to save persona state")
 
-    def _still_appropriate(self, generation: int) -> str:
+    def _still_appropriate(self, generation: int, goal: str = "") -> str:
         """Re-check, right before acting, everything a minutes-long model call may have
         made stale. Returns the reason to stand down, or "" when it is fine to act."""
         if not self._settings.autonomous_errands:
@@ -215,10 +220,21 @@ class AgentMind:
             return "someone is talking with me"
         if getattr(self._engine, "generation", 0) != generation:
             return "the world was reset while I was thinking"
+        return self._crosses_a_boundary(goal)
+
+    def _crosses_a_boundary(self, goal: str) -> str:
+        """Enforced in code, not left to the model: nothing unasked toward someone who asked for space."""
+        if not self._persona or not goal:
+            return ""
+        lowered = goal.casefold()
+        for key, person in self._engine.snapshot().get("people", {}).items():
+            names = {key.casefold(), str(person.get("name", key)).casefold()}
+            if self._persona.wants_space(key) and any(re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", lowered)
+                                                      for name in names):
+                return f"{person.get('name', key)} asked for some space"
         return ""
 
     async def _tick(self) -> None:
-        self._save_persona()
         generation = getattr(self._engine, "generation", 0)
         now = time.monotonic()
         history = list(self._bus.history)
@@ -284,7 +300,7 @@ class AgentMind:
                        intention.priority, threshold)
             return
 
-        stand_down = self._still_appropriate(generation)
+        stand_down = self._still_appropriate(generation, intention.goal)
         if stand_down:
             _log.info("AgentMind: discarding intention %r because %s", intention.goal, stand_down)
             return
