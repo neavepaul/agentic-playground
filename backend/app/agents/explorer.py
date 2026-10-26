@@ -228,7 +228,8 @@ class Explorer:
             return await self._decide_capability(context, task)
         commands, view = observable_commands(context)
         commands = {id: command for id, command in commands.items()
-                    if id == "report" or command["tool"] in self.tool_names}
+                    if id == "report" or (command["tool"] in self.tool_names
+                                          and context.permits(command["tool"], command["arguments"]))}
         _log.info(
             "Explorer context: task=%s room=%s inventory=%s commands=%s delivery=%s",
             context.id, context.robot_status.get("room"), context.robot_status.get("inventory", []),
@@ -323,7 +324,8 @@ class Explorer:
         mixed = any(c.kind != "answer" for c in context.conditions)
         commands, view = observable_commands(context) if mixed else ({}, None)
         commands = {key: value for key, value in commands.items()
-                    if key != "report" and value["tool"] in self.tool_names}
+                    if key != "report" and value["tool"] in self.tool_names
+                    and context.permits(value["tool"], value["arguments"])}
         if mixed:
             reflex = reflex_action(context, commands, view)
             if reflex:
@@ -331,7 +333,12 @@ class Explorer:
                 setattr(context.metrics, counter, getattr(context.metrics, counter) + 1)
                 return reflex
         progress = required_tool_progress(context)
-        available = SearchAction | ReadAction | PythonAction | BatchAction
+        # Only tools this task may use are offered; dispatch refuses the rest anyway.
+        tools = [action for tool, action in (("web_search", SearchAction), ("read_webpage", ReadAction),
+                                             ("run_python", PythonAction)) if context.permits(tool, {})]
+        available = BatchAction
+        for action in tools:
+            available |= action
         if progress["can_finish"]:
             available |= AnswerAction
         if commands:

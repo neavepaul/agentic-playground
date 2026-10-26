@@ -18,6 +18,8 @@ class WorldObject(ScenarioModel):
     name: str
     location: Location
     portable: bool = True
+    # Handling it has consequences (medicine): only when someone asked for it by name.
+    sensitive: bool = False
 
 
 class Dialogue(ScenarioModel):

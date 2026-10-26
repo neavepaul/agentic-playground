@@ -7,6 +7,7 @@ from app.config import Settings
 from app.events.bus import EventBus
 from app.llm.base import LLMClient, structured
 from app.memory.beliefs import derive_beliefs
+from app.tasks.permissions import Grant
 from app.memory.store import PersistentMemory
 from app.tasks.manager import TaskBusy, TaskManager
 from app.world.engine import WorldEngine
@@ -70,7 +71,7 @@ class AgentMind:
     def __init__(self, client: LLMClient, manager: TaskManager, engine: WorldEngine,
                  bus: EventBus, settings: Settings,
                  persistent: PersistentMemory | None = None, persona=None,
-                 memory_store=None, chat=None) -> None:
+                 memory_store=None, chat=None, clock=time.monotonic) -> None:
         self._client = client
         self._manager = manager
         self._engine = engine
@@ -80,6 +81,7 @@ class AgentMind:
         self._persona = persona
         self._memory_store = memory_store
         self._chat = chat
+        self._clock = clock  # real seconds between reflections; injectable for deterministic tests
         self._task: asyncio.Task | None = None
         # Track by monotonic sequence number — safe when the deque wraps at maxlen.
         self._last_seen_sequence: int = 0
@@ -97,7 +99,7 @@ class AgentMind:
     async def _loop(self) -> None:
         while True:
             try:
-                now = time.monotonic()
+                now = self._clock()
                 if now - self._last_world_push >= 10.0:
                     self._bus.emit("world_tick", world=self._engine.snapshot(), skip_history=True)
                     self._last_world_push = now
@@ -158,7 +160,7 @@ class AgentMind:
 
     async def _tick(self) -> None:
         generation = getattr(self._engine, "generation", 0)
-        now = time.monotonic()
+        now = self._clock()
         history = list(self._bus.history)
         unseen = [e for e in history if e["sequence"] > self._last_seen_sequence]
         if unseen:
@@ -224,6 +226,7 @@ class AgentMind:
         self._bus.emit("agent_intention", summary=intention.goal,
                        reason=intention.reason, priority=intention.priority)
         try:
-            self._manager.start(intention.goal)
+            # Acting unasked: everything ordinary, nothing consequential (no one named it).
+            self._manager.start(intention.goal, Grant.full("autonomy"))
         except TaskBusy:
             _log.warning("AgentMind: manager busy, deferring intention")

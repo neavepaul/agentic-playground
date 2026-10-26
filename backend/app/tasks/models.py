@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, computed_field
 from app.agents.schemas import ConversationMeaning, GoalCondition
 from .goals import check_conditions, contains_phrase, known_recipients, normalize
 from .memory import ReportedNeed, TaskMemory
+from .permissions import Grant, Restrictions
 
 
 class Intention(BaseModel):
@@ -55,6 +56,11 @@ class TaskContext(BaseModel):
     critic_count: int = 0
     current_plan: str = ""
     memory: TaskMemory = Field(default_factory=TaskMemory)
+    # What this task was authorized to do. The manager re-checks it, with the live
+    # restrictions, right before every tool call; this copy lets planning avoid
+    # choices that would only be refused.
+    grant: Grant = Field(default_factory=Grant)
+    restricted: dict = Field(default_factory=dict)  # snapshot: tools, effects, rooms, sensitive objects
     # Audit evidence is task-local and bounded by the execution tool budget.
     # No planner reconstructs current entity state from this transcript.
     action_history: list[dict] = Field(default_factory=list)
@@ -348,22 +354,34 @@ class TaskContext(BaseModel):
             key = "|".join([obs["person"], need.object, need.person])
             self.memory.reported_needs[key] = ReportedNeed(**need.model_dump(), speaker=obs["person"], evidence_id=evidence_id)
 
+    def restrictions(self) -> Restrictions:
+        snapshot = Restrictions()
+        snapshot.tools = set(self.restricted.get("tools", []))
+        snapshot.effects = set(self.restricted.get("effects", []))
+        snapshot.rooms = set(self.restricted.get("rooms", []))
+        return snapshot
+
+    def permits(self, tool: str, arguments: dict) -> bool:
+        return not self.grant.deny(tool, arguments, self.restrictions(), self.restricted.get("objects", {}))
+
     def _find_path(self, start: str, target: str) -> list[str]:
         """BFS shortest path over the floor_plan graph.
 
         Returns the list of rooms from start (exclusive) to target (inclusive),
         so result[0] is the immediate next hop. Returns [] when start == target
-        or either room is unknown or the target is unreachable.
+        or either room is unknown or the target is unreachable. Rooms Kip was
+        asked not to enter are never on a route.
         """
         rooms = self.floor_plan.get("rooms", {})
-        if not rooms or start == target or start not in rooms or target not in rooms:
+        forbidden = set(self.restricted.get("rooms", []))
+        if not rooms or start == target or start not in rooms or target not in rooms or target in forbidden:
             return []
         queue: deque[list[str]] = deque([[start]])
         seen: set[str] = {start}
         while queue:
             path = queue.popleft()
             for neighbor in rooms.get(path[-1], {}).get("connections", []):
-                if neighbor not in seen:
+                if neighbor not in seen and neighbor not in forbidden:
                     if neighbor == target:
                         return path[1:] + [neighbor]
                     seen.add(neighbor)
@@ -576,7 +594,10 @@ class TaskContext(BaseModel):
                 "self_model": self.self_model,
                 "action_feedback": self.action_feedback[-6:],
                 "required_outcomes": outcomes, "robot_status": self.robot_status,
-                "known_but_unobserved_rooms": sorted(known_rooms - set(self.memory.rooms)),
+                "known_but_unobserved_rooms": sorted(known_rooms - set(self.memory.rooms)
+                                                     - set(self.restricted.get("rooms", []))),
+                "permissions": {"cleared_for": self.grant.effects,
+                                "asked_not_to": self.restrictions().describe()},
                 "recent_actions": [
                     {key: action[key] for key in ("tool", "arguments", "success", "error", "evidence_id")
                      if key in action}

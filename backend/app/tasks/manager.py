@@ -14,6 +14,7 @@ from app.memory.store import PersistentMemory
 from app.world.tools import WorldTools
 from .models import TaskContext
 from .goals import check_conditions, normalize
+from .permissions import DIGITAL_LOOKUP, CALCULATION, Grant, Restrictions, plain
 
 
 class TaskBusy(ValueError):
@@ -88,11 +89,18 @@ class TaskManager:
         self.tasks: dict[str, TaskContext] = {}
         self.active_id: str | None = None
         self.runner: asyncio.Task | None = None
+        # What people asked Kip not to do. Shared and live: it binds every task,
+        # including ones already queued or running, at the moment a tool would run.
+        self.restrictions = Restrictions()
 
-    def start(self, goal: str) -> TaskContext:
+    def start(self, goal: str, grant: Grant | None = None) -> TaskContext:
+        """Start a task. Without a grant it is a direct instruction (API): the goal
+        text is the person's own words and authorizes every kind of action."""
         if self.active_id:
             raise TaskBusy("One task is already running. Cancel it or wait for completion.")
-        context = TaskContext(goal=goal, search_stale_after=self.settings.search_stale_after)
+        context = TaskContext(goal=goal, search_stale_after=self.settings.search_stale_after,
+                              grant=grant or Grant.full("api", goal))
+        self._sync_permissions(context)
         if self.persistent:
             context.long_term_memory = self.persistent.prompt()
             context.self_model = self.persistent.self_model_prompt()
@@ -149,7 +157,59 @@ class TaskManager:
         if self.active_id:
             await self.cancel(self.active_id)
 
+    # ── permission at the point of execution ──────────────────────────────────
+    def _sync_permissions(self, context: TaskContext) -> None:
+        objects = self.tools._engine.snapshot().get("objects", {})
+        context.restricted = {"tools": sorted(self.restrictions.tools), "effects": sorted(self.restrictions.effects),
+                              "rooms": sorted(self.restrictions.rooms),
+                              "objects": {key: {"name": item.get("name", key), "sensitive": True}
+                                          for key, item in objects.items() if item.get("sensitive")}}
+
+    def _refused(self, context: TaskContext, tool: str, arguments: dict) -> dict | None:
+        """Checked immediately before every tool call, against the live restrictions."""
+        self._sync_permissions(context)
+        reason = context.grant.deny(tool, arguments, self.restrictions, context.restricted["objects"])
+        if not reason:
+            return None
+        error = f"Not permitted: {reason}. Choose a permitted action or report the blockage."
+        event = self.bus.emit("tool_refused", "system", task_id=context.id, tool=tool, arguments=arguments,
+                              success=False, error=error, summary=f"Refused {tool}: {reason}.")
+        result = {"success": False, "error": error, "refused": True, "evidence_id": event["id"]}
+        context.record(tool, arguments, result)
+        context.feedback(error)
+        _log.info("Refused %s for task %s: %s", tool, context.id, reason)
+        return result
+
+    def _outside_grant(self, context: TaskContext) -> bool:
+        """After planning, before acting: stop if the plan needs more than was authorized."""
+        for index, condition in enumerate(context.conditions):
+            kept = [tool for tool in condition.required_tools if not self.restrictions.forbids_tool(tool)]
+            if kept != condition.required_tools:
+                # A tool the person ruled out is dropped from the plan rather than run.
+                context.conditions[index] = condition.model_copy(update={"required_tools": kept})
+        uncovered = context.grant.uncovered(context.conditions, self.restrictions)
+        ruled_out = {effect for effect in uncovered if effect in self.restrictions.effects}
+        if any(c.kind == "answer" for c in context.conditions) and not any(
+                context.permits(tool, {}) for tool in ("web_search", "read_webpage", "run_python")):
+            ruled_out.add(DIGITAL_LOOKUP if context.grant.effects and DIGITAL_LOOKUP in context.grant.effects
+                          else CALCULATION)
+            uncovered |= ruled_out
+        if not uncovered:
+            return False
+        if ruled_out:
+            summary = ("Not started: you asked me not to do what this needs: "
+                       + ", ".join(self.restrictions.describe()) + ".")
+        else:
+            summary = f"Needs a go-ahead first: this would mean {plain(uncovered)}."
+        self.bus.emit("task_needs_permission", "system", task_id=context.id, goal=context.goal,
+                      needs=sorted(uncovered), ruled_out=sorted(ruled_out), summary=summary)
+        self.finish(context, "cancelled", summary)
+        return True
+
     def call_tool(self, context: TaskContext, tool: str, arguments: dict) -> dict:
+        refused = self._refused(context, tool, arguments)
+        if refused:
+            return refused
         if context.tool_count >= self.settings.max_tool_calls:
             raise LimitReached("Maximum total tool calls reached.")
         context.tool_count += 1
@@ -173,6 +233,9 @@ class TaskManager:
         return review.approved
 
     async def call_capability(self, context: TaskContext, tool: str, arguments: dict) -> dict:
+        refused = self._refused(context, tool, arguments)
+        if refused:
+            return refused
         if context.tool_count >= self.settings.max_tool_calls:
             raise LimitReached("Maximum total tool calls reached.")
         context.tool_count += 1
@@ -206,7 +269,11 @@ class TaskManager:
                           arguments={"actions": calls}, success=False, error=error)
             self.message(context, "system", "Tool batch rejected; continuing with the error feedback.")
             return []
-        actions = [(action.tool, action.model_dump(exclude={"tool"})) for action in validated.actions]
+        requested = [(action.tool, action.model_dump(exclude={"tool"})) for action in validated.actions]
+        refusals = [self._refused(context, tool, arguments) for tool, arguments in requested]
+        actions = [action for action, refused in zip(requested, refusals) if not refused]
+        if not actions:
+            return refusals
         if context.tool_count + len(actions) > self.settings.max_tool_calls:
             raise LimitReached("Maximum total tool calls reached; batch was not started.")
         context.tool_count += len(actions)
@@ -217,8 +284,9 @@ class TaskManager:
             self._record_capability(context, tool, arguments, result)
             return result
         async with asyncio.TaskGroup() as group:
-            running = [group.create_task(execute(tool, arguments)) for tool, arguments in actions]
-        return [task.result() for task in running]
+            running = iter([group.create_task(execute(tool, arguments)) for tool, arguments in actions])
+        # Results in the order requested, refusals included.
+        return [refused or next(running).result() for refused in refusals]
 
     def _check_model_budget(self, context: TaskContext) -> None:
         if context.metrics.llm_calls >= self.settings.max_task_llm_calls:
@@ -248,6 +316,8 @@ class TaskManager:
         self.bus.emit("agent_active", "coordinator", task_id=context.id)
         goal_plan = await self.coordinator.define_goal(context.goal, context.floor_plan, metrics=context.metrics)
         context.conditions = goal_plan.conditions
+        if self._outside_grant(context):
+            return
         digital_only = all(c.kind == "answer" for c in context.conditions)
         if self.settings.digital_tools_enabled and digital_only:
             # These initial calls are explicitly independent, fully specified

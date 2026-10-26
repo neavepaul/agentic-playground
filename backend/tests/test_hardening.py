@@ -566,19 +566,6 @@ async def test_a_question_never_starts_a_physical_errand_without_consent():
     assert manager.active_id is None and session.pending_offer == "Find the keys"
 
 
-@pytest.mark.parametrize("message, goal, starts", [
-    ("What's 17% of 2,340?", "Calculate 17% of 2340 with Python", True),
-    ("Who won the match last night?", "Search the web for last night's match result", True),
-    ("Don't look it up, but what's the weather like?", "Search the web for today's weather", False),
-    ("What's the weather like?", "Search the web for the weather and tell Neave", False),
-    ("Is the laptop in the office?", "Check the office for the laptop", False),
-    ("I wonder about the AQI.", "Search the web for the AQI", False),
-])
-def test_only_digital_lookups_answer_questions_directly(message, goal, starts):
-    from app.chat.consent import answers_question
-    assert answers_question(message, goal) is starts
-
-
 @pytest.mark.asyncio
 async def test_pretend_and_real_versions_of_a_memory_stay_separate():
     store = MemoryStore(":memory:")

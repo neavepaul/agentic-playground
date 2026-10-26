@@ -246,7 +246,8 @@
         "kind": "room",
         "id": "second_bedroom"
       },
-      "portable": true
+      "portable": true,
+      "sensitive": true
     },
     "laptop": {
       "id": "laptop",

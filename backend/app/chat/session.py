@@ -17,7 +17,8 @@ from uuid import uuid4
 from app.llm.base import ModelError
 from app.memory.recall import prompt_memories
 from app.tasks.manager import TaskBusy
-from .consent import Offer, answers_question, classify_reply, is_request, task_identity
+from app.tasks.permissions import READ_ONLY, Grant, digital_scope, plain
+from .consent import Offer, classify_reply, is_question, is_request, task_identity
 from .prompt import ChatAction, TrailerSplitter, build_messages
 
 _log = logging.getLogger("agentic_friend.chat")
@@ -50,6 +51,8 @@ class ChatSession:
         self._offer_seen: dict[str, str | None] = {}  # user turn id -> offer visible when sent
         self._started_by_turn: set[str] = set()
         self._remembered: list[str] = []
+        self._queued_grants: dict[tuple[str, ...], Grant] = {}
+        self._declined: set[tuple[str, ...]] = set()  # offers refused in this conversation: not offered again
 
     def attach(self) -> None:
         self.bus.add_listener(self._narrate)
@@ -73,6 +76,11 @@ class ChatSession:
         if self._closed:
             raise ValueError("Conversation is shutting down.")
         self.last_activity = time.monotonic()
+        # "Don't use Python", "don't go into the kitchen": binding from this moment on, for
+        # running and queued errands too. Applied before anything else reads this message.
+        rooms = {key: room.get("name", key) for key, room in self.engine.snapshot().get("rooms", {}).items()}
+        if self.manager.restrictions.update(text, rooms):
+            _log.info("Restrictions now: %s", self.manager.restrictions.describe())
         earlier = list(self.turns)
         turn = self._add_turn("user", text, speaker=self._speaker_id(speaker))
         # Consent is judged against the offer the person could actually see when they
@@ -152,6 +160,8 @@ class ChatSession:
         people = known_people(self.manager.persistent)
         if people:
             status["people_i_know"] = people
+        if self.manager.restrictions:
+            status["asked_not_to"] = self.manager.restrictions.describe()
         return status
 
     async def _recall(self, text: str) -> list[dict]:
@@ -274,6 +284,8 @@ class ChatSession:
         if self.offer and self.offer.status == "pending":
             self.offer.status = status
             self.offer_log.append(self.offer.public())
+            if status == "declined":
+                self._declined.add(self.offer.identity)
 
     def _decide_errands(self, action: ChatAction | None, user_turn: dict) -> None:
         if self._closed:
@@ -283,8 +295,8 @@ class ChatSession:
         proposed = " ".join(action.task.split()) if action else ""
         offered = " ".join(action.offer.split()) if action else ""
         seen = self._offer_seen.get(user_turn["id"])
-        # Their own message asks for this: an explicit request, or a question this lookup answers.
-        asks = is_request(said) or answers_question(said, proposed)
+        asks = is_request(said)  # their own words ask for an action
+        question = not asks and is_question(said)
         if self.offer and not self._offer_valid():
             self._expire_offer("expired")
         offer = self.offer if self._offer_valid() else None
@@ -293,8 +305,11 @@ class ChatSession:
             if answer == "yes":
                 offer.status, offer.authorized_by = "consumed", user_turn["id"]
                 self.offer_log.append(offer.public())
-                # Only the offered goal runs, whatever the model wrote this turn.
-                self._start_or_queue(offer.goal, user_turn["id"])
+                # Only the offered goal runs, whatever the model wrote this turn, and only
+                # with the effects that were offered.
+                self._start_or_queue(offer.goal, user_turn["id"], Grant(
+                    effects=sorted(offer.effects) if offer.effects else Grant().effects,
+                    source="offer", authorized_text=offer.goal))
                 return
             if answer == "no":
                 self._expire_offer("declined")
@@ -302,7 +317,7 @@ class ChatSession:
                     return
                 # "No, please find the keys instead": the offer is declined, and the new
                 # explicit request below is still honoured (negated actions never are).
-            elif not asks:
+            elif not (asks or (question and proposed)):
                 # Ambiguous: keep the offer open and ask, rather than guess.
                 offer.status = "deferred"
                 self.offer_log.append(offer.public())
@@ -314,12 +329,29 @@ class ChatSession:
                 self._expire_offer("superseded")  # they asked for something else instead
         # is_request() already rejects negated actions ("Don't deliver…"), so refusal words
         # elsewhere in the sentence ("…dinner is NOT ready", "…instead") don't block a request.
-        if offer and offer.status == "declined" and task_identity(proposed) == offer.identity:
-            proposed = ""  # never start the very errand the person just declined
-        if proposed and (asks or (self.settings.chat_autonomy == "act" and answer != "no")):
-            self._start_or_queue(proposed, user_turn["id"])
+        if task_identity(proposed) in self._declined:
+            proposed = ""  # never start, or offer again, an errand the person declined
+        if proposed and self.manager.restrictions.mentions_only_forbidden_tools(proposed):
+            # Every tool it names was ruled out ("...using Python" after "don't use Python"):
+            # nothing to run; the reply answers within the limits (it is told about them).
+            _log.info("Not starting %r: it relies only on tools the person ruled out", proposed)
             return
+        if proposed and asks:
+            self._start_or_queue(proposed, user_turn["id"], Grant.full("request", said))
+            return
+        if proposed and self.settings.chat_autonomy == "act" and answer != "no":
+            # Opted-in configuration: proposals start at once (restrictions still bind them).
+            self._start_or_queue(proposed, user_turn["id"], Grant.full("request", said))
+            return
+        if proposed and question:
+            if digital_scope(proposed):
+                # A question may start a lookup, but only ever with read-only effects.
+                self._start_or_queue(proposed, user_turn["id"], Grant.read_only(said))
+                return
+            # Anything else a question leads to is a suggestion: never physical without a yes.
         suggestion = offered or proposed
+        if task_identity(suggestion) in self._declined:
+            suggestion = ""
         if suggestion and answer != "no":
             # Kip may suggest; nothing runs until the person says yes to this offer.
             self._expire_offer("superseded")
@@ -418,9 +450,11 @@ class ChatSession:
         identity = task_identity(goal)
         return any(task_identity(other) == identity for other in planned)
 
-    def _start_or_queue(self, goal: str, origin_turn: str | None = None) -> None:
+    def _start_or_queue(self, goal: str, origin_turn: str | None = None, grant: Grant | None = None) -> None:
         if self._closed:
             return
+        # Without a grant this is an explicit request (e.g. queued directly).
+        grant = grant or Grant.full("request", goal)
         if origin_turn is not None:
             if origin_turn in self._started_by_turn:
                 _log.info("One message starts at most one errand; ignoring %s", goal)
@@ -432,18 +466,21 @@ class ChatSession:
         try:
             # Kip's own reply already acknowledged this errand; skip "On it".
             self._announced.add(task_identity(goal))
-            self.manager.start(goal)
+            self.manager.start(goal, grant)
         except TaskBusy:
-            # It will start later, when an "On it" is genuinely news again.
+            # It will start later, when an "On it" is genuinely news again. It keeps the
+            # grant it was given; restrictions are re-checked when its tools run.
             self._announced.discard(task_identity(goal))
             self.pending_goals.append(goal)
+            self._queued_grants[task_identity(goal)] = grant
             self._add_turn("kip", f"I'll do that right after my current errand: {goal}", source="narration")
 
     async def _start_next_when_free(self, generation: int) -> None:
         while self.manager.active_id is not None and not self._closed:
             await asyncio.sleep(0.05)
         if self.pending_goals and not self._closed and generation == self.generation:
-            self._start_or_queue(self.pending_goals.popleft())
+            goal = self.pending_goals.popleft()
+            self._start_or_queue(goal, grant=self._queued_grants.pop(task_identity(goal), None))
 
     def _narrate(self, event: dict) -> None:
         """Speak about errands in Kip's voice using templates, never a model call."""
@@ -478,10 +515,27 @@ class ChatSession:
             self._add_turn("kip", text, source="narration", sources=answer.get("sources", []), outcome=outcome)
             if self.pending_goals:
                 self._spawn(self._start_next_when_free(self.generation))
+        elif kind == "task_needs_permission":
+            self._needs_permission(data)
         elif kind == "agent_intention":
             self._announced.add(task_identity(data.get("summary", "")))
             self._add_turn("kip", f"I'm going to take care of something: {data.get('summary', '')}. "
                                   f"{data.get('reason', '')}".strip(), source="narration")
+
+
+    def _needs_permission(self, data: dict) -> None:
+        """A task stopped before acting because it needed more than it was cleared for."""
+        goal, needs = data.get("goal", ""), set(data.get("needs", []))
+        if data.get("ruled_out"):
+            self._add_turn("kip", f"I've left that alone: it would mean {plain(needs)}, and you asked me not to.",
+                           source="narration")
+            return
+        if task_identity(goal) in self._declined:
+            return  # they already said no to this once; don't ask again
+        self._expire_offer("superseded")
+        self.offer = Offer(goal=goal, reply_turn_id="", generation=self.generation, effects=frozenset(needs) | READ_ONLY)
+        self._add_turn("kip", f"I can't answer that from here: it would mean {plain(needs)}. Want me to?",
+                       source="narration")
 
 
 # ── status and narration helpers (deterministic, no model calls) ───────────────

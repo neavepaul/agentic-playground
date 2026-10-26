@@ -2,9 +2,12 @@
 
 The chat model may *propose* an errand; this module decides whether anything may start.
 An errand starts only when the person's own message asks for it, or when they clearly
-agree to one specific offer Kip made. Refusals and hedges never authorize. A direct
-question authorizes only a digital lookup that answers it (a web search or a calculation):
-it changes nothing in the house. A question never starts a physical errand.
+agree to one specific offer Kip made. Refusals and hedges never authorize.
+
+What a started errand may then *do* is not decided here from the words of a goal: it is a
+Grant (app/tasks/permissions.py) checked against a tool registry right before each tool
+runs. A request grants every kind of action; a direct question grants only read-only
+lookups and calculations, so it can never move, handle things or talk to anyone else.
 """
 import re
 import time
@@ -57,40 +60,31 @@ def classify_reply(text: str) -> Reply:
 def is_request(text: str) -> bool:
     """Does the message itself ask Kip to do something (not just talk about it)?"""
     lowered = " ".join(text.casefold().replace("’", "'").split())
-    if _NEGATED_ACTION.match(lowered) or re.search(r"\b(don'?t|do not|never)\s+(\w+\s+)?(" + _ACTION_VERBS + r")\b",
-                                                    lowered):
-        return False
-    for pattern in (_CLAUSE_START, _POLITE):
-        for match in pattern.finditer(lowered):
-            verb, rest = match.group(1) if pattern is _CLAUSE_START else match.group(2), \
-                match.group(2) if pattern is _CLAUSE_START else match.group(3)
-            if not _NOT_ERRAND.match(f"{verb}{rest}".strip()):
-                return True
+    # Judged clause by clause: "Don't go into the kitchen; find my keys" forbids one thing
+    # and asks for another. A negated clause never counts as asking.
+    for clause in re.split(r"[.;!?]+|,|\bbut\b", lowered):
+        clause = clause.strip()
+        if not clause or _NEGATED_ACTION.match(clause) or re.search(
+                r"\b(don'?t|do not|never)\s+(\w+\s+)?(" + _ACTION_VERBS + r")\b", clause):
+            continue
+        for pattern in (_CLAUSE_START, _POLITE):
+            for match in pattern.finditer(clause):
+                verb, rest = match.group(1) if pattern is _CLAUSE_START else match.group(2), \
+                    match.group(2) if pattern is _CLAUSE_START else match.group(3)
+                if not _NOT_ERRAND.match(f"{verb}{rest}".strip()):
+                    return True
     return False
 
 
 _QUESTION_START = re.compile(r"^(?:(?:so|ok|okay|hey|kip|and|but)[, ]+)*(what|what's|whats|who|who's|whose|when|"
                              r"where|which|why|how|how's|is|are|was|were|does|do|did|can|could|will|would|"
                              r"should|any idea|tell me|do you know)\b")
-# Lookups that only read the web or run a calculation.
-_LOOKUP_GOAL = re.compile(r"\b(search|look up|look online|online|web|internet|website|webpage|google|"
-                          r"calculate|compute|convert|work out|python|program)\b")
-# Anything that moves, fetches, or speaks to someone is physical, even inside a lookup.
-_PHYSICAL_GOAL = re.compile(r"\b(bring|fetch|grab|take|give|deliver|carry|put|place|move|go to|go and|visit|"
-                            r"check the|check on|pick up|drop|tell|ask|notify|inform|remind|room|kitchen|"
-                            r"bedroom|office|hall)\b")
-_NO_LOOKUP = re.compile(r"\b(don'?t|do not|never|no need to|without)\s+(\w+\s+)?(look|search|google|check|calculate)")
 
 
-def answers_question(text: str, goal: str) -> bool:
-    """Is this message a direct question, and the goal only the digital lookup that answers it?"""
+def is_question(text: str) -> bool:
+    """A direct question, by its form: it asks for information, not for an action."""
     lowered = " ".join(text.casefold().replace("’", "'").split())
-    if not goal or _NO_LOOKUP.search(lowered):
-        return False
-    if not (lowered.rstrip().endswith("?") or _QUESTION_START.match(lowered)):
-        return False
-    planned = goal.casefold().replace("’", "'")
-    return bool(_LOOKUP_GOAL.search(planned)) and not _PHYSICAL_GOAL.search(planned)
+    return lowered.rstrip().endswith("?") or bool(_QUESTION_START.match(lowered))
 
 
 # ── task identity ──────────────────────────────────────────────────────────────
@@ -125,6 +119,7 @@ class Offer:
     status: str = "pending"  # pending | consumed | declined | expired | superseded | deferred
     created_at: float = field(default_factory=time.monotonic)
     authorized_by: str | None = None  # the user turn that agreed
+    effects: frozenset[str] | None = None  # what a yes authorizes; None: whatever the offered goal needs
 
     @property
     def identity(self) -> tuple[str, ...]:

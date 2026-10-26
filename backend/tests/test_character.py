@@ -331,14 +331,18 @@ async def test_idle_initiative_never_targets_someone_who_asked_for_space():
     persona = Persona(now=clock)
     engine, bus = WorldEngine(LEGACY_WORLD), EventBus()
     persona.attach(bus)
-    settings = Settings(idle_reflection_interval=0.001)
+    settings = Settings(idle_reflection_interval=120.0)
     manager = TaskManager(WaitingLLM(), WorldTools(engine, bus), bus, settings, persona=persona)
-    mind = AgentMind(Model(), manager, engine, bus, settings, persona=persona)
+    # Both clocks are fakes: the persona's simulated one (the boundary) and the mind's real
+    # one (reflection interval). Nothing depends on how fast the test machine is.
+    wall = Clock()
+    mind = AgentMind(Model(), manager, engine, bus, settings, persona=persona, clock=wall)
     said(persona, "I'm busy, leave me alone.")
     bus.emit("object_given", "explorer", arguments={"object": "medicine", "person": "neave"}, summary="Gave.")
     await mind._tick()
     assert manager.active_id is None
     clock.seconds += QUIET_SECONDS + 1
+    wall.seconds += settings.idle_reflection_interval  # the next reflection is due, with no new events
     await mind._tick()
     assert manager.active_id is not None  # once the boundary lapses, ordinary rules apply again
     await manager.close()
