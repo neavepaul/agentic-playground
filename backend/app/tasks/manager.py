@@ -265,7 +265,9 @@ class TaskManager:
         """A request to *run* Python, answered by the run itself: once the program has run,
         its code and output are the answer. No model call is needed to restate them."""
         wanted = {t for c in context.conditions if c.kind == "answer" for t in c.required_tools}
-        if wanted != {"run_python"} or len(context.conditions) != 1 or "run_python" not in context.requested_tools:
+        # Asked for by the person, or chosen by Kip himself ("Use Python to ..." as his own goal).
+        chosen = "run_python" in context.requested_tools or "python" in context.goal.casefold()
+        if wanted != {"run_python"} or len(context.conditions) != 1 or not chosen:
             return False
         runs = [e for e in context.action_history if e["tool"] == "run_python" and e["success"]]
         if not runs:

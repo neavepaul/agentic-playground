@@ -330,36 +330,38 @@ async def test_a_queued_errand_is_revalidated_when_it_runs(dispatched):
 
 
 @pytest.mark.asyncio
-async def test_a_prohibition_said_while_an_offer_is_pending_declines_it(dispatched):
-    model = Model([said("I could look that up.", offer="Search the web for the AQI"), said("Understood."),
-                   said("Mm.")])
+async def test_a_lookup_kip_starts_on_his_own_is_read_only_and_obeys_a_later_prohibition(dispatched):
+    model = Model([said("Let me look.", offer="Search the web for the AQI"), said("Understood.")],
+                  conditions=[{"kind": "answer", "required_tools": ["web_search"]}])
     session, manager, _ = session_with(model)
-    session.submit("I wonder what the air is like today.")
+    session.submit("I wonder what the air is like today.")  # not a request, not a question
     await settle(session, manager)
-    assert session.pending_offer == "Search the web for the AQI"
+    task = manager.tasks[manager.active_id]
+    assert task.goal == "Search the web for the AQI" and task.grant.source == "question"  # no yes needed
+    assert session.pending_offer is None
+    assert manager.call_tool(task, "move_to", {"room": "kitchen"})["refused"]  # read-only, whatever happens
     session.submit("Don't use the internet.")
     await settle(session, manager)
-    session.submit("yes")
-    await settle(session, manager)
-    assert not manager.tasks and not dispatched
+    for name, arguments in (("web_search", {"query": "AQI"}), ("read_webpage", {"url": "https://example.com"})):
+        assert (await manager.call_capability(task, name, arguments))["refused"]
+    assert not {"web_search", "read_webpage", "move_to"} & set(dispatched)
+    await finish(session, manager)
 
 
 @pytest.mark.asyncio
-async def test_an_accepted_offer_still_obeys_a_prohibition_made_after_it(dispatched):
-    model = Model([said("I could look that up.", offer="Search the web for the AQI"), said("Starting.")],
-                  conditions=[{"kind": "answer", "required_tools": ["web_search"]}])
+async def test_an_accepted_house_offer_still_obeys_a_prohibition_made_after_it(dispatched):
+    model = Model([said("I could check the kitchen.", offer="Check the kitchen"), said("Starting.")])
     session, manager, _ = session_with(model)
-    session.submit("I wonder what the air is like today.")
+    session.submit("It smells odd in here.")
     await settle(session, manager)
-    manager.restrictions.update("Don't use the internet.")  # e.g. said by someone else, elsewhere
+    assert session.pending_offer == "Check the kitchen" and not manager.tasks  # physical: needs a yes
+    manager.restrictions.update("Don't go into the kitchen.", {"kitchen": "Kitchen"})  # said elsewhere
     session.submit("yes")
     await settle(session, manager)
     task = manager.tasks[manager.active_id]
-    assert task.grant.source == "offer" and task.goal == "Search the web for the AQI"
-    assert task.conditions[0].required_tools == []
-    for name, arguments in (("web_search", {"query": "AQI"}), ("read_webpage", {"url": "https://example.com"})):
-        assert (await manager.call_capability(task, name, arguments))["refused"]
-    assert not {"web_search", "read_webpage"} & set(dispatched)
+    assert task.grant.source == "offer" and task.goal == "Check the kitchen"
+    assert manager.call_tool(task, "move_to", {"room": "kitchen"})["refused"]
+    assert "move_to" not in dispatched
     await finish(session, manager)
 
 

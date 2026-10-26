@@ -216,7 +216,7 @@ class ChatSession:
             parts.append("They ask what you did: use only status.recent_errands and status.last_seen. Say what was "
                          "done, tried, refused or not done, and how old each sighting is.")
         if intent.small_talk:
-            parts.append("Small talk: no errand suggestions.")
+            parts.append("Small talk: no suggestions to do things around the house.")
         return " ".join(parts)
 
     async def _recall(self, text: str) -> list[dict]:
@@ -430,9 +430,17 @@ class ChatSession:
             # A question may start a lookup, but only ever with read-only effects.
             self._start_or_queue(proposed, user_turn["id"], Grant.read_only(said))
             return
+        refusing = answer == "no" if replying else intent.declines
+        suggestion = offered or proposed
+        if suggestion and not refusing and digital_scope(suggestion) and task_identity(suggestion) not in self._declined:
+            # A lookup or a calculation changes nothing in the house: Kip may simply do it,
+            # unasked. The read-only grant guarantees it, and a plan that turns out to need
+            # more stops before acting and becomes an offer.
+            self._start_or_queue(suggestion, user_turn["id"], Grant.read_only(said))
+            return
         # Anything else is a suggestion: never physical without a yes.
-        if not (answer == "no" if replying else intent.declines):
-            self._make_offer(offered or proposed, user_turn, asked_for=False, small_talk=intent.small_talk)
+        if not refusing:
+            self._make_offer(suggestion, user_turn, asked_for=False, small_talk=intent.small_talk)
 
     def _make_offer(self, goal: str, user_turn: dict, asked_for: bool, small_talk: bool = False) -> None:
         identity = task_identity(goal)

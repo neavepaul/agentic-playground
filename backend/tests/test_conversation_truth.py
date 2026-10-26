@@ -378,7 +378,7 @@ async def test_small_talk_does_not_keep_proposing_errands(ran):
         offers.append(session.pending_offer)
     assert offers[0] == "Check the kitchen"
     assert offers[1:] == ["Check the kitchen"] * 3  # nothing piled on top; the same one never re-offered
-    assert "Small talk: no errand suggestions." in latest_prompt(model)
+    assert "Small talk: no suggestions to do things around the house." in latest_prompt(model)
     assert not manager.tasks and not physical(ran)
     await done(session, manager)
 
@@ -403,3 +403,39 @@ async def test_errand_model_calls_wait_while_someone_waits_for_a_reply():
     gate.conversation_waiting(-1)
     await pending
     assert order == ["reply", "errand"] and gate.last_metrics == {}
+
+
+# ── 9. free to use the web and Python on his own ───────────────────────────────
+@pytest.mark.asyncio
+async def test_kip_runs_python_on_his_own_when_he_decides_it_helps(ran):
+    model = PlanningModel([said("Let me count properly.", task="Use Python to calculate 366 * 24")],
+                          conditions=[{"kind": "answer", "required_tools": ["run_python"]}],
+                          initial=[{"tool": "run_python", "arguments": {"code": "print(366 * 24)"}}])
+    session, manager = session_with(model)
+    session.submit("I always forget how many hours there are in a leap year.")  # no request, no question
+    await settle(session, manager)
+    await manager.runner
+    task = next(iter(manager.tasks.values()))
+    assert task.grant.source == "question" and ran.count("run_python") == 1  # read-only, no yes needed
+    assert kip_lines(session, "narration")[-1] == "Ran it. `print(366 * 24)` printed 8784."
+    assert len(model.titles) == 1  # planned once; the run itself is the answer
+    await done(session, manager)
+
+
+@pytest.mark.asyncio
+async def test_kip_looks_things_up_unasked_but_house_errands_still_wait_for_a_yes(ran):
+    model = PlanningModel([said("Let me check.", offer="Search the web for today's weather in Mumbai"),
+                           said("I could take a look.", offer="Check the kitchen")],
+                          conditions=[{"kind": "answer", "required_tools": ["web_search"]}])
+    session, manager = session_with(model)
+    session.submit("I wonder what the weather's like in Mumbai today.")
+    await settle(session, manager)
+    lookup = manager.tasks[manager.active_id]
+    assert lookup.goal == "Search the web for today's weather in Mumbai" and lookup.grant.source == "question"
+    assert session.pending_offer is None
+    await manager.cancel(lookup.id)
+    session.submit("Something smells odd downstairs.")
+    await settle(session, manager)
+    assert session.pending_offer == "Check the kitchen" and len(manager.tasks) == 1
+    assert not physical(ran)
+    await done(session, manager)
