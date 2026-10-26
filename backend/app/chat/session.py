@@ -17,13 +17,17 @@ from uuid import uuid4
 from app.llm.base import ModelError
 from app.memory.recall import prompt_memories
 from app.tasks.manager import TaskBusy
-from app.tasks.permissions import READ_ONLY, Grant, digital_scope, plain
-from .consent import Offer, classify_reply, is_question, is_request, task_identity
+from app.tasks.permissions import READ_ONLY, TOOL_PLAIN, Grant, digital_scope, plain
+from .consent import Offer, classify_reply, is_request, task_identity  # noqa: F401 (re-exported)
+from .evidence import (capabilities, contradicted_presence, denied_capabilities, last_seen, room_scans,
+                       task_record, unsupported_execution)
+from .intent import Intent, introduced_as, read_intent
 from .prompt import ChatAction, TrailerSplitter, build_messages
 
 _log = logging.getLogger("agentic_friend.chat")
 
 HISTORY = 50
+_HALF_YES = re.compile(r"^\W*(yes|yeah|yep|sure|ok|okay)\b")  # "Yes? What do you mean?" is not a yes
 FIRST_PERSON = re.compile(r"\b(i|i'm|i've|me|my|mine|myself|the user)\b")
 
 
@@ -53,6 +57,12 @@ class ChatSession:
         self._remembered: list[str] = []
         self._queued_grants: dict[tuple[str, ...], Grant] = {}
         self._declined: set[tuple[str, ...]] = set()  # offers refused in this conversation: not offered again
+        self._intents: dict[str, Intent] = {}         # user turn id -> what that message does
+        self._user_turns = 0
+        self._offered: dict[tuple[str, ...], int] = {}  # offer identity -> user turn it was made on
+        self._last_unasked_offer: tuple[int, Offer | None] = (-99, None)
+        self._introduced: str | None = None            # who said "it's Neave" when the picker was unset
+        self.gate = None                               # shared-model priority (conversation first)
 
     def attach(self) -> None:
         self.bus.add_listener(self._narrate)
@@ -78,11 +88,23 @@ class ChatSession:
         self.last_activity = time.monotonic()
         # "Don't use Python", "don't go into the kitchen": binding from this moment on, for
         # running and queued errands too. Applied before anything else reads this message.
-        rooms = {key: room.get("name", key) for key, room in self.engine.snapshot().get("rooms", {}).items()}
+        world = self.engine.snapshot()
+        rooms = {key: room.get("name", key) for key, room in world.get("rooms", {}).items()}
+        before = set(self.manager.restrictions.describe())
         if self.manager.restrictions.update(text, rooms):
             _log.info("Restrictions now: %s", self.manager.restrictions.describe())
+        after = set(self.manager.restrictions.describe())
+        speaker_id = self._speaker_id(speaker)
+        if speaker_id is None and not speaker:
+            # The picker says "someone": a known person introducing themselves is good evidence.
+            self._introduced = introduced_as(text, world.get("people", {})) or self._introduced
+            speaker_id = self._introduced
         earlier = list(self.turns)
-        turn = self._add_turn("user", text, speaker=self._speaker_id(speaker))
+        turn = self._add_turn("user", text, speaker=speaker_id)
+        self._user_turns += 1
+        self._intents[turn["id"]] = read_intent(text, sorted(before - after), sorted(after - before))
+        if self.gate is not None:
+            self.gate.conversation_waiting(+1)  # no new errand model call starts until this reply is done
         # Consent is judged against the offer the person could actually see when they
         # sent this message; a message queued earlier can never approve a later offer.
         self._offer_seen[turn["id"]] = self.offer.id if self._offer_valid() else None
@@ -154,15 +176,48 @@ class ChatSession:
             status["queued_errands"] = list(self.pending_goals)
         if self.pending_offer:
             status["offered_errand_awaiting_yes"] = self.pending_offer
-        recent = recent_errands(self.manager)
-        if recent:
-            status["recent_errands"] = recent
-        people = known_people(self.manager.persistent)
-        if people:
-            status["people_i_know"] = people
+        world = self.engine.snapshot()
+        finished = [c for c in self.manager.tasks.values() if c.status != "running"][-3:]
+        if finished:
+            # What each errand actually did, tried, was refused and left undone.
+            status["recent_errands"] = [task_record(c, world) for c in finished]
+        people = last_seen(self.manager, world)
+        if any(note != "unknown" for note in people.values()):
+            status["last_seen"] = people  # fresh looks vs older records, never merged
+        status["my_tools"] = capabilities(self.manager, self.settings)
         if self.manager.restrictions:
             status["asked_not_to"] = self.manager.restrictions.describe()
         return status
+
+    def _guidance(self, intent: Intent) -> str:
+        """How this particular message must be handled, decided by code from its words."""
+        restrictions, parts = self.manager.restrictions, []
+        if intent.cancel:
+            parts.append("They want the current work stopped: it is being stopped now. Confirm in a few words.")
+        elif intent.changes_state_only:
+            parts.append("This only changes a permission or turns something down. Acknowledge in a word or two "
+                         "('Alright.' is a complete reply) and stop. Do not redo, resume or offer anything earlier.")
+        needs = intent.needs_tools
+        if needs:
+            off = [t for t in needs if not self.settings.digital_tools_enabled or restrictions.forbids_tool(t)]
+            usable = [t for t in needs if t not in off]
+            names = lambda tools: " and ".join(TOOL_PLAIN.get(t, t) for t in tools)
+            if not usable:
+                why = "they ruled that out" if self.settings.digital_tools_enabled else "that is switched off"
+                parts.append(f"They asked for something that needs you to {names(off)}, and {why}. Turn it down "
+                             "with one dry, good-natured line. Don't fake it, and don't do it some other way.")
+            else:
+                parts.append(f"This needs you to actually {names(usable)}; an errand starts for it. Say so in a few "
+                             "words. Never write its result, output or page content yourself: the real one follows."
+                             + (f" You won't {names(off)}: it was ruled out." if off else ""))
+        if intent.wants_offer:
+            parts.append("They want an offer, not action: put it in offer and wait for their yes.")
+        if intent.about_past:
+            parts.append("They ask what you did: use only status.recent_errands and status.last_seen. Say what was "
+                         "done, tried, refused or not done, and how old each sighting is.")
+        if intent.small_talk:
+            parts.append("Small talk: no errand suggestions.")
+        return " ".join(parts)
 
     async def _recall(self, text: str) -> list[dict]:
         if not self.store:
@@ -198,8 +253,10 @@ class ChatSession:
                 anchors = {t["id"]: index for index, t in enumerate(earlier)}
                 earlier.sort(key=lambda t: (anchors.get(t.get("in_reply_to"), anchors[t["id"]]),
                                            bool(t.get("in_reply_to")), anchors[t["id"]]))
+                guidance = self._guidance(self._intents.get(user_turn["id"]) or read_intent(user_turn["text"]))
                 messages = build_messages(self.name, voice, prompt_memories(memories),
-                                          self._status(user_turn.get("speaker")), earlier, user_turn["text"])
+                                          self._status(user_turn.get("speaker")), earlier, user_turn["text"],
+                                          guidance=guidance)
                 splitter = TrailerSplitter()
                 try:
                     async for chunk in self.client.stream_text(messages, max_tokens=self.settings.chat_max_tokens,
@@ -256,6 +313,8 @@ class ChatSession:
             self.replying = False
             self.last_activity = time.monotonic()
             self._offer_seen.pop(user_turn["id"], None)
+            if self.gate is not None:
+                self.gate.conversation_waiting(-1)
             if not finished:
                 # Cancelled (reset, shutdown): release any "Thinking…" indicator.
                 self.bus.emit("chat_reply_ended", self.name, skip_history=True, reply_id=reply_id,
@@ -272,6 +331,7 @@ class ChatSession:
         said, reply = user_turn["text"], reply_turn["text"]
         self._decide_errands(action, user_turn)
         self._check_claims(reply)
+        self._intents.pop(user_turn["id"], None)
         if self.store:
             await self._remember(action, user_turn, reply)
 
@@ -291,16 +351,21 @@ class ChatSession:
         if self._closed:
             return
         said = user_turn["text"]
+        intent = self._intents.get(user_turn["id"]) or read_intent(said)
         answer = classify_reply(said)
         proposed = " ".join(action.task.split()) if action else ""
         offered = " ".join(action.offer.split()) if action else ""
         seen = self._offer_seen.get(user_turn["id"])
-        asks = is_request(said)  # their own words ask for an action
-        question = not asks and is_question(said)
+        asks = intent.request or (bool(intent.needs_tools) and not intent.question)
+        question = intent.question
         if self.offer and not self._offer_valid():
             self._expire_offer("expired")
         offer = self.offer if self._offer_valid() else None
-        if offer and seen == offer.id:
+        replying = bool(offer and seen == offer.id)
+        if intent.cancel:
+            self._cancel_work()
+            return
+        if replying:
             # This message is the person's answer to Kip's offer.
             if answer == "yes":
                 offer.status, offer.authorized_by = "consumed", user_turn["id"]
@@ -311,13 +376,16 @@ class ChatSession:
                     effects=sorted(offer.effects) if offer.effects is not None else Grant().effects,
                     source="offer", authorized_text=offer.goal))
                 return
-            if answer == "no":
+            if answer == "no" or intent.declines:
                 self._expire_offer("declined")
                 if not asks:
                     return
                 # "No, please find the keys instead": the offer is declined, and the new
                 # explicit request below is still honoured (negated actions never are).
-            elif not (asks or (question and proposed)):
+            elif intent.changes_state_only or (question and not proposed and not intent.needs_tools
+                                                and not _HALF_YES.match(said.casefold())):
+                return  # not an answer ("What would that involve?"): the offer simply stays open
+            elif not (asks or question) or (question and _HALF_YES.match(said.casefold())):
                 # Ambiguous: keep the offer open and ask, rather than guess.
                 offer.status = "deferred"
                 self.offer_log.append(offer.public())
@@ -328,14 +396,28 @@ class ChatSession:
                 return
             else:
                 self._expire_offer("superseded")  # they asked for something else instead
-        # is_request() already rejects negated actions ("Don't deliver…"), so refusal words
-        # elsewhere in the sentence ("…dinner is NOT ready", "…instead") don't block a request.
+        if intent.changes_state_only:
+            # Permissions changed or something was turned down: nothing new to do, and no
+            # earlier request is replayed, whatever the model wrote.
+            return
+        needs = intent.needs_tools
+        if needs:
+            usable = [t for t in needs if self.settings.digital_tools_enabled
+                      and not self.manager.restrictions.forbids_tool(t)]
+            if not usable:
+                _log.info("Not starting: %s ruled out or unavailable", needs)
+                return  # the reply turns it down; nothing may fake the run
+            # They asked for a tool to run: that is work, even if the model only described it.
+            proposed = proposed or said
         if task_identity(proposed) in self._declined:
             proposed = ""  # never start, or offer again, an errand the person declined
-        if proposed and self.manager.restrictions.mentions_only_forbidden_tools(proposed):
+        if proposed and not needs and self.manager.restrictions.mentions_only_forbidden_tools(proposed):
             # Every tool it names was ruled out ("...using Python" after "don't use Python"):
             # nothing to run; the reply answers within the limits (it is told about them).
             _log.info("Not starting %r: it relies only on tools the person ruled out", proposed)
+            return
+        if intent.wants_offer:
+            self._make_offer(offered or proposed, user_turn, asked_for=True)
             return
         if proposed and asks:
             self._start_or_queue(proposed, user_turn["id"], Grant.full("request", said))
@@ -344,29 +426,68 @@ class ChatSession:
             # Opted-in configuration: proposals start at once (restrictions still bind them).
             self._start_or_queue(proposed, user_turn["id"], Grant.full("request", said))
             return
-        if proposed and question:
-            if digital_scope(proposed):
-                # A question may start a lookup, but only ever with read-only effects.
-                self._start_or_queue(proposed, user_turn["id"], Grant.read_only(said))
+        if proposed and question and (needs or digital_scope(proposed)):
+            # A question may start a lookup, but only ever with read-only effects.
+            self._start_or_queue(proposed, user_turn["id"], Grant.read_only(said))
+            return
+        # Anything else is a suggestion: never physical without a yes.
+        if not (answer == "no" if replying else intent.declines):
+            self._make_offer(offered or proposed, user_turn, asked_for=False, small_talk=intent.small_talk)
+
+    def _make_offer(self, goal: str, user_turn: dict, asked_for: bool, small_talk: bool = False) -> None:
+        identity = task_identity(goal)
+        if not goal or identity in self._declined:
+            return
+        if not asked_for:
+            # Unasked suggestions: once per errand, and in small talk never on top of one
+            # that is still waiting unanswered from a few messages ago.
+            recent, previous = self._last_unasked_offer
+            ignored = previous is not None and previous.status in {"pending", "expired", "superseded", "deferred"}
+            if identity in self._offered or (small_talk and ignored and self._user_turns - recent < 4):
+                _log.info("Not repeating an unasked offer: %s", goal)
                 return
-            # Anything else a question leads to is a suggestion: never physical without a yes.
-        suggestion = offered or proposed
-        if task_identity(suggestion) in self._declined:
-            suggestion = ""
-        if suggestion and answer != "no":
-            # Kip may suggest; nothing runs until the person says yes to this offer.
-            self._expire_offer("superseded")
-            self.offer = Offer(goal=suggestion, reply_turn_id=user_turn["id"], generation=self.generation)
-            _log.info("Holding errand as an offer awaiting a yes: %s", suggestion)
+        self._offered[identity] = self._user_turns
+        self._expire_offer("superseded")
+        self.offer = Offer(goal=goal, reply_turn_id=user_turn["id"], generation=self.generation)
+        if not asked_for:
+            self._last_unasked_offer = (self._user_turns, self.offer)
+        _log.info("Holding errand as an offer awaiting a yes: %s", goal)
+
+    def _cancel_work(self) -> None:
+        """"Stop that": the current errand is cancelled and nothing queued or offered runs."""
+        self._expire_offer("declined" if self.offer and self._offer_valid() else "expired")
+        self.pending_goals.clear()
+        self._queued_grants.clear()
+        if self.manager.active_id:
+            goal = self.manager.active()["goal"]
+
+            async def stop(task_id: str) -> None:
+                await self.manager.cancel(task_id)
+                self._add_turn("kip", f"Stopped: {goal}", source="narration")
+            self._spawn(stop(self.manager.active_id))
 
     def _check_claims(self, reply: str) -> None:
-        """Kip must not claim physical actions it has no tool evidence for."""
+        """Kip must not claim actions, runs or sightings his tool evidence does not support."""
         world = self.engine.snapshot()
-        unsupported = unsupported_claims(reply, evidence_ledger(self.manager), world)
-        if unsupported:
-            _log.warning("Unsupported action claim in reply: %s", unsupported)
-            self._add_turn("kip", "Sorry, I should correct myself: I don't have any record of actually doing "
-                                  "that yet.", source="correction", claims=unsupported)
+        found, notes = unsupported_claims(reply, evidence_ledger(self.manager), world), []
+        if found:
+            notes.append("I haven't actually done that; there's no record of it")
+        running = (self.manager.active() or {}).get("requested_tools", [])
+        for tool in unsupported_execution(reply, self.manager):
+            what = {"run_python": "no Python has run for that", "read_webpage": "I haven't read that page",
+                    "web_search": "I haven't searched for that"}[tool]
+            notes.append(what + ("; it's running now, and the real result will follow" if tool in running else ""))
+        denied = denied_capabilities(reply, self.manager, self.settings)
+        if denied:
+            notes.append("I can " + " and ".join(denied) + " — that's working")
+        scans, names = room_scans(self.manager), {k: v.get("name", k) for k, v in world.get("people", {}).items()}
+        for person, room in dict.fromkeys(contradicted_presence(reply, self.manager, world)):
+            at = scans[room].get("at")
+            notes.append(f"when I looked in the {room.replace('_', ' ')}{' at ' + at if at else ''}, "
+                         f"{names.get(person, person)} wasn't there; anything older is only a record")
+        if notes:
+            _log.warning("Unsupported claims in reply: %s", notes)
+            self._add_turn("kip", "Correction: " + "; ".join(notes) + ".", source="correction", claims=notes)
 
     async def _remember(self, action: ChatAction | None, user_turn: dict, reply: str) -> None:
         said, speaker = user_turn["text"], user_turn.get("speaker")
@@ -513,6 +634,10 @@ class ChatSession:
                 else:
                     text = " ".join(part for part in ("I couldn't finish that.", found, data.get("summary", ""))
                                     if part)
+            notes = list(task.get("answer_notes") or [])
+            if task.get("blocked"):
+                notes.append("Not done: " + "; ".join(task["blocked"]) + ".")
+            text = " ".join([text, *notes])
             self._add_turn("kip", text, source="narration", sources=answer.get("sources", []), outcome=outcome)
             if self.pending_goals:
                 self._spawn(self._start_next_when_free(self.generation))
@@ -598,19 +723,33 @@ def known_people(persistent) -> dict:
 
 
 def describe_findings(task: dict) -> str:
-    """A plain-language account of what an errand actually observed."""
+    """A plain-language account of what an errand actually observed, room by room."""
+    memory = task.get("task_memory") or {}
+    people, objects = memory.get("people") or {}, memory.get("objects") or {}
+    rooms = [r for r in (memory.get("observed_rooms") or {})]
+    shown_people, shown_objects, parts = set(), set(), []
+    looked = []
+    for room in rooms[:5]:
+        here = [p.get("name") or key for key, p in people.items() if p.get("location") == room]
+        things = [f"the {(o.get('name') or key).lower()}" for key, o in objects.items()
+                  if (o.get("location") or {}) == {"kind": "room", "id": room}]
+        shown_people |= {key for key, p in people.items() if p.get("location") == room}
+        shown_objects |= {key for key, o in objects.items() if (o.get("location") or {}) == {"kind": "room", "id": room}}
+        seen = here + things
+        looked.append(f"the {room.replace('_', ' ')} ({', '.join(seen) if seen else 'empty'})")
+    if looked:
+        parts.append("I looked in " + (", ".join(looked[:-1]) + " and " + looked[-1] if len(looked) > 1 else looked[0]) + ".")
     progress = errand_progress(task)
-    parts = []
-    if progress["rooms_looked_in"]:
-        rooms = progress["rooms_looked_in"][:4]
-        parts.append("I looked in the " + (", the ".join(rooms[:-1]) + " and the " + rooms[-1]
-                                         if len(rooms) > 1 else rooms[0]) + ".")
-    if progress["objects_found"]:
+    elsewhere = {name: where for key, name, where in
+                 ((k, o.get("name", k), _place(o.get("location"))) for k, o in objects.items())
+                 if where and key not in shown_objects}
+    if elsewhere:
         parts.append("I found the " + ", and the ".join(f"{name.lower()} {where}"
-                                          for name, where in list(progress["objects_found"].items())[:3]) + ".")
-    if progress["people_seen"]:
-        parts.append("I saw " + ", ".join(f"{name} {where}"
-                                         for name, where in list(progress["people_seen"].items())[:3]) + ".")
+                                         for name, where in list(elsewhere.items())[:3]) + ".")
+    others = {name: where for name, where in progress["people_seen"].items()
+              if name not in {people[k].get("name") or k for k in shown_people}}
+    if others:
+        parts.append("I saw " + ", ".join(f"{name} {where}" for name, where in list(others.items())[:3]) + ".")
     return " ".join(parts)
 
 

@@ -61,6 +61,12 @@ class TaskContext(BaseModel):
     # choices that would only be refused.
     grant: Grant = Field(default_factory=Grant)
     restricted: dict = Field(default_factory=dict)  # snapshot: tools, effects, rooms, sensitive objects
+    # Tools the person's own words asked to have run: required outcomes, whatever the plan said.
+    requested_tools: list[str] = Field(default_factory=list)
+    # Requested outcomes that were not done, and why ("run Python (you asked me not to)").
+    blocked: list[str] = Field(default_factory=list)
+    # Honest footnotes on the final answer (e.g. it describes a run that never happened).
+    answer_notes: list[str] = Field(default_factory=list)
     # Audit evidence is task-local and bounded by the execution tool budget.
     # No planner reconstructs current entity state from this transcript.
     action_history: list[dict] = Field(default_factory=list)

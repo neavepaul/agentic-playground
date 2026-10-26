@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 
 from app.agents.coordinator import Coordinator
 from app.agents.explorer import Explorer
@@ -14,7 +15,23 @@ from app.memory.store import PersistentMemory
 from app.world.tools import WorldTools
 from .models import TaskContext
 from .goals import check_conditions, normalize
-from .permissions import DIGITAL_LOOKUP, CALCULATION, Grant, Restrictions, plain
+from .permissions import (DIGITAL_LOOKUP, CALCULATION, TOOL_PLAIN, Grant, Restrictions,
+                          explicitly_requested_tools, plain)
+from app.agents.schemas import GoalCondition
+
+
+_CLAIMS_A_RUN = re.compile(r"\b(ran|run|executed|computed|calculated)\b[^.]{0,40}\b(python|code|program|script|"
+                           r"locally|calculation)\b|```python")
+
+
+def answer_notes(context: TaskContext) -> list[str]:
+    """Footnotes the final answer must carry to stay true to the evidence."""
+    notes = []
+    answer = (context.answer or {}).get("answer", "")
+    ran_python = any(e["tool"] == "run_python" and e["success"] for e in context.action_history)
+    if answer and not ran_python and _CLAIMS_A_RUN.search(answer.casefold()):
+        notes.append("No program actually ran for this: any figure above was worked out, not executed.")
+    return notes
 
 
 class TaskBusy(ValueError):
@@ -104,8 +121,9 @@ class TaskManager:
             rooms = {key: room.get("name", key)
                      for key, room in self.tools._engine.snapshot().get("rooms", {}).items()}
             self.restrictions.update(goal, rooms)
-        context = TaskContext(goal=goal, search_stale_after=self.settings.search_stale_after,
-                              grant=grant or Grant.full("api", goal))
+        grant = grant or Grant.full("api", goal)
+        context = TaskContext(goal=goal, search_stale_after=self.settings.search_stale_after, grant=grant,
+                              requested_tools=explicitly_requested_tools(grant.authorized_text))
         self._sync_permissions(context)
         if self.persistent:
             context.long_term_memory = self.persistent.prompt()
@@ -134,6 +152,11 @@ class TaskManager:
             # Terminal transitions happen once; a late cancel cannot rewrite an outcome.
             _log.info("Ignoring %s for task %s, already %s", status, context.id, context.status)
             return
+        if status == "completed":
+            context.answer_notes = answer_notes(context)
+            if context.blocked:
+                # Never present a partial result as the whole thing.
+                summary = f"Partly done. {summary} Not done: {'; '.join(context.blocked)}."
         context.status = status
         context.summary = summary
         context.metrics.tool_actions = context.tool_count
@@ -183,16 +206,42 @@ class TaskManager:
         result = {"success": False, "error": error, "refused": True, "evidence_id": event["id"]}
         context.record(tool, arguments, result)
         context.feedback(error)
+        if self.restrictions.forbids_tool(tool):
+            # Ruled out mid-task: the rest can still finish, and this is reported as not done.
+            self._drop_requirement(context, tool)
         _log.info("Refused %s for task %s: %s", tool, context.id, reason)
         return result
 
+    def _drop_requirement(self, context: TaskContext, tool: str) -> None:
+        for index, condition in enumerate(context.conditions):
+            if tool in condition.required_tools:
+                kept = [t for t in condition.required_tools if t != tool]
+                context.conditions[index] = condition.model_copy(update={"required_tools": kept})
+        note = f"{TOOL_PLAIN.get(tool, tool)} (you asked me not to)"
+        if tool in context.requested_tools and note not in context.blocked:
+            context.blocked.append(note)
+
+    def _require_requested_tools(self, context: TaskContext) -> None:
+        """What the person explicitly asked to have run is a required outcome, tracked on
+        its own: a plan that forgets it cannot be reported as complete."""
+        wanted = [t for t in context.requested_tools if t in {"web_search", "read_webpage", "run_python"}]
+        if not wanted:
+            return
+        for index, condition in enumerate(context.conditions):
+            if condition.kind == "answer":
+                tools = sorted(set(condition.required_tools) | set(wanted))[:3]
+                context.conditions[index] = condition.model_copy(update={"required_tools": tools})
+                return
+        context.conditions.append(GoalCondition(kind="answer", required_tools=wanted[:3]))
+
     def _outside_grant(self, context: TaskContext) -> bool:
         """After planning, before acting: stop if the plan needs more than was authorized."""
-        for index, condition in enumerate(context.conditions):
-            kept = [tool for tool in condition.required_tools if not self.restrictions.forbids_tool(tool)]
-            if kept != condition.required_tools:
-                # A tool the person ruled out is dropped from the plan rather than run.
-                context.conditions[index] = condition.model_copy(update={"required_tools": kept})
+        self._require_requested_tools(context)
+        for condition in list(context.conditions):
+            for tool in condition.required_tools:
+                if self.restrictions.forbids_tool(tool):
+                    # A tool the person ruled out is dropped from the plan rather than run.
+                    self._drop_requirement(context, tool)
         uncovered = context.grant.uncovered(context.conditions, self.restrictions)
         ruled_out = {effect for effect in uncovered if effect in self.restrictions.effects}
         if any(c.kind == "answer" for c in context.conditions) and not any(
@@ -212,6 +261,31 @@ class TaskManager:
         self.finish(context, "cancelled", summary)
         return True
 
+    async def _report_execution(self, context: TaskContext) -> bool:
+        """A request to *run* Python, answered by the run itself: once the program has run,
+        its code and output are the answer. No model call is needed to restate them."""
+        wanted = {t for c in context.conditions if c.kind == "answer" for t in c.required_tools}
+        if wanted != {"run_python"} or len(context.conditions) != 1 or "run_python" not in context.requested_tools:
+            return False
+        runs = [e for e in context.action_history if e["tool"] == "run_python" and e["success"]]
+        if not runs:
+            return False
+        run = runs[-1]
+        obs = run["observation"]
+        stdout, value = (obs.get("stdout") or "").strip(), obs.get("result", "")
+        output = stdout or ("" if value in ("", "None") else value)
+        if not output:
+            return False
+        code = run["arguments"].get("code", "").strip()
+        shown = f"`{code}`" if "\n" not in code and len(code) <= 80 else f"\n```python\n{code}\n```\n"
+        text = f"Ran it. {shown} {'printed' if stdout else 'returned'} {output}."
+        result = await self.call_capability(context, "finish_answer", {"answer": text,
+                                                                      "evidence_ids": [run["evidence_id"]]})
+        if result.get("success") and not [c for c in check_conditions(context) if not c["satisfied"]]:
+            self.finish(context, "completed", "Answer ready from the program's own output.")
+            return True
+        return False
+
     def call_tool(self, context: TaskContext, tool: str, arguments: dict) -> dict:
         refused = self._refused(context, tool, arguments)
         if refused:
@@ -220,6 +294,8 @@ class TaskManager:
             raise LimitReached("Maximum total tool calls reached.")
         context.tool_count += 1
         result = self.tools.execute(tool, arguments, context.id)
+        # When it was seen, on the house clock: recaps must tell fresh from old observations.
+        result["observed_at"] = self.tools._engine.simulated_time() or ""
         context.record(tool, arguments, result)
         self.bus.emit("task_updated", task=context.public())
         return result
@@ -337,6 +413,8 @@ class TaskManager:
             if goal_plan.initial_actions:
                 self.message(context, "explorer", "Running the model's independent tool calls together.")
                 await self.call_capability_batch(context, [action.model_dump() for action in goal_plan.initial_actions])
+                if await self._report_execution(context):
+                    return
         self.message(context, "coordinator", "Required outcomes defined. Locating targets requires tool observations.")
         disagreements = 0
         rejections = 0                     # consecutive rejected suggestions, reset by real progress

@@ -445,7 +445,8 @@ async def test_finished_errands_describe_what_was_seen_without_stock_openers():
     session, model, manager, _ = make_session([])
     manager.bus.emit("task_completed", task=LIVE_KEYS_TASK, summary="The goal is satisfied.")
     text = session.history()[-1]["text"]
-    assert text == "I looked in the kitchen. I found the keys in the kitchen. I saw Moira in the hall."
+    # Each room with what was actually in it; people seen elsewhere are reported separately.
+    assert text == "I looked in the kitchen (the keys). I saw Moira in the hall."
     assert "All done" not in text and "goal" not in text
 
 

@@ -9,6 +9,7 @@ from app.config import Settings, get_settings
 from app.events.bus import EventBus
 from app.chat import ChatSession
 from app.llm.factory import create_chat_client, create_client
+from app.llm.priority import ConversationFirst
 from app.memory.recall import Embedder, MemoryStore
 from app.memory.beliefs import derive_beliefs
 from app.memory.store import open_persistent
@@ -57,13 +58,17 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
         persona = Persona(persistent.persona, config.persona_name, now=clock.simulated_seconds,
                           helpfulness_baseline=config.drive_helpfulness)
         persona.attach(bus)
-    manager = TaskManager(llm, WorldTools(engine, bus), bus, config, persistent, persona=persona,
-                          memory_store=store)
     chat_llm = create_chat_client(config, llm) if live else llm
+    shared = chat_llm is llm
+    # One local model for both: a person waiting for a reply goes before the next errand call.
+    task_llm = ConversationFirst(llm) if shared else llm
+    manager = TaskManager(task_llm, WorldTools(engine, bus), bus, config, persistent, persona=persona,
+                          memory_store=store)
     chat = ChatSession(chat_llm, bus, manager, engine, config, store=store, persona=persona,
-                       shares_task_model=chat_llm is llm)
+                       shares_task_model=shared)
+    chat.gate = task_llm if shared else None
     chat.attach()
-    mind = AgentMind(llm, manager, engine, bus, config, persistent, persona=persona,
+    mind = AgentMind(task_llm, manager, engine, bus, config, persistent, persona=persona,
                      memory_store=store, chat=chat)
     mutation_lock = asyncio.Lock()
 

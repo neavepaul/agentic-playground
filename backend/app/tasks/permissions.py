@@ -232,3 +232,35 @@ _DIGITAL_SCOPE = re.compile(r"\b(online|the web|web ?search|internet|website|web
 
 def digital_scope(goal: str) -> bool:
     return bool(_DIGITAL_SCOPE.search(goal.casefold()))
+
+
+
+# ── tools a person explicitly asks to have run ─────────────────────────────────
+_URL = re.compile(r"https?://[^\s,;)]+|\bwww\.[^\s,;)]+|\b(?:read|open|visit|summari[sz]e|what'?s on|what is on|look at)"
+                  r"\b[^.?!]{0,25}?\b[\w-]+\.(?:com|org|net|io|dev|ai|in|co\.uk)\b")
+_RUN_PYTHON = re.compile(r"\b(?:run|runs|running|use|using|execute|executing|with|in|via|through)\b(?:\s+\S+){0,2}?\s+python\b"
+                         r"|\bpython\b(?:\s+\S+){0,3}?\s+(?:run|execute)\b")
+_WEB_SEARCH = re.compile(r"\b(?:search|look (?:it |that |this )?up|google|browse|find)\b[^.?!]{0,30}?\b(?:online|the web|web|"
+                         r"internet)\b|\bweb search\b|\bgoogle\b|\bsearch online\b")
+_NEGATED_CLAUSE = re.compile(r"^\W*(?:don'?t|do not|never|no|without|avoid|stop|not)\b")
+
+
+def explicitly_requested_tools(text: str) -> list[str]:
+    """Tools the person's own words ask to have run ("use Python to…", "read https://…").
+
+    Negated clauses ("don't run Python") and permission grants ("you can use Python
+    again") are not requests to run anything.
+    """
+    found: set[str] = set()
+    lowered = " ".join(text.casefold().replace("’", "'").split())
+    for clause in re.split(r"(?<!\w\.\w)[.;!?](?=\s|$)|,\s*(?:but|and then)\b|\bbut\b", lowered):
+        clause = clause.strip()
+        if not clause or _NEGATED_CLAUSE.match(clause) or _LIFT.search(clause):
+            continue
+        if _RUN_PYTHON.search(clause):
+            found.add("run_python")
+        if _URL.search(clause):
+            found.add("read_webpage")
+        if _WEB_SEARCH.search(clause):
+            found.add("web_search")
+    return sorted(found)
