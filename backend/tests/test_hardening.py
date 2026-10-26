@@ -543,3 +543,93 @@ async def test_a_declined_offer_is_never_started_even_if_the_model_repeats_it():
     await session.drain()
     assert manager.active_id is None
     await finish(session, manager)
+
+
+# ── review findings (2026-10-26) ──────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_an_information_question_starts_its_lookup_without_waiting_for_a_yes():
+    from tests.test_chat import make_session, reply
+    session, _, manager, _ = make_session([reply("I'll look it up.", task="Search the web for the current AQI in Mumbai")])
+    session.submit("What is the current AQI of Mumbai?")
+    await session.drain()
+    assert manager.active() and "AQI" in manager.active()["goal"]
+    assert session.pending_offer is None
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_a_question_never_starts_a_physical_errand_without_consent():
+    from tests.test_chat import make_session, reply
+    session, _, manager, _ = make_session([reply("I can go and look.", task="Find the keys")])
+    session.submit("Where are my keys?")
+    await session.drain()
+    assert manager.active_id is None and session.pending_offer == "Find the keys"
+
+
+@pytest.mark.parametrize("message, goal, starts", [
+    ("What's 17% of 2,340?", "Calculate 17% of 2340 with Python", True),
+    ("Who won the match last night?", "Search the web for last night's match result", True),
+    ("Don't look it up, but what's the weather like?", "Search the web for today's weather", False),
+    ("What's the weather like?", "Search the web for the weather and tell Neave", False),
+    ("Is the laptop in the office?", "Check the office for the laptop", False),
+    ("I wonder about the AQI.", "Search the web for the AQI", False),
+])
+def test_only_digital_lookups_answer_questions_directly(message, goal, starts):
+    from app.chat.consent import answers_question
+    assert answers_question(message, goal) is starts
+
+
+@pytest.mark.asyncio
+async def test_pretend_and_real_versions_of_a_memory_stay_separate():
+    store = MemoryStore(":memory:")
+    pretend = await store.add("preference", "Neave likes ginger tea.", ["neave"], meta={"context": "pretend"})
+    actual = await store.add("preference", "Neave likes ginger tea.", ["neave"], meta={"context": "actual"})
+    assert pretend != actual
+    contexts = {m["id"]: m.get("context", "actual") for m in await store.recall("Neave ginger tea")}
+    assert contexts == {pretend: "pretend", actual: "actual"}
+    # Saying the real one again still reinforces it rather than copying it.
+    assert await store.add("preference", "Neave likes ginger tea.", ["neave"], meta={"context": "actual"}) == actual
+    assert await store.add("preference", "Neave likes ginger tea.", ["neave"]) == actual  # unlabelled means actual
+    store.close()
+
+
+def test_saying_hello_does_not_clear_a_due_check_in():
+    from app.persona import Persona
+    from app.persona.state import Followup
+    persona = Persona(now=lambda: 0.0)
+    persona.state.followups = [Followup(person="neave", reason="Check whether Neave is feeling better",
+                                        due_at=0, expires_at=10000)]
+    persona.observe({"type": "chat_message", "data": {"turn": {"role": "user", "speaker": "neave", "text": "Hi Kip"}}})
+    assert "check-in is natural" in persona.stance("neave", "Hi Kip")
+    # A reply that doesn't check in leaves it pending (for the idle mind) but stops the hint repeating.
+    persona.observe({"type": "chat_message", "data": {"turn": {"role": "kip", "to": "neave", "text": "Morning."}}})
+    assert persona.due_followups() and "check-in" not in persona.stance("neave", "So, anyway")
+    # An actual check-in settles it.
+    persona.observe({"type": "chat_message", "data": {"turn": {"role": "kip", "to": "neave",
+                                                               "text": "Feeling any better today?"}}})
+    assert persona.due_followups() == []
+
+
+def test_undecodable_legacy_json_degrades_instead_of_crashing(tmp_path):
+    from app.memory.store import open_persistent
+    legacy = tmp_path / "persistent.json"
+    legacy.write_bytes(b"\xff\xfe{")
+    store = MemoryStore(":memory:")
+    memory = open_persistent(store, legacy, backups_dir=tmp_path / "backups")
+    assert memory.load_error
+    with pytest.raises(UnreadableStoreError):
+        memory.save()
+    assert legacy.read_bytes() == b"\xff\xfe{"
+    store.close()
+
+
+def test_an_undecodable_old_belief_graph_does_not_block_the_import(tmp_path):
+    from app.memory.store import open_persistent
+    memory_file, graph_file = tmp_path / "persistent.json", tmp_path / "beliefs.json"
+    memory_file.write_text('{"version": 1}', encoding="utf-8")
+    graph_file.write_bytes(b"\xff")
+    store = MemoryStore(":memory:")
+    memory = open_persistent(store, memory_file, graph_file, backups_dir=tmp_path / "backups")
+    assert not memory.load_error and store.get_state("persistent")
+    assert (tmp_path / "backups").exists() and graph_file.read_bytes() == b"\xff"
+    store.close()

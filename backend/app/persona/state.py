@@ -43,6 +43,8 @@ class Followup(BaseModel):
     reason: str
     due_at: float
     expires_at: float
+    # Set once Kip has been prompted about it in conversation, so the hint is not repeated.
+    suggested_at: float | None = None
 
 
 class SkillRecord(BaseModel):

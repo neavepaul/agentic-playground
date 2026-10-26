@@ -94,14 +94,22 @@ class PersistentMemory(BaseModel):
         app runs with a blank in-memory store, the error is reported, and saving is
         refused so the original (and Kip's real memories) stay untouched until fixed.
         """
-        if isinstance(source, (str, Path)):
-            path = Path(source)
-            text, where = (path.read_text(encoding="utf-8") if path.exists() else None), path.name
-        else:
-            text, where = source.get_state(STATE_KEY), f"kip.db state '{STATE_KEY}'"
         memory = cls()
-        if text is not None:
+        where = Path(source).name if isinstance(source, (str, Path)) else f"kip.db state '{STATE_KEY}'"
+        try:
+            if isinstance(source, (str, Path)):
+                path = Path(source)
+                text = path.read_text(encoding="utf-8") if path.exists() else None
+            else:
+                text = source.get_state(STATE_KEY)
+        except (OSError, UnicodeDecodeError) as exc:
+            text, read_error = None, exc
+        else:
+            read_error = None
+        if read_error is not None or text is not None:
             try:
+                if read_error is not None:
+                    raise read_error
                 memory = cls.model_validate_json(text)
             except Exception as exc:
                 logging.getLogger("agentic_friend.memory").error(
@@ -277,7 +285,8 @@ def open_persistent(store, memory_file: Path, graph_file: Path | None = None,
                                         "sha256": hashlib.sha256(source.read_bytes()).hexdigest()}
     values = {STATE_KEY: imported.model_dump_json(indent=2), IMPORT_KEY: json.dumps(record)}
     for source in sources[1:]:
-        values["imported:" + source.name] = source.read_text(encoding="utf-8")
+        # Kept only as history: an odd byte in the old graph must not block the import.
+        values["imported:" + source.name] = source.read_bytes().decode("utf-8", errors="replace")
     store.set_state(values)
     logging.getLogger("agentic_friend.memory").info(
         "Imported %s into kip.db (backup: %s). The JSON files are no longer read or written.",

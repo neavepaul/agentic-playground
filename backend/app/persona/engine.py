@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Callable
 
 from .appraisal import appraise
@@ -16,6 +17,11 @@ TOOL_FAILURE_DIPS_PER_TASK = 5
 VIEW_LIMIT = 1600                # characters of JSON in any prompt view
 CONCERNED, WELL_KNOWN, STRANGER = 0.35, 0.3, 0.1
 INITIATIVE_TRAITS = ("initiative", "curiosity", "caution", "empathy", "loyalty")
+# Kip's own words that actually ask after someone.
+_CHECK_IN = re.compile(r"\b(how are you|how're you|how are things|how (?:are|is) (?:it|the \w+) going|"
+                       r"feeling (?:any |a bit )?better|how (?:are|do) you feel|how'?s the \w+|"
+                       r"are you (?:ok|okay|all right|alright|feeling)|everything (?:ok|okay|all right|alright)|"
+                       r"doing (?:ok|okay|all right|alright|better))\b")
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -152,14 +158,21 @@ class Persona:
                                             due_at=now + FOLLOWUP_DELAY, expires_at=now + FOLLOWUP_LIFETIME))
 
     def _settle_after_reply(self, turn: dict) -> None:
-        """Kip has spoken to this person: a due check-in has had its chance."""
+        """Kip replied to this person. A due check-in is settled only if he actually checked in;
+        otherwise it stays for the idle mind, and the conversation is not prompted again."""
         person = turn.get("to")
         if not person or turn.get("source"):
             return
         now = self._advance()
-        before = len(self.state.followups)
-        self.state.followups = [f for f in self.state.followups if f.person != person or f.due_at > now]
-        self.dirty |= len(self.state.followups) != before
+        due = [f for f in self.state.followups if f.person == person and f.due_at <= now]
+        if not due:
+            return
+        if _CHECK_IN.search(turn.get("text", "").casefold().replace("’", "'")):
+            self.state.followups = [f for f in self.state.followups if f not in due]
+        else:
+            for followup in due:
+                followup.suggested_at = followup.suggested_at or now
+        self.dirty = True
 
     def _note_sightings(self, seen: dict[str, str], now: float) -> None:
         for key, room in seen.items():
@@ -290,7 +303,7 @@ class Persona:
             parts.append("They are critical of you: take it on board without defensiveness; admit what is fair.")
         elif cues.praise and not cues.sensitive:
             parts.append("Take thanks lightly, without gushing.")
-        due = [f for f in self.due_followups() if f.person == speaker]
+        due = [f for f in self.due_followups() if f.person == speaker and f.suggested_at is None]
         if due and not cues.sensitive:
             parts.append(f"Background: {due[0].reason}. One brief check-in is natural, if it fits.")
         return " ".join(parts)

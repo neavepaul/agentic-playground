@@ -2,7 +2,9 @@
 
 The chat model may *propose* an errand; this module decides whether anything may start.
 An errand starts only when the person's own message asks for it, or when they clearly
-agree to one specific offer Kip made. Refusals, hedges and questions never authorize.
+agree to one specific offer Kip made. Refusals and hedges never authorize. A direct
+question authorizes only a digital lookup that answers it (a web search or a calculation):
+it changes nothing in the house. A question never starts a physical errand.
 """
 import re
 import time
@@ -65,6 +67,30 @@ def is_request(text: str) -> bool:
             if not _NOT_ERRAND.match(f"{verb}{rest}".strip()):
                 return True
     return False
+
+
+_QUESTION_START = re.compile(r"^(?:(?:so|ok|okay|hey|kip|and|but)[, ]+)*(what|what's|whats|who|who's|whose|when|"
+                             r"where|which|why|how|how's|is|are|was|were|does|do|did|can|could|will|would|"
+                             r"should|any idea|tell me|do you know)\b")
+# Lookups that only read the web or run a calculation.
+_LOOKUP_GOAL = re.compile(r"\b(search|look up|look online|online|web|internet|website|webpage|google|"
+                          r"calculate|compute|convert|work out|python|program)\b")
+# Anything that moves, fetches, or speaks to someone is physical, even inside a lookup.
+_PHYSICAL_GOAL = re.compile(r"\b(bring|fetch|grab|take|give|deliver|carry|put|place|move|go to|go and|visit|"
+                            r"check the|check on|pick up|drop|tell|ask|notify|inform|remind|room|kitchen|"
+                            r"bedroom|office|hall)\b")
+_NO_LOOKUP = re.compile(r"\b(don'?t|do not|never|no need to|without)\s+(\w+\s+)?(look|search|google|check|calculate)")
+
+
+def answers_question(text: str, goal: str) -> bool:
+    """Is this message a direct question, and the goal only the digital lookup that answers it?"""
+    lowered = " ".join(text.casefold().replace("’", "'").split())
+    if not goal or _NO_LOOKUP.search(lowered):
+        return False
+    if not (lowered.rstrip().endswith("?") or _QUESTION_START.match(lowered)):
+        return False
+    planned = goal.casefold().replace("’", "'")
+    return bool(_LOOKUP_GOAL.search(planned)) and not _PHYSICAL_GOAL.search(planned)
 
 
 # ── task identity ──────────────────────────────────────────────────────────────

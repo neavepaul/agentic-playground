@@ -17,7 +17,7 @@ from uuid import uuid4
 from app.llm.base import ModelError
 from app.memory.recall import prompt_memories
 from app.tasks.manager import TaskBusy
-from .consent import Offer, classify_reply, is_request, task_identity
+from .consent import Offer, answers_question, classify_reply, is_request, task_identity
 from .prompt import ChatAction, TrailerSplitter, build_messages
 
 _log = logging.getLogger("agentic_friend.chat")
@@ -283,6 +283,8 @@ class ChatSession:
         proposed = " ".join(action.task.split()) if action else ""
         offered = " ".join(action.offer.split()) if action else ""
         seen = self._offer_seen.get(user_turn["id"])
+        # Their own message asks for this: an explicit request, or a question this lookup answers.
+        asks = is_request(said) or answers_question(said, proposed)
         if self.offer and not self._offer_valid():
             self._expire_offer("expired")
         offer = self.offer if self._offer_valid() else None
@@ -296,11 +298,11 @@ class ChatSession:
                 return
             if answer == "no":
                 self._expire_offer("declined")
-                if not is_request(said):
+                if not asks:
                     return
                 # "No, please find the keys instead": the offer is declined, and the new
                 # explicit request below is still honoured (negated actions never are).
-            elif not is_request(said):
+            elif not asks:
                 # Ambiguous: keep the offer open and ask, rather than guess.
                 offer.status = "deferred"
                 self.offer_log.append(offer.public())
@@ -314,7 +316,7 @@ class ChatSession:
         # elsewhere in the sentence ("…dinner is NOT ready", "…instead") don't block a request.
         if offer and offer.status == "declined" and task_identity(proposed) == offer.identity:
             proposed = ""  # never start the very errand the person just declined
-        if proposed and (is_request(said) or (self.settings.chat_autonomy == "act" and answer != "no")):
+        if proposed and (asks or (self.settings.chat_autonomy == "act" and answer != "no")):
             self._start_or_queue(proposed, user_turn["id"])
             return
         suggestion = offered or proposed

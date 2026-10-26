@@ -29,6 +29,8 @@ _WORD = re.compile(r"[\w']{2,}", re.UNICODE)
 
 
 DUPLICATE_OVERLAP = 0.7
+# A memory with no context label was stated as real.
+_CONTEXT_SQL = "COALESCE(json_extract(meta, '$.context'), 'actual')"
 # High on purpose: "Neave is allergic to peanuts" vs "Paul is allergic to peanuts" share
 # 4 of 6 words, and a correction must never delete the corrected fact.
 FORGET_OVERLAP = 0.8
@@ -191,19 +193,24 @@ class MemoryStore:
                                        max(0.0, min(1.0, importance)), source, meta or {}, vector)
 
     def _add(self, kind, text, about, importance, source, meta, vector) -> int:
+        # Only memories in the same frame merge: something said in pretend play and the
+        # same words said for real are two memories, each keeping its own context.
+        context = meta.get("context") or "actual"
         with self._lock:
             db = self._db
-            duplicate = db.execute("SELECT id FROM memories WHERE kind = ? AND text = ? AND superseded_by IS NULL",
-                                   (kind, text)).fetchone()
+            duplicate = db.execute(f"SELECT id FROM memories WHERE kind = ? AND text = ? AND superseded_by IS NULL "
+                                   f"AND {_CONTEXT_SQL} = ?", (kind, text, context)).fetchone()
             if duplicate is None and vector is not None and self.vectors:
                 import sqlite_vec
                 nearest = db.execute(
-                    "SELECT v.rowid, v.distance, m.kind, m.text FROM memories_vec v JOIN memories m ON m.id = v.rowid "
+                    f"SELECT v.rowid, v.distance, m.kind, m.text, {_CONTEXT_SQL} AS context FROM memories_vec v "
+                    "JOIN memories m ON m.id = v.rowid "
                     "WHERE v.embedding MATCH ? AND k = 1 AND m.superseded_by IS NULL",
                     (sqlite_vec.serialize_float32(vector),)).fetchone()
                 # Similar meaning alone is not enough: "tea in the morning" and "tea after
                 # dinner" are different facts. Merge only rewordings of the same words.
-                if (nearest and nearest["kind"] == kind and 1 - nearest["distance"] >= DUPLICATE_SIMILARITY
+                if (nearest and nearest["kind"] == kind and nearest["context"] == context
+                        and 1 - nearest["distance"] >= DUPLICATE_SIMILARITY
                         and _overlap(nearest["text"], text) >= DUPLICATE_OVERLAP):
                     duplicate = nearest
             if duplicate is not None:

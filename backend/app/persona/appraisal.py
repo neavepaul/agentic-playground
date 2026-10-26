@@ -96,7 +96,7 @@ def _chat(turn: dict, state: PersonaState) -> Appraisal | None:
     new_visit = bond is None or bond.last_interaction is None or \
         state.age_seconds - bond.last_interaction > 1800
     appraisal = Appraisal(person=person, chat=True, interaction=new_visit,
-                          familiarity=0.03 if new_visit else 0.004, settles_followups=True)
+                          familiarity=0.03 if new_visit else 0.004)
     if cues.laughter:
         appraisal.humour_reception, appraisal.warmth, appraisal.valence = 0.08, 0.01, 0.03
     if cues.humour_unwanted:
