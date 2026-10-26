@@ -348,10 +348,6 @@ class Persona:
                 "recent_moments": [e.summary for e in self.state.episodes[-3:]]}
         return self._bounded(view, ["recent_moments", "noticed", "relationships"])
 
-    def salient_moments(self) -> list[dict]:
-        return [{"summary": e.summary, "feeling": e.feeling, "person": e.person}
-                for e in self.state.episodes[-5:]]
-
     def public(self) -> dict:
         label, mood = self.mood_label(), self.state.mood
         bonds = sorted(self.state.relationships.items(), key=lambda item: -(item[1].warmth + item[1].familiarity))

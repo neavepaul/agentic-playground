@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen3:4b"
     world_file: Path | None = None
+    # Legacy JSON stores: imported into memory_db_file once, then never read or written.
     memory_file: Path = _BACKEND_DIR / "memory" / "persistent.json"
     graph_file: Path = _BACKEND_DIR / "memory" / "beliefs.json"
     llm_timeout_seconds: float = Field(default=120, gt=0)
@@ -73,7 +74,7 @@ class Settings(BaseSettings):
     chat_default_speaker: str = ""
     # Idle initiative: may the idle mind start errands on its own?
     autonomous_errands: bool = True
-    # Searchable long-term memory (SQLite + FTS5 + sqlite-vec)
+    # Kip's durable store: searchable memories (FTS5 + sqlite-vec) and structured state
     memory_db_file: Path = _BACKEND_DIR / "memory" / "kip.db"
     embeddings_enabled: bool = True
     embedding_model: str = "BAAI/bge-small-en-v1.5"
@@ -81,7 +82,6 @@ class Settings(BaseSettings):
     # Persistent personality layer (no extra model calls)
     persona_enabled: bool = True
     persona_name: str = Field(default="Kip", min_length=1, max_length=40)
-    distillation_task_interval: int = Field(default=5, ge=1)  # run distillation every N completed tasks
 
 
 @lru_cache

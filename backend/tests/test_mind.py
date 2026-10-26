@@ -9,9 +9,9 @@ import pytest
 
 from app.config import Settings
 from app.events.bus import EventBus
-from app.memory.graph import BeliefGraph, _effective
+from app.memory.store import PersistentMemory, PersonMemory
 from app.mind.agent import AgentMind
-from app.mind.models import GraphConsolidation, IntentionOrIdle, Intention
+from app.mind.models import IntentionOrIdle, Intention
 from app.tasks.manager import TaskBusy, TaskManager
 from app.world.engine import WorldEngine
 from app.world.tools import WorldTools
@@ -44,8 +44,6 @@ class _IntentionLLM:
         title = response_schema.get("title", "")
         if title == "IntentionOrIdle":
             return self._response
-        if title == "GraphConsolidation":
-            return '{"upsert_edges": [], "remove_edges": []}'
         # Stall any subsequent calls (task execution) so the test can assert before they run.
         await asyncio.sleep(60)
         return "{}"
@@ -53,36 +51,6 @@ class _IntentionLLM:
     @property
     def calls(self):
         return self._calls
-
-
-def test_belief_confidence_decays_over_time():
-    """effective_confidence falls as time passes; stored_confidence is unchanged."""
-    fresh = datetime.now(timezone.utc).isoformat()
-    stale = (datetime.now(timezone.utc) - timedelta(hours=8)).isoformat()
-
-    # Fresh observation: effective should be close to stored.
-    assert _effective(0.9, "located_in", fresh) > 0.85
-
-    # 8 hours old with 4h half-life → two half-lives → 0.9 × 0.25 ≈ 0.225
-    effective_stale = _effective(0.9, "located_in", stale)
-    assert effective_stale < 0.25
-
-    # recurring_need has a 7-day half-life — 8 hours barely moves it.
-    assert _effective(0.9, "recurring_need", stale) > 0.85
-
-
-def test_belief_graph_prompt_shows_both_confidences():
-    graph = BeliefGraph()
-    stale_ts = (datetime.now(timezone.utc) - timedelta(hours=8)).isoformat()
-    graph.edges.append({
-        "subject": "paul", "relation": "located_in", "target": "office",
-        "confidence": 0.9, "last_observed": stale_ts, "observation_count": 1,
-    })
-    beliefs = graph.prompt()["beliefs"]
-    assert len(beliefs) == 1
-    b = beliefs[0]
-    assert b["stored_confidence"] == 0.9
-    assert b["effective_confidence"] < 0.25  # two half-lives elapsed
 
 
 async def test_mind_stays_idle_when_null_intention():
@@ -167,43 +135,28 @@ async def test_mind_emits_agent_intention_event():
     assert events[0]["data"]["summary"] == "Deliver medicine to paul"
 
 
-async def test_mind_consolidates_events_into_belief_graph():
-    """When new events arrive, the mind consolidates them into its belief graph."""
+async def test_mind_reasons_from_computed_beliefs_without_a_memory_model_call():
+    """Beliefs come from persistent tallies; the only idle model call is the intention."""
+    titles, contexts = [], []
 
-    class _ConsolidatingLLM:
-        """Returns a graph diff for consolidation, stays idle on intention."""
+    class _Recording:
         async def generate(self, messages, response_schema):
-            title = response_schema.get("title", "")
-            if title == "GraphConsolidation":
-                return json.dumps({"upsert_edges": [
-                    {"subject": "paul", "relation": "located_in", "target": "office",
-                     "confidence": 0.8, "reason": "Saw paul in office."}
-                ], "remove_edges": []})
-            if title == "IntentionOrIdle":
-                return '{"intention": null}'
-            await asyncio.sleep(60)
-            return "{}"
+            titles.append(response_schema.get("title", ""))
+            contexts.append(json.loads(messages[1]["content"]))
+            return '{"intention": null}'
 
-    graph = BeliefGraph()
+    persistent = PersistentMemory(people={"paul": PersonMemory(
+        name="Paul", location_tally={"office": 3}, last_seen_room="office",
+        known_needs=["medicine"], delivery_counts={"medicine": 2})})
     engine, bus = WorldEngine(LEGACY_WORLD), EventBus()
-    manager = TaskManager(_ConsolidatingLLM(), WorldTools(engine, bus), bus,
-                          Settings(max_explorer_actions=1))
-    settings = Settings(intention_threshold=0.6, idle_reflection_interval=0.001,
-                        idle_tick_seconds=0.05)
-    mind = AgentMind(_ConsolidatingLLM(), manager, engine, bus, settings, graph)
-
-    # Emit a real event so the consolidation branch fires.
-    bus.emit("look_result", summary="Saw paul in the office.")
-
-    mind.start()
-    await asyncio.sleep(0.15)
-    await mind.close()
-
-    beliefs = graph.edges
-    assert any(
-        e["subject"] == "paul" and e["relation"] == "located_in" and e["target"] == "office"
-        for e in beliefs
-    ), f"Expected paul→located_in→office in graph, got: {beliefs}"
+    manager = TaskManager(_Recording(), WorldTools(engine, bus), bus, Settings(max_explorer_actions=1))
+    settings = Settings(idle_reflection_interval=0.001, idle_tick_seconds=0.05)
+    mind = AgentMind(_Recording(), manager, engine, bus, settings, persistent)
+    bus.emit("room_observed", summary="Saw paul in the office.")
+    await mind._tick()
+    assert titles == ["IntentionOrIdle"]
+    beliefs = {(b["subject"], b["relation"], b["target"]) for b in contexts[0]["beliefs"]["beliefs"]}
+    assert {("paul", "located_in", "office"), ("paul", "recurring_need", "medicine")} <= beliefs
 
 
 async def test_mind_handles_task_busy_gracefully():

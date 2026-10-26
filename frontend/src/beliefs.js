@@ -114,7 +114,7 @@ export function renderBeliefs(container, data, people, rooms) {
   const edges = data?.beliefs ?? [];
 
   if (edges.length === 0) {
-    container.innerHTML = '<p class="beliefs-empty">No beliefs recorded yet.<br>Run a task and the agent will consolidate its observations here.</p>';
+    container.innerHTML = '<p class="beliefs-empty">No beliefs yet.<br>They are worked out from what Kip observes on his errands.</p>';
     return;
   }
 

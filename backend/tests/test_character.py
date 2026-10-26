@@ -305,11 +305,13 @@ def test_everything_kip_learned_survives_save_and_reload(tmp_path):
 def test_conversation_changes_are_saved_on_shutdown_and_back_after_restart(tmp_path):
     settings = Settings(memory_file=tmp_path / "persistent.json", graph_file=tmp_path / "beliefs.json",
                         idle_reflection_enabled=False)
-    with TestClient(create_app(client=WaitingLLM(), settings=settings)) as client:
+    db = tmp_path / "kip.db"
+    with TestClient(create_app(client=WaitingLLM(), settings=settings, memory_store=MemoryStore(db))) as client:
         assert client.post("/api/chat", json={"message": "haha, nice one", "speaker": "neave"}).status_code == 202
-    saved = json.loads((tmp_path / "persistent.json").read_text(encoding="utf-8"))
+    saved = json.loads(MemoryStore(db).get_state("persistent"))
     assert saved["persona"]["relationships"]["neave"]["chats"] == 1
-    with TestClient(create_app(client=WaitingLLM(), settings=settings)) as client:
+    assert not (tmp_path / "persistent.json").exists()  # nothing is written to JSON any more
+    with TestClient(create_app(client=WaitingLLM(), settings=settings, memory_store=MemoryStore(db))) as client:
         bond = client.get("/api/persona").json()["relationships"]["neave"]
     assert bond["chats"] == 1 and bond["humour_reception"] > 0.5
 

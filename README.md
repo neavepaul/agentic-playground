@@ -117,9 +117,10 @@ CHAT_MODEL=qwen3:4b
 The backend log reports `first_token_seconds` and `total_seconds` for every reply, and
 hovering over a reply in the UI shows the same timing.
 
-### Kip's searchable memory
+### Kip's memory: one SQLite file
 
-`backend/memory/kip.db` is one SQLite file holding every kind of memory as a row: chat
+`backend/memory/kip.db` holds everything Kip keeps between runs. Its `memories` table has
+every kind of memory as a row: chat
 exchanges, facts you ask Kip to remember, task episodes, *skills* learned from
 successful errands (where things were found, the route that worked), and answers to
 past questions. Recall combines keyword search (FTS5) with meaning search (`sqlite-vec`
@@ -131,7 +132,18 @@ skip it entirely.
 
 Chat replies, new errands (as `relevant_memories`, marked advisory) and the idle mind
 all read from this store. Browse or search it in the **Memories** tab, or with
-`GET /api/memories?q=...`. To make Kip forget everything, delete `backend/memory/kip.db`.
+`GET /api/memories?q=...`.
+
+Its `state` table holds structured documents: where people and objects were last seen,
+room tallies, delivery counts, the self-model and the persona. **Beliefs** (Beliefs tab,
+`GET /api/beliefs`, the idle mind) are computed from those tallies on demand, with
+confidence that fades with time since the last sighting; no model call maintains them.
+
+`backend/memory/persistent.json` and `beliefs.json` are the stores from before this. The first
+time the backend starts with a `kip.db` that has no state, it imports them, copies them to
+`backend/memory/backups/<time>-import/`, and never reads or writes them again. To make Kip
+forget everything, delete `backend/memory/kip.db` (and move the old JSON files away, or they
+are imported again).
 
 ## How the code fits together
 
@@ -269,7 +281,7 @@ Copy `backend/.env.example` to `backend/.env`. Environment variables override it
 | `LLM_PROVIDER` | `colibri` | `colibri` or `ollama`; shared by all roles and idle reflection |
 | `COLIBRI_BASE_URL` | `http://127.0.0.1:8001/v1` | Colibri OpenAI-compatible endpoint |
 | `COLIBRI_MODEL` | `qwen3.6-colibri` | Qwen3.6-35B-A3B model ID reported by Colibri |
-| `IDLE_REFLECTION_ENABLED` | `true` | `.env.example` sets false so idle intention/consolidation calls do not compete with user tasks |
+| `IDLE_REFLECTION_ENABLED` | `true` | `.env.example` sets false so idle intention calls do not compete with user tasks |
 | `DIRECT_INITIAL_DELEGATION` | `false` | `.env.example` sets true: delegate the full goal after interpretation, saving one initial model call; later replanning still uses Coordinator |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Optional Ollama endpoint |
 | `OLLAMA_MODEL` | `qwen3:4b` | Used only when LLM_PROVIDER=ollama |
@@ -293,7 +305,8 @@ Copy `backend/.env.example` to `backend/.env`. Environment variables override it
 | `CHAT_MAX_TOKENS` | `300` | Upper bound on one chat reply |
 | `CHAT_TEMPERATURE` | `0.6` | Conversational variety (tasks keep `TEMPERATURE`) |
 | `CHAT_QUIET_SECONDS` | `90` | Idle mind waits this long after chat activity |
-| `MEMORY_DB_FILE` | `backend/memory/kip.db` | Searchable long-term memory |
+| `MEMORY_DB_FILE` | `backend/memory/kip.db` | Kip's durable store: memories and structured state |
+| `MEMORY_FILE` / `GRAPH_FILE` | `backend/memory/persistent.json` / `beliefs.json` | Legacy JSON stores, read once to import |
 | `EMBEDDINGS_ENABLED` | `true` | Meaning search with fastembed; false means keyword-only |
 | `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | fastembed model name |
 | `PERSONA_ENABLED` / `PERSONA_NAME` | `true` / `Kip` | Personality layer |

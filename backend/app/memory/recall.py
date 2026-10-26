@@ -1,9 +1,12 @@
-"""Searchable long-term memory: one flexible SQLite log with keyword and meaning search.
+"""Kip's durable store: one SQLite file with searchable memories and structured state.
 
 Every memory is one row (episode, fact, preference, skill, conversation, ...) with free
 text, loose tags and an importance score. FTS5 finds exact words such as names;
 sqlite-vec finds memories with similar meaning. Recall blends both with recency and
 importance. Everything is advisory: the robot still verifies the world by observation.
+
+The state table holds whole structured documents by key (Kip's tallies, self-model and
+persona), written in one transaction so they can never be half-saved.
 """
 from __future__ import annotations
 
@@ -140,6 +143,11 @@ class MemoryStore:
                 meta TEXT NOT NULL DEFAULT '{}'
             );
             CREATE INDEX IF NOT EXISTS memories_kind ON memories(kind);
+            CREATE TABLE IF NOT EXISTS state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
                 text, about, content='memories', content_rowid='id');
             CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
@@ -395,6 +403,22 @@ class MemoryStore:
     def count(self) -> int:
         with self._lock:
             return self._db.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+
+    # ── structured state ────────────────────────────────────────────────────
+    def get_state(self, key: str) -> str | None:
+        with self._lock:
+            row = self._db.execute("SELECT value FROM state WHERE key = ?", (key,)).fetchone()
+            return row["value"] if row else None
+
+    def set_state(self, values: dict[str, str]) -> None:
+        """Write several keys in one transaction: all of them land, or none do."""
+        with self._lock:
+            db = self._db
+            with db:
+                db.executemany("INSERT INTO state(key, value, updated_at) VALUES (?, ?, ?) "
+                               "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+                               "updated_at = excluded.updated_at",
+                               [(key, value, _now()) for key, value in values.items()])
 
     def close(self) -> None:
         with self._lock:

@@ -10,8 +10,8 @@ from app.events.bus import EventBus
 from app.chat import ChatSession
 from app.llm.factory import create_chat_client, create_client
 from app.memory.recall import Embedder, MemoryStore
-from app.memory.graph import BeliefGraph
-from app.memory.store import PersistentMemory
+from app.memory.beliefs import derive_beliefs
+from app.memory.store import open_persistent
 from app.mind.agent import AgentMind
 from app.persona import Persona
 from app.tasks.manager import TaskBusy, TaskManager
@@ -32,7 +32,7 @@ class GoalRequest(BaseModel):
     goal: str = Field(min_length=1, max_length=1000)
 
 
-def create_app(client=None, settings: Settings | None = None) -> FastAPI:
+def create_app(client=None, settings: Settings | None = None, memory_store: MemoryStore | None = None) -> FastAPI:
     config = settings or get_settings()
     logging.basicConfig(level=getattr(logging, config.log_level.upper(), logging.INFO),
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -43,25 +43,27 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
                        mode=config.simulation_mode, action_seconds=config.action_seconds)
     bus, engine = EventBus(), WorldEngine(config.world_file, clock=clock)
     llm = client if client is not None else create_client(config)
-    persistent = PersistentMemory.load(config.memory_file)
-    graph = BeliefGraph.load(config.graph_file)
+    # Injected test clients get a throwaway in-memory store and no embedding model,
+    # unless the test hands in its own store (e.g. a file, to test restarts).
+    live = client is None
+    embedder = (Embedder(config.embedding_model, config.embedding_cache_dir)
+                if live and config.embeddings_enabled else None)
+    store = memory_store or MemoryStore(config.memory_db_file if live else ":memory:", embedder)
+    # kip.db holds everything durable; the old JSON files are imported once, then left alone.
+    persistent = open_persistent(store, config.memory_file, config.graph_file,
+                                 backups_dir=config.memory_file.parent / "backups")
     persona = None
     if config.persona_enabled:
         persona = Persona(persistent.persona, config.persona_name, now=clock.simulated_seconds,
                           helpfulness_baseline=config.drive_helpfulness)
         persona.attach(bus)
-    # Injected test clients get a throwaway in-memory store and no embedding model.
-    live = client is None
-    embedder = (Embedder(config.embedding_model, config.embedding_cache_dir)
-                if live and config.embeddings_enabled else None)
-    store = MemoryStore(config.memory_db_file if live else ":memory:", embedder)
     manager = TaskManager(llm, WorldTools(engine, bus), bus, config, persistent, persona=persona,
                           memory_store=store)
     chat_llm = create_chat_client(config, llm) if live else llm
     chat = ChatSession(chat_llm, bus, manager, engine, config, store=store, persona=persona,
                        shares_task_model=chat_llm is llm)
     chat.attach()
-    mind = AgentMind(llm, manager, engine, bus, config, graph, persistent, persona=persona,
+    mind = AgentMind(llm, manager, engine, bus, config, persistent, persona=persona,
                      memory_store=store, chat=chat)
     mutation_lock = asyncio.Lock()
 
@@ -86,7 +88,7 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
         if persona and persona.dirty:
             # Who Kip is must survive a restart, including what changed since the last save.
             try:
-                persistent.save(config.memory_file)
+                persistent.save()
             except Exception:
                 logging.getLogger("agentic_friend").exception("Could not save persona state at shutdown")
         if client is None:
@@ -105,7 +107,7 @@ def create_app(client=None, settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/beliefs")
     async def get_beliefs():
-        return graph.prompt()
+        return derive_beliefs(persistent)
 
     @app.post("/api/chat", status_code=202)
     async def send_chat(request: ChatRequest):

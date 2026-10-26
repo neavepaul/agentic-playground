@@ -213,5 +213,4 @@ async def test_idle_mind_uses_persona_for_initiative_and_memory_formation():
     assert intention["persona"]["due_followups"][0]["person"] == "neave"
     assert "due_followups" in titles["IntentionOrIdle"][0]["content"]
     assert intention["drive_helpfulness"] == persona.helpfulness()
-    consolidation = json.loads(titles["GraphConsolidation"][1]["content"])
-    assert consolidation["salient_moments"][0]["person"] == "neave"
+    assert set(titles) == {"IntentionOrIdle"}  # no model call maintains memory any more

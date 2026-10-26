@@ -18,7 +18,6 @@ from app.chat.session import evidence_ledger, unsupported_claims
 from app.config import Settings
 from app.events.bus import EventBus
 from app.memory.durable import UnreadableStoreError, atomic_write_text
-from app.memory.graph import BeliefGraph
 from app.memory.recall import MemoryStore, prompt_memories
 from app.memory.store import PersistentMemory, TaskRecord
 from app.mind.agent import AgentMind
@@ -434,15 +433,6 @@ def test_corrupt_persistent_memory_is_never_overwritten(tmp_path):
     with pytest.raises(UnreadableStoreError):
         memory.save(path)
     assert path.read_text(encoding="utf-8") == "{ not json"
-
-
-def test_corrupt_belief_graph_is_never_overwritten(tmp_path):
-    path = tmp_path / "beliefs.json"
-    path.write_text("garbage", encoding="utf-8")
-    graph = BeliefGraph.load(path)
-    with pytest.raises(UnreadableStoreError):
-        graph.save()
-    assert path.read_text(encoding="utf-8") == "garbage"
 
 
 def test_interrupted_write_leaves_the_previous_file(tmp_path, monkeypatch):

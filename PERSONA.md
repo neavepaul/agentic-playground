@@ -23,12 +23,12 @@ plain state updated from events that already exist on the bus.
 
 Already solid and left unchanged: consent (`chat/consent.py`), unsupported-claim checks,
 memory contexts (actual / pretend / hypothetical), corrections superseding memories,
-speaker picker, Coordinator / Explorer / Critic, belief graph and distillation.
+speaker picker, Coordinator / Explorer / Critic.
 
 ## Architecture
 
 ```
-bus events ──► persona.observe ──► appraisal.py (pure) ──► PersonaState (persisted in persistent.json)
+bus events ──► persona.observe ──► appraisal.py (pure) ──► PersonaState (persisted in kip.db state)
                                      │ cues.py: the person's own words only
                                      ▼
           voice_view(speaker, message) ─► chat prompt: identity, voice, mood/tone,
@@ -52,8 +52,8 @@ bus events ──► persona.observe ──► appraisal.py (pure) ──► Per
 A persona saved by the earlier character (no `character_version`) is migrated on load: drift each
 trait earned is carried onto the new baseline (`enthusiasm` → `initiative`), the old values are kept
 verbatim in `legacy_traits`, and relationships, episodes and age are untouched. Verified against the
-live `backend/memory/persistent.json` in memory only (file hash unchanged); the file is rewritten in
-the new shape the next time the backend saves.
+live `backend/memory/persistent.json` in memory only (file hash unchanged). Persona state now lives
+in the `state` table of `kip.db`; the JSON file is imported once and kept as a backup.
 
 ## What is tested vs. aspirational
 

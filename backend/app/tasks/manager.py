@@ -540,7 +540,9 @@ class TaskManager:
                 if self.persistent:
                     try:
                         self.persistent.update_from_task(context)
-                        self.persistent.save(self.settings.memory_file)
+                        self.persistent.save()
+                        # Beliefs are computed from these tallies, so they just changed.
+                        self.bus.emit("beliefs_updated", summary="Beliefs updated from the finished task.")
                     except Exception:
                         logging.getLogger("agentic_friend.tasks").exception("Failed to save persistent memory")
             finally:
