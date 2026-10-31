@@ -286,7 +286,6 @@ Copy `backend/.env.example` to `backend/.env`. Environment variables override it
 | `GROQ_API_KEY` | unset | Optional hosted Groq for goal planning and web-research tasks; unset keeps everything on Colibri |
 | `GROQ_MODELS` | `openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b` | Preference order. Free-tier limits are per model, so a model whose quota is spent is skipped until its reset |
 | `GROQ_PLAN_CALLS` / `GROQ_RESEARCH_CALLS` | `2` / `4` | Hard caps on Groq calls per goal plan and per web-research task; past a cap, or on any Groq failure, Colibri continues |
-| `GROQ_REASONING_EFFORT` | `medium` | `low`, `medium` or `high` for Groq's reasoning models; reasoning text is never returned or logged |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Optional Ollama endpoint |
 | `OLLAMA_MODEL` | `qwen3:4b` | Used only when LLM_PROVIDER=ollama |
 | `WORLD_FILE` | `backend/worlds/house.json` | Optional absolute path to a scenario JSON |

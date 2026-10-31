@@ -4,6 +4,9 @@ Colibri stays the engine for conversation and the task loop. Groq's free tier
 limits each model separately, so a pool of models is tried in preference order and
 a model whose quota is spent is skipped until its reset time. Each model is tried
 at most once per call: nothing here loops, waits or retries.
+
+Requests are plain chat completions: the system, user and history messages as given,
+with no JSON mode, tools or reasoning parameters. Callers validate any JSON locally.
 """
 import logging
 import re
@@ -18,6 +21,9 @@ from .base import ModelError
 _log = logging.getLogger("agentic_friend.llm.groq")
 _DURATION = re.compile(r"(\d+(?:\.\d+)?)(ms|h|m|s)")
 _UNIT_SECONDS = {"h": 3600, "m": 60, "s": 1, "ms": 0.001}
+# Reasoning that some models (qwen) write inline, and a fence around the whole reply.
+_THINK = re.compile(r"<think>.*?</think>\s*", re.S)
+_FENCED = re.compile(r"^```[\w-]*\n(.*)\n```$", re.S)
 
 
 def reset_seconds(value: str | None) -> float | None:
@@ -88,36 +94,20 @@ class GroqClient:
     def has_capacity(self, messages: list[dict] | None = None) -> bool:
         return bool(self.candidates(estimate_tokens(messages or [])))
 
-    def _body(self, model: str, messages: list[dict]) -> dict:
-        instructions = ("Return only one valid JSON object matching the supplied schema. "
-                        "Do not include markdown fences, commentary or reasoning.\n")
-        request_messages = [dict(message) for message in messages]
-        if request_messages and request_messages[0].get("role") == "system":
-            request_messages[0]["content"] = instructions + request_messages[0]["content"]
-        else:
-            request_messages.insert(0, {"role": "system", "content": instructions})
-        # The schema lives in the prompt and is validated locally, like Colibri's:
-        # Kip's schemas use unions that Groq's strict json_schema mode cannot express.
-        body = {"model": model, "messages": request_messages, "stream": False,
-                "temperature": self.settings.temperature,
-                "max_completion_tokens": self.settings.groq_max_output_tokens,
-                "response_format": {"type": "json_object"}}
-        # Reasoning stays server-side: it is never returned, logged or stored.
-        if model.startswith("openai/gpt-oss"):
-            body |= {"include_reasoning": False, "reasoning_effort": self.settings.groq_reasoning_effort}
-        elif model.startswith("qwen/"):
-            body |= {"reasoning_format": "hidden", "reasoning_effort": self.settings.groq_reasoning_effort}
-        return body
-
     async def generate(self, messages: list[dict], response_schema: dict) -> str:
+        return await self._complete(estimate_tokens(messages), lambda model: {
+            "model": model, "messages": messages, "temperature": self.settings.temperature,
+            "max_completion_tokens": self.settings.groq_max_output_tokens})
+
+    async def _complete(self, need: int, body) -> str:
+        """The reply from the first model in preference order that can answer."""
         self.last_metrics = {}
-        need = estimate_tokens(messages)
         tried = []
         for model in self.candidates(need):
             tried.append(model)
             started = time.monotonic()
             try:
-                response = await self.http.post("chat/completions", json=self._body(model, messages))
+                response = await self.http.post("chat/completions", json=body(model))
             except httpx.TimeoutException:
                 raise ModelError("Groq timed out.") from None
             except httpx.RequestError:
@@ -132,11 +122,13 @@ class GroqClient:
                 self.quota[model].blocked_until = now + (wait or 60)
                 _log.info("groq model=%s rate-limited for %.0fs; trying the next model", model, wait or 60)
                 continue
-            if status == 400 and _error_code(response) != "json_validate_failed":
-                # A request this model refuses (e.g. an unsupported parameter) will keep
-                # failing, so it sits out for an hour instead of costing a call each time.
+            code = _error_code(response) if status == 400 else ""
+            if status == 400 and code != "tool_use_failed":  # a made-up tool call is one bad generation
+                # A request this model refuses (e.g. an unknown model) will keep failing,
+                # so it sits out for an hour instead of costing a call each time.
                 self.quota[model].blocked_until = now + 3600
-                _log.warning("groq model=%s refused the request (HTTP 400); skipping it for an hour", model)
+                _log.warning("groq model=%s refused the request (HTTP 400 %s); skipping it for an hour",
+                             model, code or "no code")
                 continue
             if status >= 400:
                 _log.info("groq model=%s returned HTTP %d; trying the next model", model, status)
@@ -145,7 +137,10 @@ class GroqClient:
                 envelope = response.json()
                 choice = envelope["choices"][0]
                 content = choice["message"]["content"]
-                if not isinstance(content, str) or not content.strip():
+                if isinstance(content, str):
+                    content = _THINK.sub("", content).strip()
+                    content = _FENCED.sub(r"\1", content).strip()
+                if not isinstance(content, str) or not content:
                     raise ValueError("Missing content")
             except (ValueError, KeyError, TypeError, IndexError):
                 _log.info("groq model=%s returned an unexpected envelope; trying the next model", model)

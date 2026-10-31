@@ -51,7 +51,7 @@ def test_no_key_means_no_hosted_client():
     assert create_hosted_client(Settings(groq_api_key="  ")) is None
 
 
-async def test_request_shape_keeps_reasoning_server_side():
+async def test_request_is_a_plain_chat_completion():
     bodies = []
 
     def respond(request):
@@ -64,10 +64,11 @@ async def test_request_shape_keeps_reasoning_server_side():
         result = await structured(client, CriticReview, "Review", {})
         assert result.approved
         body = bodies[0]
+        # System and user messages as given: no JSON mode, tools or reasoning parameters.
+        assert set(body) == {"model", "messages", "temperature", "max_completion_tokens"}
         assert body["model"] == "openai/gpt-oss-120b"
-        assert body["response_format"] == {"type": "json_object"}
-        assert body["include_reasoning"] is False and "reasoning_format" not in body
-        assert "Output JSON schema:" in body["messages"][0]["content"]
+        assert [m["role"] for m in body["messages"]] == ["system", "user"]
+        assert body["messages"][0]["content"].startswith("Review\nOutput JSON schema:")
         assert client.last_metrics["provider"] == "groq" and client.last_metrics["completion_tokens"] == 9
     finally:
         await client.close()
@@ -81,8 +82,6 @@ async def test_rate_limited_model_is_skipped_until_its_reset():
         seen.append(model)
         if model == "openai/gpt-oss-120b":
             return httpx.Response(429, headers={"retry-after": "30"}, json={"error": {"code": "rate_limit_exceeded"}})
-        body = json.loads(request.content)
-        assert body["reasoning_format"] == "hidden" and "include_reasoning" not in body
         return ok(model=model)
 
     client = await groq(respond, clock=clock)
@@ -124,9 +123,8 @@ async def test_refused_request_benches_the_model_but_a_bad_generation_does_not()
     def respond(request):
         model = json.loads(request.content)["model"]
         seen.append(model)
-        if model == "openai/gpt-oss-120b":
-            return httpx.Response(400, json={"error": {"code": "invalid_request_error"}})
-        return httpx.Response(400, json={"error": {"code": "json_validate_failed"}})
+        code = "invalid_request_error" if model == "openai/gpt-oss-120b" else "tool_use_failed"
+        return httpx.Response(400, json={"error": {"code": code}})
 
     client = await groq(respond)
     try:
@@ -134,6 +132,7 @@ async def test_refused_request_benches_the_model_but_a_bad_generation_does_not()
             await client.generate([{"role": "user", "content": "JSON"}], {})
         with pytest.raises(ModelError):
             await client.generate([{"role": "user", "content": "JSON"}], {})
+        # A made-up tool call is one bad generation: that model is tried again next time.
         assert seen == ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "qwen/qwen3.8-27b"]
     finally:
         await client.close()
@@ -184,10 +183,11 @@ async def test_hosted_first_caps_hosted_calls_and_falls_back_locally():
 
 
 async def test_goal_planning_uses_groq_and_decisions_stay_local():
-    plans = []
+    plans, bodies = [], []
 
     def respond(request):
-        payload = json.loads(json.loads(request.content)["messages"][1]["content"])
+        bodies.append(json.loads(request.content))
+        payload = json.loads(bodies[-1]["messages"][1]["content"])
         plans.append(payload)
         return ok(json.dumps({"summary": "Find the keys.",
                               "conditions": [{"kind": "find_object", "object": "keys"}]}))
@@ -199,6 +199,7 @@ async def test_goal_planning_uses_groq_and_decisions_stay_local():
         plan = await coordinator.define_goal("Find the keys.", {"rooms": {"kitchen": {"name": "Kitchen",
                                                                                      "outline": [[0, 0]]}}})
         assert plan.conditions[0].object == "keys" and local.calls == []
+        assert "tools" not in bodies[0] and "response_format" not in bodies[0]
         # Only the goal and room names leave the machine: no geometry, memory or history.
         assert plans == [{"goal": "Find the keys.", "floor_plan": {"rooms": {"kitchen": "Kitchen"}}}]
     finally:
@@ -222,6 +223,8 @@ async def test_web_research_uses_groq_but_robot_tasks_stay_local(monkeypatch):
                                conditions=[GoalCondition(kind="answer", required_tools=["web_search"])])
         action = await explorer.decide(research, research.goal)
         assert action.tool == "web_search" and len(hosted_requests) == 1
+        body = json.loads(hosted_requests[0].content)
+        assert "tools" not in body and "response_format" not in body
 
         mixed = TaskContext(goal="Look up a fact and find the keys.",
                             conditions=[GoalCondition(kind="answer", required_tools=["web_search"]),
@@ -230,5 +233,30 @@ async def test_web_research_uses_groq_but_robot_tasks_stay_local(monkeypatch):
         explorer.client = local
         await explorer.decide(mixed, mixed.goal)
         assert len(hosted_requests) == 1 and len(local.calls) == 1
+    finally:
+        await client.close()
+
+
+async def test_a_server_error_moves_on_to_the_next_model_without_a_retry():
+    seen = []
+
+    def respond(request):
+        seen.append(json.loads(request.content)["model"])
+        return httpx.Response(500, json={"error": {"type": "internal_server_error"}}) if len(seen) == 1 \
+            else ok(model=seen[-1])
+
+    client = await groq(respond)
+    try:
+        assert await client.generate([{"role": "user", "content": "JSON"}], {}) == REVIEW
+        assert seen == ["openai/gpt-oss-120b", "qwen/qwen3.8-27b"]
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize("content", [f"<think>private</think>\n{REVIEW}", f"```json\n{REVIEW}\n```"])
+async def test_inline_reasoning_and_a_fence_are_stripped_from_the_reply(content):
+    client = await groq(lambda request: ok(content))
+    try:
+        assert await client.generate([{"role": "user", "content": "JSON"}], {}) == REVIEW
     finally:
         await client.close()

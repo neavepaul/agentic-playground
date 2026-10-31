@@ -22,7 +22,6 @@ class Settings(BaseSettings):
     groq_api_key: SecretStr | None = None
     groq_base_url: str = "https://api.groq.com/openai/v1"
     groq_models: str = "openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b"
-    groq_reasoning_effort: Literal["low", "medium", "high"] = "medium"
     groq_timeout_seconds: float = Field(default=60, gt=0)
     groq_max_output_tokens: int = Field(default=4096, ge=256, le=32768)
     # Hard caps: Groq calls per goal plan, and per web-research task. Past a cap, or
