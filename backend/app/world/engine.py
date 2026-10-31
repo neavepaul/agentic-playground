@@ -32,6 +32,8 @@ class WorldEngine:
         self._initial_rooms_until = {}
         # Bumped by every reset, so decisions made against an older world can be discarded.
         self.generation = 0
+        # What Kip last perceived around him: (room, {person: activity}). See presence_changes().
+        self._perceived: tuple[str, dict[str, str]] | None = None
         # Deliberate (commit aa30271, tests in test_clock.py): a fresh start follows the
         # schedule immediately, while a reset restores house.json rooms until the next
         # schedule boundary.
@@ -61,6 +63,23 @@ class WorldEngine:
                 return entry.room
         return person.room
 
+    def _activity(self, person) -> str:
+        """What a person is visibly doing now: their schedule entry's, else their default."""
+        if self._clock is not None and person.schedule and                 self._clock.simulated_seconds() >= self._initial_rooms_until.get(person.id, -1):
+            hour = self._clock.hour()
+            for entry in person.schedule:
+                if _in_range(entry.from_hour, entry.to_hour, hour) and entry.activity:
+                    return entry.activity
+        return person.activity
+
+    def _feature_state(self, feature) -> str:
+        if self._clock is not None:
+            hour = self._clock.hour()
+            for timed in feature.states:
+                if _in_range(timed.from_hour, timed.to_hour, hour):
+                    return timed.state
+        return feature.state
+
     def snapshot(self) -> dict:
         result = self._world.snapshot()
         if self._clock:
@@ -71,6 +90,7 @@ class WorldEngine:
     def reset(self) -> None:
         self._world = _load_world(self.world_file)
         self.generation += 1
+        self._perceived = None
         if self._clock:
             self._clock.reset()
         self._hold_initial_rooms()
@@ -104,14 +124,63 @@ class WorldEngine:
     def look(self) -> dict:
         w = self._world
         room = w.robot.room
-        return {"room": room, "connections": w.rooms[room].connections[:],
-                "people": [{"id": p.id, "name": p.name} for p in w.people.values()
-                           if self._effective_room(p) == room],
+        place = w.rooms[room]
+        view = {"room": room, "connections": place.connections[:],
+                "people": [{"id": p.id, "name": p.name, **({"activity": a} if (a := self._activity(p)) else {})}
+                           for p in w.people.values() if self._effective_room(p) == room],
                 "objects": [{"id": o.id, "name": o.name, "portable": o.portable}
                             for o in w.objects.values() if o.location == Location(kind="room", id=room)],
                 "held_objects": [{"object": o.id, "person": o.location.id}
                                  for o in w.objects.values() if o.location.kind == "person"
                                  and self._effective_room(w.people[o.location.id]) == room]}
+        if place.description:
+            view["description"] = place.description
+        if place.features:
+            view["features"] = [{"id": f.id, "name": f.name,
+                                 **({"state": state} if (state := self._feature_state(f)) else {}),
+                                 **({"description": f.description} if f.description else {})}
+                                for f in place.features]
+        return view
+
+    def surroundings(self) -> dict:
+        """What Kip perceives where he stands, without spending an action.
+
+        A body in a room sees and hears that room: the same view as look, and only
+        that room. Nothing about other rooms, schedules or the full snapshot.
+        """
+        view = self.look()
+        view["room_name"] = self._world.rooms[view["room"]].name
+        if self._clock:
+            view["time"] = self._clock.time_str()
+        return view
+
+    def presence_changes(self) -> list[dict]:
+        """People arriving, leaving or changing what they do in Kip's room since the last check.
+
+        Moving to another room re-baselines quietly: who was already there was found,
+        not noticed arriving, and look reports them. Pure state comparison; no model.
+        """
+        room = self._world.robot.room
+        present = {p.id: self._activity(p) for p in self._world.people.values()
+                   if self._effective_room(p) == room}
+        previous, self._perceived = self._perceived, (room, present)
+        if previous is None or previous[0] != room:
+            return []
+        before, name = previous[1], lambda pid: self._world.people[pid].name
+        where = self._world.rooms[room].name
+        changes = []
+        for pid in present.keys() - before.keys():
+            doing = f", {present[pid]}" if present[pid] else ""
+            changes.append({"change": "arrived", "person": pid, "room": room, "activity": present[pid],
+                            "summary": f"{name(pid)} came into the {where.lower()}{doing}."})
+        for pid in before.keys() - present.keys():
+            changes.append({"change": "left", "person": pid, "room": room,
+                            "summary": f"{name(pid)} left the {where.lower()}."})
+        for pid in present.keys() & before.keys():
+            if present[pid] != before[pid] and present[pid]:
+                changes.append({"change": "activity", "person": pid, "room": room, "activity": present[pid],
+                                "summary": f"{name(pid)} is now {present[pid]}."})
+        return sorted(changes, key=lambda change: (change["person"], change["change"]))
 
     def move_to(self, room: str) -> dict:
         w = self._world
@@ -158,7 +227,7 @@ class WorldEngine:
         npc.messages[:] = npc.messages[-50:]
         text = message.lower()
         words = set(re.findall(r"\w+", text.replace("_", " ")))
-        response = "I heard your message. I don't have any more information about that."
+        response = npc.fallback_response or "I heard your message. I don't have any more information about that."
         for dialogue in npc.dialogue:
             if any(set(re.findall(r"\w+", topic.lower().replace("_", " "))) <= words for topic in dialogue.topics):
                 response = dialogue.response

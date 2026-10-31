@@ -103,6 +103,10 @@ class AgentMind:
                 if now - self._last_world_push >= 10.0:
                     self._bus.emit("world_tick", world=self._engine.snapshot(), skip_history=True)
                     self._last_world_push = now
+                # Kip's senses: who comes, goes or changes what they're doing around him.
+                # A state comparison, never a model call; chat and reflection read the events.
+                for change in self._engine.presence_changes():
+                    self._bus.emit("presence_noticed", "kip", **change)
                 # Conversations change Kip too: save that even while nobody lets him idle.
                 self._save_persona()
                 if (self._settings.idle_reflection_enabled and not self._manager.active_id

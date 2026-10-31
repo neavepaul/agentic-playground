@@ -198,6 +198,28 @@ class ChatSession:
     def _status(self, speaker_id: str | None = None) -> dict:
         status = self.engine.get_status()
         status["talking_with"] = self._speaker_name(speaker_id)
+        # Live senses: the room Kip is standing in, as he sees and hears it now (nothing beyond it),
+        # and who came, went or changed what they were doing since he got here.
+        around = self.engine.surroundings()
+        # Compact: every token here is read again on every reply. Full detail comes from look.
+        held = {h["object"]: h["person"] for h in around["held_objects"]}
+        view = {"room": around["room_name"], "description": around.get("description", ""),
+                "people": [p["name"] + (f" ({p['activity']})" if p.get("activity") else "") for p in around["people"]],
+                "things": [o["name"] for o in around["objects"]]
+                          + [f"{obj} (held by {person})" for obj, person in held.items()],
+                "fixtures": [f["name"] + (f": {f['state']}" if f.get("state") else "")
+                             for f in around.get("features", [])]}
+        status["around_me_now"] = {key: value for key, value in view.items() if value}
+        noticed = []
+        for event in reversed(self.bus.history):
+            if event["type"] == "robot_moved":
+                break
+            if event["type"] == "presence_noticed":
+                noticed.append(event["data"]["summary"])
+                if len(noticed) == 3:
+                    break
+        if noticed:
+            status["just_noticed"] = noticed[::-1]
         active = self.manager.active()
         # "none", not null: models repeat null verbatim ("my current errand is null").
         status["current_errand"] = errand_progress(active) if active else "none"

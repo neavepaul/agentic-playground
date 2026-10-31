@@ -67,6 +67,7 @@ function eventText(event) {
   const o = d?.observation;
   if (event.type === 'room_observed') return `In ${o.room}: ${[...o.people.map(p => p.name), ...o.objects.map(x => x.name)].join(', ') || 'no people or objects'}. Exits: ${o.connections.join(', ')}.`;
   if (event.type === 'robot_moved') return `Moved from ${o.from_room} to ${o.room}.`;
+  if (event.type === 'presence_noticed') return `Noticed: ${d.summary}`;
   if (event.type === 'person_spoken_to') return `${o.person}: “${o.response}”`;
   if (event.type === 'object_picked_up') return `Picked up ${o.object}.`;
   if (event.type === 'object_dropped') return `Dropped ${o.object} in ${o.room}.`;

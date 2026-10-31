@@ -37,6 +37,8 @@ class ScheduleEntry(ScenarioModel):
     from_hour: float = Field(ge=0, lt=24)
     to_hour: float = Field(ge=0, lt=24)
     room: str
+    # What they are doing there, as anyone in the room could see ("cooking dinner").
+    activity: str = Field(default="", max_length=80)
 
     @model_validator(mode="after")
     def hours_differ(self):
@@ -52,6 +54,26 @@ class Person(ScenarioModel):
     messages: list[str] = Field(default_factory=list)
     dialogue: list[Dialogue] = Field(default_factory=list)
     schedule: list[ScheduleEntry] = Field(default_factory=list)
+    # Seen when no schedule entry says otherwise.
+    activity: str = Field(default="", max_length=80)
+    # Their own words when nothing they know matches what Kip said.
+    fallback_response: str = Field(default="", max_length=300)
+
+
+class FeatureState(ScenarioModel):
+    """How a fixture looks or sounds during part of the day ("on", "steaming")."""
+    from_hour: float = Field(ge=0, lt=24)
+    to_hour: float = Field(ge=0, lt=24)
+    state: str = Field(min_length=1, max_length=60)
+
+
+class Feature(ScenarioModel):
+    """A fixture in a room: perceivable, not portable, not an object to fetch."""
+    id: str
+    name: str = Field(min_length=1, max_length=40)
+    description: str = Field(default="", max_length=160)
+    state: str = Field(default="", max_length=60)  # when no timed state applies
+    states: list[FeatureState] = Field(default_factory=list)
 
 
 class Room(ScenarioModel):
@@ -61,6 +83,9 @@ class Room(ScenarioModel):
     outline: list[tuple[float, float]] = Field(default_factory=list)
     anchor: tuple[float, float] = (0, 0)
     color: str = "#d3dfc4"
+    # Perceived only by being there; never part of the prior map.
+    description: str = Field(default="", max_length=240)
+    features: list[Feature] = Field(default_factory=list)
 
 
 class Door(ScenarioModel):
@@ -96,6 +121,10 @@ class World(ScenarioModel):
                 raise ValueError("Room connections must not repeat.")
             if room.outline and len(room.outline) < 3:
                 raise ValueError("Room outlines need at least three points.")
+            feature_ids = [feature.id for feature in room.features]
+            if len(set(feature_ids)) != len(feature_ids) or not all(
+                    re.fullmatch(r"[a-z][a-z0-9_]{0,39}", key) for key in feature_ids):
+                raise ValueError("Feature IDs must be unique valid tool IDs within a room.")
             for other in room.connections:
                 if other == room.id or other not in self.rooms or room.id not in self.rooms[other].connections:
                     raise ValueError("Room connections must exist and be reciprocal.")
@@ -117,7 +146,8 @@ class World(ScenarioModel):
 
     def floor_plan(self) -> dict:
         # A preloaded map contains no occupants, object locations or NPC knowledge.
-        return {"rooms": {key: room.model_dump() for key, room in self.rooms.items()},
+        return {"rooms": {key: room.model_dump(exclude={"description", "features"})
+                          for key, room in self.rooms.items()},
                 "doors": [door.model_dump() for door in self.doors]}
 
     def snapshot(self) -> dict:

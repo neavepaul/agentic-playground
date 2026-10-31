@@ -21,7 +21,33 @@
         [5.8, 8.6]
       ],
       "anchor": [8.5, 6.8],
-      "color": "#d2e699"
+      "color": "#d2e699",
+      "description": "The heart of the house: a worn rug, a deep sofa facing a big window, and whatever is cooking drifting in.",
+      "features": [
+        {
+          "id": "sofa",
+          "name": "Sofa",
+          "description": "Deep and sagging; one cushion is always flattened."
+        },
+        {
+          "id": "window",
+          "name": "Window",
+          "description": "A big window onto the street.",
+          "state": "dark, curtains drawn",
+          "states": [
+            {"from_hour": 7, "to_hour": 18, "state": "bright with daylight"},
+            {"from_hour": 18, "to_hour": 21, "state": "dusky"}
+          ]
+        },
+        {
+          "id": "tv",
+          "name": "TV",
+          "state": "off",
+          "states": [
+            {"from_hour": 19, "to_hour": 23, "state": "on, quietly"}
+          ]
+        }
+      ]
     },
     "kitchen": {
       "id": "kitchen",
@@ -36,7 +62,33 @@
         [4.75, 5.05]
       ],
       "anchor": [5.8, 4.2],
-      "color": "#d5a3be"
+      "color": "#d5a3be",
+      "description": "Small and warm, tiled floor, a fridge covered in notes and magnets.",
+      "features": [
+        {
+          "id": "kettle",
+          "name": "Kettle",
+          "state": "cold",
+          "states": [
+            {"from_hour": 7, "to_hour": 9, "state": "steaming"},
+            {"from_hour": 16, "to_hour": 17, "state": "steaming"}
+          ]
+        },
+        {
+          "id": "fridge",
+          "name": "Fridge",
+          "description": "A shopping list and a child's drawing held on with magnets.",
+          "state": "humming"
+        },
+        {
+          "id": "stove",
+          "name": "Stove",
+          "state": "off",
+          "states": [
+            {"from_hour": 17, "to_hour": 20, "state": "pans bubbling"}
+          ]
+        }
+      ]
     },
     "bedroom_corridor": {
       "id": "bedroom_corridor",
@@ -53,7 +105,23 @@
         [2.55, 6.05]
       ],
       "anchor": [4.1, 5.55],
-      "color": "#f1df96"
+      "color": "#f1df96",
+      "description": "A narrow corridor with family photos along one wall.",
+      "features": [
+        {
+          "id": "photos",
+          "name": "Family photos",
+          "description": "Holidays, a wedding, and a dog nobody here mentions."
+        },
+        {
+          "id": "night_light",
+          "name": "Night light",
+          "state": "off",
+          "states": [
+            {"from_hour": 20, "to_hour": 7, "state": "glowing dimly"}
+          ]
+        }
+      ]
     },
     "master_bedroom": {
       "id": "master_bedroom",
@@ -68,7 +136,34 @@
         [0.3, 8.6]
       ],
       "anchor": [1.4, 6.9],
-      "color": "#88c9e8"
+      "color": "#88c9e8",
+      "description": "Big bed, heavy curtains, a reading chair under a lamp.",
+      "features": [
+        {
+          "id": "bed",
+          "name": "Bed",
+          "state": "made",
+          "states": [
+            {"from_hour": 22, "to_hour": 8, "state": "slept in"}
+          ]
+        },
+        {
+          "id": "reading_lamp",
+          "name": "Reading lamp",
+          "state": "off",
+          "states": [
+            {"from_hour": 20, "to_hour": 23, "state": "on"}
+          ]
+        },
+        {
+          "id": "curtains",
+          "name": "Curtains",
+          "state": "open",
+          "states": [
+            {"from_hour": 21, "to_hour": 7, "state": "closed"}
+          ]
+        }
+      ]
     },
     "second_bedroom": {
       "id": "second_bedroom",
@@ -83,7 +178,23 @@
         [2.55, 8.6]
       ],
       "anchor": [4.175, 7.3],
-      "color": "#83c99a"
+      "color": "#83c99a",
+      "description": "Posters, and a desk cluttered with sketchbooks and cables.",
+      "features": [
+        {
+          "id": "desk",
+          "name": "Desk",
+          "description": "Sketchbooks, pencils and a half-built circuit board."
+        },
+        {
+          "id": "speaker",
+          "name": "Speaker",
+          "state": "silent",
+          "states": [
+            {"from_hour": 15, "to_hour": 22, "state": "playing music softly"}
+          ]
+        }
+      ]
     },
     "entrance": {
       "id": "entrance",
@@ -99,7 +210,20 @@
         [10.7, 2.9]
       ],
       "anchor": [11.275, 2.5],
-      "color": "#f1df96"
+      "color": "#f1df96",
+      "description": "Coats on hooks, a shoe rack, the front door.",
+      "features": [
+        {
+          "id": "front_door",
+          "name": "Front door",
+          "state": "closed"
+        },
+        {
+          "id": "coat_hooks",
+          "name": "Coat hooks",
+          "description": "Four hooks; one coat is still damp."
+        }
+      ]
     },
     "office": {
       "id": "office",
@@ -114,7 +238,28 @@
         [11.85, 5.05]
       ],
       "anchor": [13, 3.6],
-      "color": "#9cb9df"
+      "color": "#9cb9df",
+      "description": "Two monitors, a whiteboard full of diagrams, a plant that needs water.",
+      "features": [
+        {
+          "id": "monitors",
+          "name": "Monitors",
+          "state": "off",
+          "states": [
+            {"from_hour": 9, "to_hour": 17, "state": "on, full of spreadsheets"}
+          ]
+        },
+        {
+          "id": "whiteboard",
+          "name": "Whiteboard",
+          "description": "Boxes and arrows; 'deadline Fri' circled twice."
+        },
+        {
+          "id": "plant",
+          "name": "Fern",
+          "description": "Drooping. The soil is dry."
+        }
+      ]
     }
   },
   "doors": [
@@ -180,13 +325,29 @@
             "paul"
           ],
           "response": "Paul needs his medicine today. I'm not sure where he's got to."
+        },
+        {
+          "topics": [
+            "dinner"
+          ],
+          "response": "Dinner's at seven. Tell everyone, would you?"
+        },
+        {
+          "topics": [
+            "how",
+            "are",
+            "you"
+          ],
+          "response": "Busy as ever, but well. Thank you for asking."
         }
       ],
       "schedule": [
-        {"from_hour": 8, "to_hour": 12, "room": "hall"},
-        {"from_hour": 12, "to_hour": 18, "room": "kitchen"},
-        {"from_hour": 18, "to_hour": 8, "room": "master_bedroom"}
-      ]
+        {"from_hour": 8, "to_hour": 12, "room": "hall", "activity": "reading the newspaper"},
+        {"from_hour": 12, "to_hour": 18, "room": "kitchen", "activity": "cooking"},
+        {"from_hour": 18, "to_hour": 8, "room": "master_bedroom", "activity": "winding down with a book"}
+      ],
+      "activity": "pottering about",
+      "fallback_response": "Oh, I wouldn't know about that, love. Ask Paul, he reads everything."
     },
     "neave": {
       "id": "neave",
@@ -200,8 +361,24 @@
             "paul"
           ],
           "response": "I haven't seen Paul or the medicine, sorry."
+        },
+        {
+          "topics": [
+            "laptop"
+          ],
+          "response": "That's mine. Please don't move it, I've got things open."
+        },
+        {
+          "topics": [
+            "how",
+            "are",
+            "you"
+          ],
+          "response": "Tired, honestly. Long day."
         }
-      ]
+      ],
+      "activity": "working on a laptop",
+      "fallback_response": "Hm? Sorry, I was miles away. What was that?"
     },
     "minu": {
       "id": "minu",
@@ -215,8 +392,22 @@
             "paul"
           ],
           "response": "The medicine is in this room. Paul mentioned he needed it."
+        },
+        {
+          "topics": [
+            "drawing"
+          ],
+          "response": "It's a robot. Okay, it's you. Don't make it weird."
+        },
+        {
+          "topics": [
+            "music"
+          ],
+          "response": "It's lo-fi. Helps me think."
         }
-      ]
+      ],
+      "activity": "sketching at the desk",
+      "fallback_response": "Not sure. Want to see what I'm drawing instead?"
     },
     "paul": {
       "id": "paul",
@@ -229,13 +420,21 @@
             "medicine"
           ],
           "response": "I need the medicine, please."
+        },
+        {
+          "topics": [
+            "keys"
+          ],
+          "response": "If you find my keys, they're probably in the kitchen. They always are."
         }
       ],
       "schedule": [
-        {"from_hour": 9, "to_hour": 17, "room": "office"},
-        {"from_hour": 17, "to_hour": 22, "room": "kitchen"},
-        {"from_hour": 22, "to_hour": 9, "room": "master_bedroom"}
-      ]
+        {"from_hour": 9, "to_hour": 17, "room": "office", "activity": "working at the computer"},
+        {"from_hour": 17, "to_hour": 22, "room": "kitchen", "activity": "making tea and snacking"},
+        {"from_hour": 22, "to_hour": 9, "room": "master_bedroom", "activity": "asleep"}
+      ],
+      "activity": "busy",
+      "fallback_response": "Can't talk long, I'm in the middle of something."
     }
   },
   "objects": {
