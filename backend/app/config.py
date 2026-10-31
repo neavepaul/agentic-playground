@@ -61,7 +61,12 @@ class Settings(BaseSettings):
     chat_provider: Literal["colibri", "ollama"] | None = None
     chat_model: str | None = None
     chat_base_url: str | None = None
-    chat_max_tokens: int = Field(default=300, ge=50, le=2000)
+    # Brevity comes from the prompt, not a 300-token ceiling on complex answers.
+    chat_max_tokens: int = Field(default=1200, ge=50, le=16384)
+    # Stable legacy household conversation. Separate IDs at the ChatSession boundary
+    # isolate transcripts; they are not user authentication or independent robots.
+    chat_session_id: str = Field(default="home", min_length=1, max_length=100)
+    chat_context_tokens: int = Field(default=6000, ge=1024, le=32768)
     chat_temperature: float = Field(default=0.6, ge=0, le=1.5)
     # confirm: errands start only when asked or after a yes to Kip's offer.
     # act: any errand the chat model proposes starts immediately (less safe).

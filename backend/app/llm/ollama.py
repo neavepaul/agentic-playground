@@ -58,6 +58,7 @@ class OllamaClient:
                           temperature: float | None = None) -> AsyncIterator[str]:
         """Plain conversational text as NDJSON chunks; no format grammar, no thinking."""
         started, self.last_metrics = time.monotonic(), {}
+        completed = False
         try:
             async with self.http.stream("POST", "/api/chat", json={
                 "model": self.settings.ollama_model, "messages": messages, "stream": True, "think": False,
@@ -74,9 +75,16 @@ class OllamaClient:
                         self.last_metrics.setdefault("first_token_seconds", round(time.monotonic() - started, 3))
                         yield delta
                     if chunk.get("done"):
+                        completed = True
+                        self.last_metrics.update({name: chunk[key] / 1e9 for key, name in _DURATIONS.items()
+                                                  if isinstance(chunk.get(key), (int, float))})
+                        self.last_metrics.update({name: chunk[key] for key, name in _COUNTS.items()
+                                                  if isinstance(chunk.get(key), int)})
                         if chunk.get("done_reason") == "length":
                             self.last_metrics["truncated"] = True
                         break
+            if not completed:
+                raise ModelError("Ollama stream ended before confirming completion.")
             self.last_metrics["total_seconds"] = round(time.monotonic() - started, 3)
         except httpx.TimeoutException:
             raise ModelError("Ollama timed out while replying.") from None

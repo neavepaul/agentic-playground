@@ -25,10 +25,11 @@ from .intent import Intent, introduced_as, read_intent
 from app.agents.schemas import GoalCondition, GoalPlan, InitialCapability
 from .prompt import ChatAction, TrailerSplitter, build_messages
 from .spoken import spoken
+from .context import ContextBudgetError, message_tokens
 
 _log = logging.getLogger("agentic_friend.chat")
 
-HISTORY = 50
+HISTORY = 200
 # Past exchanges are recalled for what the person said. Kip's own old lines are left out:
 # shown them, the model repeats them word for word.
 _OWN_OLD_LINE = re.compile(r"\s*\|\s*I replied:.*$", re.S)
@@ -41,7 +42,7 @@ FIRST_PERSON = re.compile(r"\b(i|i'm|i've|me|my|mine|myself|the user)\b")
 
 class ChatSession:
     def __init__(self, client, bus, manager, engine, settings, store=None, persona=None,
-                 shares_task_model: bool = True) -> None:
+                 shares_task_model: bool = True, session_id: str | None = None) -> None:
         self.client, self.bus, self.manager, self.engine = client, bus, manager, engine
         self.settings, self.store, self.persona = settings, store, persona
         self.shares_task_model = shares_task_model
@@ -56,7 +57,9 @@ class ChatSession:
         # Bumped by every world reset: offers, queued errands and narration from an
         # older world are never acted on.
         self.generation = 0
-        self.session_id = str(uuid4())
+        self.session_id = session_id or str(uuid4())
+        if self.store:
+            self.turns.extend(self.store.conversation_turns(self.session_id, HISTORY))
         self._announced: set[tuple[str, ...]] = set()
         self.offer: Offer | None = None
         self.offer_log: deque[dict] = deque(maxlen=20)
@@ -64,8 +67,11 @@ class ChatSession:
         self._started_by_turn: set[str] = set()
         self._remembered: list[str] = []
         self._queued_grants: dict[tuple[str, ...], Grant] = {}
+        self._queued_plans: dict[tuple[str, ...], GoalPlan] = {}
         self._declined: set[tuple[str, ...]] = set()  # offers refused in this conversation: not offered again
         self._intents: dict[str, Intent] = {}         # user turn id -> what that message does
+        self._work_epoch = 0
+        self._turn_epochs: dict[str, int] = {}
         self._user_turns = 0
         self._offered: dict[tuple[str, ...], int] = {}  # offer identity -> user turn it was made on
         self._last_unasked_offer: tuple[int, Offer | None] = (-99, None)
@@ -101,6 +107,7 @@ class ChatSession:
         before = set(self.manager.restrictions.describe())
         if self.manager.restrictions.update(text, rooms):
             _log.info("Restrictions now: %s", self.manager.restrictions.describe())
+            self.manager.save_restrictions()
         after = set(self.manager.restrictions.describe())
         speaker_id = self._speaker_id(speaker)
         if speaker_id is None and not speaker:
@@ -111,6 +118,10 @@ class ChatSession:
         turn = self._add_turn("user", text, speaker=speaker_id)
         self._user_turns += 1
         self._intents[turn["id"]] = read_intent(text, sorted(before - after), sorted(after - before))
+        if self._intents[turn["id"]].cancel:
+            # Cancellation must not wait behind a slow or unavailable chat model.
+            self._cancel_work()
+        self._turn_epochs[turn["id"]] = self._work_epoch
         if self.gate is not None:
             self.gate.conversation_waiting(+1)  # no new errand model call starts until this reply is done
         # Consent is judged against the offer the person could actually see when they
@@ -123,7 +134,8 @@ class ChatSession:
         return list(self.turns)
 
     def state(self) -> dict:
-        return {"queued_errands": list(self.pending_goals), "offered_errand": self.pending_offer,
+        return {"session_id": self.session_id,
+                "queued_errands": list(self.pending_goals), "offered_errand": self.pending_offer,
                 "offer": self.offer.public() if self.offer else None, "generation": self.generation}
 
     async def drain(self) -> None:
@@ -135,6 +147,8 @@ class ChatSession:
     async def close(self) -> None:
         self._closed = True
         self.pending_goals.clear()
+        self._queued_grants.clear()
+        self._queued_plans.clear()
         self._expire_offer("expired")
         jobs = list(self._jobs)
         for job in jobs:
@@ -157,10 +171,15 @@ class ChatSession:
         job.add_done_callback(self._jobs.discard)
 
     def _add_turn(self, role: str, text: str, **extra) -> dict:
+        canonical = text
         if role != "user":
             text = spoken(text)  # Kip talks; code, markdown and links never reach the voice
         turn = {"id": str(uuid4()), "role": role, "text": text,
+                "content": canonical, "screen_text": canonical, "spoken_text": text,
+                "session_id": self.session_id,
                 "at": datetime.now(timezone.utc).isoformat(), **extra}
+        if self.store:
+            self.store.append_turn(self.session_id, turn)
         self.turns.append(turn)
         speaker = "user" if role == "user" else self.name
         self.bus.emit("chat_message", speaker, turn=turn, summary=f"{speaker}: {text}")
@@ -252,8 +271,10 @@ class ChatSession:
     async def _respond(self, user_turn: dict, earlier: list[dict]) -> None:
         reply_id = str(uuid4())
         finished = False
+        queued_at = time.monotonic()
         try:
             async with self._lock:  # FIFO: one reply at a time, in order
+                queue_seconds = time.monotonic() - queued_at
                 self.replying = True
                 waiting = self.shares_task_model and self.manager.active_id is not None
                 self.bus.emit("chat_thinking", self.name, skip_history=True, reply_id=reply_id,
@@ -273,7 +294,9 @@ class ChatSession:
                 guidance = self._guidance(self._intents.get(user_turn["id"]) or read_intent(user_turn["text"]))
                 messages = build_messages(self.name, voice, prompt_memories(memories),
                                           self._status(user_turn.get("speaker")), earlier, user_turn["text"],
-                                          guidance=guidance)
+                                          guidance=guidance, context_tokens=min(
+                                              self.settings.chat_context_tokens,
+                                              self.settings.context_tokens - self.settings.chat_max_tokens))
                 splitter = TrailerSplitter()
                 try:
                     async for chunk in self.client.stream_text(messages, max_tokens=self.settings.chat_max_tokens,
@@ -298,6 +321,10 @@ class ChatSession:
                 metrics = dict(getattr(self.client, "last_metrics", {}) or {})
                 metrics["memory_recall_seconds"] = round(recall_seconds, 3)
                 metrics["input_chars"] = sum(len(m["content"]) for m in messages)
+                metrics["estimated_prompt_tokens"] = message_tokens(messages)
+                metrics["token_estimator"] = "utf8_byte_upper_estimate"
+                metrics["queue_seconds"] = round(queue_seconds, 3)
+                metrics["chat_model_calls"] = 1
                 action, action_error = parsed.action, parsed.error
                 text = parsed.visible
                 if metrics.get("truncated"):
@@ -314,6 +341,11 @@ class ChatSession:
                 reply_turn = self._finish_turn(user_turn, reply_id, text, action, metrics, action_error=action_error)
                 finished = True
                 await self._act(action, user_turn, reply_turn, written=text)
+        except ContextBudgetError as exc:
+            self._finish_turn(user_turn, reply_id,
+                              "I can't fit all the context for that into one reply. Could you split the request "
+                              "into smaller parts?", None, {"chat_model_calls": 0}, error=str(exc))
+            finished = True
         except ModelError as exc:
             self._finish_turn(user_turn, reply_id, "I can't think clearly right now: my language model isn't "
                                                    "answering. Please check that it's running.", None, {},
@@ -330,6 +362,7 @@ class ChatSession:
             self.replying = False
             self.last_activity = time.monotonic()
             self._offer_seen.pop(user_turn["id"], None)
+            self._turn_epochs.pop(user_turn["id"], None)
             if self.gate is not None:
                 self.gate.conversation_waiting(-1)
             if not finished:
@@ -369,6 +402,8 @@ class ChatSession:
     def _decide_errands(self, action: ChatAction | None, user_turn: dict) -> None:
         if self._closed:
             return
+        if self._turn_epochs.get(user_turn["id"], self._work_epoch) != self._work_epoch:
+            return  # A cancellation superseded this still-generating proposal.
         said = user_turn["text"]
         intent = self._intents.get(user_turn["id"]) or read_intent(said)
         answer = classify_reply(said)
@@ -382,7 +417,7 @@ class ChatSession:
         offer = self.offer if self._offer_valid() else None
         replying = bool(offer and seen == offer.id)
         if intent.cancel:
-            self._cancel_work()
+            # Already applied at submission. A delayed reply cannot cancel newer work.
             return
         if replying:
             # This message is the person's answer to Kip's offer.
@@ -499,9 +534,11 @@ class ChatSession:
 
     def _cancel_work(self) -> None:
         """"Stop that": the current errand is cancelled and nothing queued or offered runs."""
+        self._work_epoch += 1
         self._expire_offer("declined" if self.offer and self._offer_valid() else "expired")
         self.pending_goals.clear()
         self._queued_grants.clear()
+        self._queued_plans.clear()
         if self.manager.active_id:
             goal = self.manager.active()["goal"]
 
@@ -643,6 +680,8 @@ class ChatSession:
             self._announced.discard(task_identity(goal))
             self.pending_goals.append(goal)
             self._queued_grants[task_identity(goal)] = grant
+            if plan is not None:
+                self._queued_plans[task_identity(goal)] = plan
             self._add_turn("kip", f"I'll do that right after my current errand: {goal}", source="narration")
 
     async def _start_next_when_free(self, generation: int) -> None:
@@ -650,7 +689,8 @@ class ChatSession:
             await asyncio.sleep(0.05)
         if self.pending_goals and not self._closed and generation == self.generation:
             goal = self.pending_goals.popleft()
-            self._start_or_queue(goal, grant=self._queued_grants.pop(task_identity(goal), None))
+            self._start_or_queue(goal, grant=self._queued_grants.pop(task_identity(goal), None),
+                                 plan=self._queued_plans.pop(task_identity(goal), None))
 
     def _narrate(self, event: dict) -> None:
         """Speak about errands in Kip's voice using templates, never a model call."""

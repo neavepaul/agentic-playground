@@ -67,6 +67,7 @@ class ColibriClient:
                           temperature: float | None = None) -> AsyncIterator[str]:
         """Plain conversational text as server-sent events; no JSON, no thinking."""
         started, self.last_metrics = time.monotonic(), {}
+        completed = False
         try:
             async with self.http.stream("POST", "chat/completions", json={
                 "model": self.settings.colibri_model, "messages": messages, "stream": True,
@@ -80,6 +81,7 @@ class ColibriClient:
                         continue
                     data = line[5:].strip()
                     if data == "[DONE]":
+                        completed = True
                         break
                     envelope = json.loads(data)
                     usage = envelope.get("usage") or {}
@@ -96,6 +98,10 @@ class ColibriClient:
                         # The model works; the reply was just cut off. The caller decides
                         # what to show and never runs a half-written action.
                         self.last_metrics["truncated"] = True
+                    if choices[0].get("finish_reason") is not None:
+                        completed = True
+            if not completed:
+                raise ModelError("Colibri stream ended before confirming completion.")
             self.last_metrics["total_seconds"] = round(time.monotonic() - started, 3)
         except httpx.TimeoutException:
             raise ModelError("Colibri timed out while replying.") from None

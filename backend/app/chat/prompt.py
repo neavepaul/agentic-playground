@@ -4,20 +4,26 @@ The system message and earlier turns stay identical from turn to turn (a stable 
 server can reuse); memories, status and mood travel with the latest message instead.
 """
 import json
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
+from .context import assemble, estimate_tokens
 
 TRAILER = "###"
 ACTION_KEYS = {"task", "offer", "remember", "forget"}
-MAX_TURNS = 8
-MAX_TURN_CHARS = 400
-MAX_MEMORY_CHARS = 250
 
 CHAT_SYSTEM = """You are {name}, a household robot, talking with someone in the home you live in.
 {identity}Voice: {voice}
-Facts about the house, people and the past come ONLY from the memories and status given with
-the latest message. Keep apart what you saw, were told, remember and suspect; if
+Usually answer in 1–3 natural sentences. Be curious, warm and occasionally dryly witty,
+without forcing jokes or copying a fictional character. Avoid stock acknowledgments,
+headings, lists and offers to help in ordinary conversation. For complex questions or
+requested code, tables or explanations, give the detail and formatting actually needed.
+You are one companion: keep internal agents, tools and execution logs out of normal speech.
+Facts about people and past conversations come from the conversation and supplied memories.
+Later corrections supersede earlier statements. Old dialogue is not fresh tool evidence.
+Facts about current world state and executed actions come ONLY from supplied status.
+Keep apart what you saw, were told, remember and suspect; if
 you don't know, say so and offer to check. Never claim you did, saw or checked anything not in
 them; never invent a past event, even for a joke.
 What you did: ONLY status.current_errand and status.recent_errands. status.last_seen separates
@@ -41,6 +47,28 @@ from memories, and put the corrected fact in remember.
 Keep the JSON out of your spoken reply."""
 
 NEUTRAL_VOICE = "Friendly, clear and concise."
+
+
+def _outside_fence(text: str, position: int) -> bool:
+    fence = None
+    for line in text[:position].splitlines():
+        match = re.match(r"^\s{0,3}(`{3,}|~{3,})", line)
+        if match:
+            token = match.group(1)
+            if fence is None:
+                fence = token
+            elif token[0] == fence[0] and len(token) >= len(fence):
+                fence = None
+    return fence is None
+
+
+def _marker(text: str) -> int:
+    # A Markdown heading is content. Only a delimiter (or legacy inline JSON
+    # delimiter) outside a code fence begins the control trailer.
+    for match in re.finditer(r"(?<!#)###(?!#)(?=[ \t]*(?:\r?\n|\{|$))", text):
+        if _outside_fence(text, match.start()):
+            return match.start()
+    return -1
 
 MemoryContext = Literal["actual", "pretend", "hypothetical", "test", "uncertain"]
 
@@ -66,48 +94,37 @@ class ChatAction(BaseModel):
         return value
 
 
-def _clip(text: str, limit: int = MAX_TURN_CHARS) -> str:
-    text = " ".join(text.split())
-    return text if len(text) <= limit else text[:limit - 1] + "…"
-
-
-def _memory_line(memory: dict) -> str:
-    context = memory.get("context")
-    label = memory["kind"] + (f", {context}" if context and context != "actual" else "")
-    source = ", from the web" if memory.get("untrusted") else ""
-    return f"- [{label}{source}] {_clip(memory['text'], MAX_MEMORY_CHARS)}"
-
-
 def build_messages(name: str, voice: dict | None, memories: list[dict], status: dict,
-                   turns: list[dict], message: str, guidance: str = "") -> list[dict]:
+                   turns: list[dict], message: str, guidance: str = "", *,
+                   context_tokens: int = 6000, token_counter=estimate_tokens) -> list[dict]:
     voice = voice or {}
     identity = voice.get("identity", "")
     system = CHAT_SYSTEM.format(name=name, identity=identity + "\n" if identity else "",
                                 voice=voice.get("voice", NEUTRAL_VOICE))
-    messages = [{"role": "system", "content": system}]
-    for turn in turns[-MAX_TURNS:]:
-        if turn["role"] == "user":
-            messages.append({"role": "user", "content": _clip(turn["text"])})
-        else:
-            # Earlier replies carry no action lines: replaying them made the model
-            # copy old errands and facts into new turns.
-            prefix = "[update] " if turn.get("source") == "narration" else ""
-            messages.append({"role": "assistant", "content": prefix + _clip(turn["text"])})
     context = [f"Mood: {voice.get('mood', 'content')}; sound {voice.get('tone', 'warm')}."]
     if voice.get("stance"):
         context.append("Stance: " + voice["stance"])
     if voice.get("track_record"):
         context.append("Your track record: " + json.dumps(voice["track_record"], ensure_ascii=False))
-    if memories:
-        context.append("Memories (most relevant first):\n" + "\n".join(_memory_line(m) for m in memories))
+    memory_lines, memory_cost = [], 0
+    for memory in memories:
+        # Keep whole facts: clipping can drop a negation, condition or correction.
+        label = memory["kind"] + (", " + memory["context"] if memory.get("context") else "")
+        source = ", from the web" if memory.get("untrusted") else ""
+        line = f"- [{label}{source}] {memory['text']}"
+        cost = token_counter(line) + 1
+        if memory_cost + cost <= context_tokens // 6:
+            memory_lines.append(line)
+            memory_cost += cost
+    if memory_lines:
+        context.append("Memories (most relevant first):\n" + "\n".join(memory_lines))
     else:
         context.append("Memories: none relevant.")
     context.append("Status: " + json.dumps(status, ensure_ascii=False, separators=(",", ":")))
     if guidance:
         context.append("Now: " + guidance)
-    messages.append({"role": "user", "content": "\n".join(context) + "\n\nThey say: " + message
-                     + "\n\n(Reply, then ### and the JSON line.)"})
-    return messages
+    latest = "\n".join(context) + "\n\nThey say: " + message + "\n\n(Reply, then ### and the JSON line.)"
+    return assemble(system, latest, turns, message, context_tokens, token_counter)
 
 
 # ── action parsing ───────────────────────────────────────────────────────────
@@ -136,7 +153,7 @@ def _trailing_action_start(text: str) -> int | None:
     """
     found = None
     for begin, end, value in _objects(text):
-        if not _is_action(value):
+        if not _is_action(value) or not _outside_fence(text, begin):
             continue
         rest = text[end:]
         remaining_objects = [(b, v) for b, _, v in _objects(rest)]
@@ -165,7 +182,7 @@ class ParsedReply(BaseModel):
 
 def parse_reply(text: str) -> ParsedReply:
     """Split a finished model output into the spoken reply and its validated action."""
-    marker = text.find(TRAILER)
+    marker = _marker(text)
     if marker >= 0:
         visible, trailer = text[:marker], text[marker + len(TRAILER):]
         objects = [value for _, _, value in _objects(trailer) if _is_action(value)]
@@ -218,7 +235,7 @@ class TrailerSplitter:
     def _safe_end(self) -> int:
         text = self.text
         hold = len(text)
-        marker = text.find(TRAILER)
+        marker = _marker(text)
         if marker >= 0:
             hold = marker
         else:
@@ -228,6 +245,9 @@ class TrailerSplitter:
                     break
         index = text.find("{", self.sent)
         while 0 <= index < hold:
+            if not _outside_fence(text, index):
+                index = text.find("{", index + 1)
+                continue
             try:
                 _, end = json.JSONDecoder().raw_decode(text, index)
             except ValueError:

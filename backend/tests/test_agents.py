@@ -525,8 +525,10 @@ async def test_repeated_rejected_reports_stop_across_delegations():
     # Bootstrap plus the one reflex scan of the start room; recovery chooses no tool.
     assert task.tool_count == 3
     assert TaskContext(goal="Another task").consecutive_report_rejections == 0
-    mgr.call_tool(task, "look", {})
-    assert task.consecutive_report_rejections == 0
+    # Probe the memory transition on an active copy; a terminal run cannot dispatch.
+    probe = task.model_copy(deep=True, update={"status": "running"})
+    mgr.call_tool(probe, "look", {})
+    assert probe.consecutive_report_rejections == 0
 
 
 async def test_report_claims_do_not_override_observed_search_coverage():
@@ -768,10 +770,11 @@ async def test_conversation_recovery_survives_redelegation_and_preserves_followu
     assert task.summary == "End test."
     talks = [a for a in task.action_history if a["tool"] == "talk_to"]
     assert len(talks) == 2
-    mgr.call_tool(task, "move_to", {"room": "hall"})
-    mgr.call_tool(task, "move_to", {"room": "kitchen"})
-    assert "talk_to:mom" in observable_commands(task)[0]
-    assert not task.conversation_rejections
+    probe = task.model_copy(deep=True, update={"status": "running"})
+    mgr.call_tool(probe, "move_to", {"room": "hall"})
+    mgr.call_tool(probe, "move_to", {"room": "kitchen"})
+    assert "talk_to:mom" in observable_commands(probe)[0]
+    assert not probe.conversation_rejections
     assert not TaskContext(goal="New task").conversation_rejections
 
 

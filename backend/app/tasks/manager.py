@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import re
 
@@ -109,6 +110,41 @@ class TaskManager:
         # What people asked Kip not to do. Shared and live: it binds every task,
         # including ones already queued or running, at the moment a tool would run.
         self.restrictions = Restrictions()
+        if self.memory_store:
+            saved = json.loads(self.memory_store.get_state("task-restrictions") or "{}")
+            for field in ("tools", "effects", "rooms"):
+                setattr(self.restrictions, field, set(saved.get(field, [])))
+            records = json.loads(self.memory_store.get_state("task-journal") or "[]")
+            for record in records[-50:]:
+                context = TaskContext.model_validate(record)
+                if context.status == "running":
+                    context.status = "failed"
+                    context.summary = ("Interrupted by restart. An in-flight action may have an unknown outcome; "
+                                       "nothing was replayed. Ask again after checking the current state.")
+                self.tasks[context.id] = context
+            if records:
+                self.checkpoint()
+
+    def save_restrictions(self) -> None:
+        if self.memory_store:
+            self.memory_store.set_state({"task-restrictions": json.dumps({
+                field: sorted(getattr(self.restrictions, field)) for field in ("tools", "effects", "rooms")})})
+
+    def checkpoint(self) -> None:
+        """Bounded durable task audit. Recovery never replays potentially physical effects."""
+        if self.memory_store:
+            self.memory_store.set_state({"task-journal": json.dumps([
+                task.model_dump(mode="json") for task in self.tasks.values()])})
+
+    def _before_dispatch(self, context: TaskContext, tool: str, arguments: dict) -> None:
+        self._ensure_running(context)
+        context.pending_action = {"tool": tool, "arguments": arguments}
+        self.checkpoint()
+
+    @staticmethod
+    def _ensure_running(context: TaskContext) -> None:
+        if context.status != "running":
+            raise LimitReached("A terminal task cannot execute more tools.")
 
     def start(self, goal: str, grant: Grant | None = None, plan=None) -> TaskContext:
         """Start a task. Without a grant it is a direct instruction (API): the goal
@@ -121,9 +157,11 @@ class TaskManager:
             rooms = {key: room.get("name", key)
                      for key, room in self.tools._engine.snapshot().get("rooms", {}).items()}
             self.restrictions.update(goal, rooms)
+            self.save_restrictions()
         grant = grant or Grant.full("api", goal)
         context = TaskContext(goal=goal, search_stale_after=self.settings.search_stale_after, grant=grant,
                               requested_tools=explicitly_requested_tools(grant.authorized_text))
+        context.metrics.llm_call_limit = self.settings.max_task_llm_calls
         self._sync_permissions(context)
         if self.persistent:
             context.long_term_memory = self.persistent.prompt()
@@ -135,6 +173,7 @@ class TaskManager:
         if len(self.tasks) >= 50:
             del self.tasks[next(iter(self.tasks))]
         self.tasks[context.id] = context
+        self.checkpoint()
         self.active_id = context.id
         self.bus.emit("task_started", task=context.public(), summary=goal)
         self.runner = asyncio.create_task(self._run(context, plan), name=f"task-{context.id}")
@@ -161,6 +200,7 @@ class TaskManager:
         context.summary = summary
         context.metrics.tool_actions = context.tool_count
         context.metrics.simulated_end = self.tools._engine.simulated_time() or ""
+        self.checkpoint()
         report = context.metrics.model_dump()
         _log.info("task_metrics task=%s status=%s %s", context.id, status,
                   " ".join(f"{key}={value}" for key, value in report.items() if value not in ("", 0, 0.0)))
@@ -289,16 +329,20 @@ class TaskManager:
         return False
 
     def call_tool(self, context: TaskContext, tool: str, arguments: dict) -> dict:
+        self._ensure_running(context)
         refused = self._refused(context, tool, arguments)
         if refused:
             return refused
         if context.tool_count >= self.settings.max_tool_calls:
             raise LimitReached("Maximum total tool calls reached.")
         context.tool_count += 1
+        self._before_dispatch(context, tool, arguments)
         result = self.tools.execute(tool, arguments, context.id)
         # When it was seen, on the house clock: recaps must tell fresh from old observations.
         result["observed_at"] = self.tools._engine.simulated_time() or ""
         context.record(tool, arguments, result)
+        context.pending_action = None
+        self.checkpoint()
         self.bus.emit("task_updated", task=context.public())
         return result
 
@@ -317,18 +361,23 @@ class TaskManager:
         return review.approved
 
     async def call_capability(self, context: TaskContext, tool: str, arguments: dict) -> dict:
+        self._ensure_running(context)
         refused = self._refused(context, tool, arguments)
         if refused:
             return refused
         if context.tool_count >= self.settings.max_tool_calls:
             raise LimitReached("Maximum total tool calls reached.")
         context.tool_count += 1
+        self._before_dispatch(context, tool, arguments)
         result = await self.capabilities.execute(tool, arguments, context)
         self._record_capability(context, tool, arguments, result)
+        context.pending_action = None
+        self.checkpoint()
         return result
 
     def _record_capability(self, context: TaskContext, tool: str, arguments: dict, result: dict) -> None:
         context.record(tool, arguments, result)
+        self.checkpoint()
         if result["success"]:
             context.metrics.useful_observations += 1
         if not result["success"]:
@@ -337,6 +386,7 @@ class TaskManager:
         self.bus.emit("task_updated", task=context.public())
 
     async def call_capability_batch(self, context: TaskContext, calls: list[dict]) -> list[dict]:
+        self._ensure_running(context)
         from app.capabilities.schemas import BatchAction
         from app.capabilities.tools import validation_reasons
         from pydantic import ValidationError
@@ -361,6 +411,7 @@ class TaskManager:
         if context.tool_count + len(actions) > self.settings.max_tool_calls:
             raise LimitReached("Maximum total tool calls reached; batch was not started.")
         context.tool_count += len(actions)
+        self._before_dispatch(context, "batch_capabilities", {"actions": actions})
         # Public reads and restricted Python can run independently. Physical
         # mutations and final answers are excluded by the batch schema.
         async def execute(tool, arguments):
@@ -374,6 +425,8 @@ class TaskManager:
             return result
         async with asyncio.TaskGroup() as group:
             running = iter([group.create_task(execute(tool, arguments)) for tool, arguments in actions])
+        context.pending_action = None
+        self.checkpoint()
         # Results in the order requested, refusals included.
         return [refused or next(running).result() for refused in refusals]
 

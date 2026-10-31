@@ -2,6 +2,7 @@ import json
 import logging
 import time
 from typing import Protocol, TypeVar
+from collections.abc import AsyncIterator
 
 from pydantic import BaseModel, ValidationError
 
@@ -19,6 +20,12 @@ class ModelError(RuntimeError):
 
 class LLMClient(Protocol):
     async def generate(self, messages: list[dict], response_schema: dict) -> str: ...
+
+
+class ConversationalClient(LLMClient, Protocol):
+    """Local model boundary shared by Colibri and Ollama; no agent-specific provider API."""
+    def stream_text(self, messages: list[dict], max_tokens: int = 300,
+                    temperature: float | None = None) -> AsyncIterator[str]: ...
 
 
 def validation_summary(schema: type[BaseModel], error: ValidationError) -> str:
@@ -74,12 +81,18 @@ async def structured(client: LLMClient, schema: type[T], prompt: str, context: d
     messages = [{"role": "system", "content": prompt + "\nOutput JSON schema:\n" + json.dumps(prompt_schema, separators=(",", ":"))},
                 {"role": "user", "content": json.dumps(context, ensure_ascii=False, separators=(",", ":"))}]
     for attempt in range(2):
+        limit = getattr(metrics, "llm_call_limit", 0)
+        if limit and metrics.llm_calls >= limit:
+            raise ModelError(f"Model-call budget ({limit}) used up; task is incomplete.")
         started = time.monotonic()
         _metrics_log.info("llm_call_started role=%s schema=%s attempt=%d input_chars=%d",
                           role or "unknown", schema.__name__, attempt + 1,
                           sum(len(message["content"]) for message in messages))
-        raw = await client.generate(messages, output_schema)
-        _record_metrics(client, metrics, role, schema.__name__, time.monotonic() - started)
+        try:
+            raw = await client.generate(messages, output_schema)
+        finally:
+            # Failed/cancelled attempts consume capacity too, including repair calls.
+            _record_metrics(client, metrics, role, schema.__name__, time.monotonic() - started)
         try:
             return schema.model_validate_json(raw)
         except (ValidationError, ValueError, TypeError) as exc:

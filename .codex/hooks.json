@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "graphify hook-check"
+            "command": "C:/Users/neave/.local/bin/graphify.EXE hook-check"
           }
         ]
       }

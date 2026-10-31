@@ -150,6 +150,15 @@ class MemoryStore:
                 value TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS conversation_turns (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                UNIQUE(session_id, turn_id)
+            );
+            CREATE INDEX IF NOT EXISTS conversation_session
+                ON conversation_turns(session_id, sequence);
             CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
                 text, about, content='memories', content_rowid='id');
             CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
@@ -410,6 +419,20 @@ class MemoryStore:
     def count(self) -> int:
         with self._lock:
             return self._db.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+
+    def append_turn(self, session_id: str, turn: dict) -> None:
+        """Journal before publication. Duplicate event delivery cannot duplicate a turn."""
+        with self._lock:
+            db = self._db
+            with db:
+                db.execute("INSERT OR IGNORE INTO conversation_turns(session_id, turn_id, payload) "
+                           "VALUES (?, ?, ?)", (session_id, turn["id"], json.dumps(turn, ensure_ascii=False)))
+
+    def conversation_turns(self, session_id: str, limit: int = 200) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute("SELECT payload FROM conversation_turns WHERE session_id = ? "
+                                    "ORDER BY sequence DESC LIMIT ?", (session_id, max(1, limit))).fetchall()
+            return [json.loads(row["payload"]) for row in reversed(rows)]
 
     # ── structured state ────────────────────────────────────────────────────
     def get_state(self, key: str) -> str | None:

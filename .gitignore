@@ -4,6 +4,7 @@ __pycache__/
 .pytest-temp/
 *.pyc
 .env
+.log
 node_modules/
 dist/
 artifacts/

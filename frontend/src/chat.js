@@ -59,7 +59,8 @@ export function renderTurn(turn) {
   if (turn.source === 'narration') node.classList.add('narration');
   if (turn.source === 'correction' || turn.source === 'clarification') node.classList.add('narration');
   if (turn.error) node.classList.add('error');
-  node.querySelector('p').textContent = turn.text;
+  node.querySelector('p').textContent = turn.screen_text ?? turn.content ?? turn.text;
+  node.querySelector('p').style.whiteSpace = 'pre-wrap';
   if (turn.action?.task) {
     const tag = document.createElement('span');
     tag.className = 'chat-task';

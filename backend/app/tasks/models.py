@@ -28,6 +28,7 @@ class Intention(BaseModel):
 class TaskMetrics(BaseModel):
     """Per-task execution counters used to compare inference cost across runs."""
     llm_calls: int = 0
+    llm_call_limit: int = 0  # zero only for standalone/unbudgeted callers
     coordinator_llm_calls: int = 0
     explorer_llm_calls: int = 0
     critic_llm_calls: int = 0
@@ -74,6 +75,9 @@ class TaskContext(BaseModel):
     explorer_reports: list[str] = Field(default_factory=list)
     conditions: list[GoalCondition] = Field(default_factory=list)
     answer: dict | None = None
+    # Written before dispatch and cleared only after result evidence is journaled.
+    # A restart with this set has an uncertain outcome, never an automatic retry.
+    pending_action: dict | None = None
     floor_plan: dict = Field(default_factory=dict)
     last_progress_signature: tuple | None = None
     action_feedback: list[str] = Field(default_factory=list)

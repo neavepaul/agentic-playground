@@ -295,10 +295,12 @@ async def test_a_web_lookup_cannot_turn_into_physical_exploration(dispatched):
 
 @pytest.mark.asyncio
 async def test_a_task_cannot_run_tools_beyond_its_grant_even_in_a_batch(dispatched):
+    from app.tasks.models import TaskContext
     engine, bus = WorldEngine(LEGACY_WORLD), EventBus()
     manager = TaskManager(Model(), WorldTools(engine, bus), bus, Settings())
     manager.restrictions.update("Don't run Python")
-    task = manager.start("Look something up", Grant.read_only("What is it?"))
+    # Exercise dispatch directly, without a competing planner terminating the run.
+    task = TaskContext(goal="Look something up", grant=Grant.read_only("What is it?"))
     results = await manager.call_capability_batch(task, [
         {"tool": "web_search", "arguments": {"query": "x"}},
         {"tool": "run_python", "arguments": {"code": "6 * 7"}}])

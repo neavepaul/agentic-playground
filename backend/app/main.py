@@ -65,7 +65,7 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
     manager = TaskManager(task_llm, WorldTools(engine, bus), bus, config, persistent, persona=persona,
                           memory_store=store)
     chat = ChatSession(chat_llm, bus, manager, engine, config, store=store, persona=persona,
-                       shares_task_model=shared)
+                       shares_task_model=shared, session_id=config.chat_session_id)
     chat.gate = task_llm if shared else None
     chat.attach()
     mind = AgentMind(task_llm, manager, engine, bus, config, persistent, persona=persona,
@@ -161,6 +161,7 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
                 raise HTTPException(422, "Cannot reload world definition: " + str(exc)) from None
             # A new world starts a new session; old tasks should not appear active in UI.
             manager.tasks.clear()
+            manager.checkpoint()
             bus.history.clear()
             bus.emit("world_reset", world=engine.snapshot(), summary="World restored to its initial state.")
             return snapshot()
@@ -176,7 +177,7 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
     @app.get("/api/tasks/{task_id}")
     async def task(task_id: str):
         if task_id not in manager.tasks:
-            raise HTTPException(404, "Task not found (tasks are held in memory until reset/restart).")
+            raise HTTPException(404, "Task not found (only the latest 50 tasks are retained, until world reset).")
         return manager.tasks[task_id].model_dump()
 
     @app.post("/api/tasks/{task_id}/cancel")

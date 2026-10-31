@@ -88,9 +88,7 @@ def is_question(text: str) -> bool:
 
 
 # ── task identity ──────────────────────────────────────────────────────────────
-_FILLER = {"the", "a", "an", "my", "our", "please", "for", "me", "us", "now", "just", "kip", "some",
-           "go", "and", "can", "could", "you", "would", "will", "to"}
-_NEGATIONS = {"no", "not", "never", "n't", "without", "nobody", "nothing", "none"}
+_FILLER = {"the", "a", "an", "please"}
 
 
 def task_identity(goal: str) -> tuple[str, ...]:
@@ -99,14 +97,11 @@ def task_identity(goal: str) -> tuple[str, ...]:
     "Find the keys." == "find keys", but "Tell Neave dinner is ready" and
     "Tell Neave dinner is NOT ready" stay different errands.
     """
-    words = re.findall(r"[\w']+", _normal(goal))
-    canon = []
-    for word in words:
-        if word in _NEGATIONS:
-            canon.append("not")
-        elif word not in _FILLER:
-            canon.append(word[:-1] if len(word) > 3 and word.endswith("s") and not word.endswith("ss") else word)
-    return tuple(canon)
+    # False negatives are safer than merging different instructions. Recipients,
+    # ownership, direction, timing, negations and numeric punctuation carry intent.
+    # In particular, never stem names (James/James's) or erase "me" versus "us".
+    words = re.findall(r"[+-]?\d+(?:[.,:/-]\d+)*|[\w']+|[^\w\s.,!?;]", _normal(goal))
+    return tuple(word for word in words if word not in _FILLER)
 
 
 # ── offers ─────────────────────────────────────────────────────────────────────
