@@ -7,7 +7,7 @@ import time
 
 from app.config import Settings
 from app.events.bus import EventBus
-from app.llm.factory import create_client
+from app.llm.factory import create_client, create_hosted_client
 from app.tasks.manager import TaskManager
 from app.world.clock import WorldClock
 from app.world.engine import WorldEngine
@@ -38,6 +38,7 @@ def mission_satisfied(number: int, context, world: dict) -> bool:
 async def evaluate(numbers: list[int]) -> bool:
     settings = Settings()
     client = create_client(settings)
+    hosted = create_hosted_client(settings)
     results = []
     try:
         for number in numbers:
@@ -45,7 +46,7 @@ async def evaluate(numbers: list[int]) -> bool:
             clock = WorldClock(speed=settings.clock_speed, start_hour=settings.clock_start_hour,
                                mode=settings.simulation_mode, action_seconds=settings.action_seconds)
             engine, bus = WorldEngine(settings.world_file, clock=clock), EventBus()
-            manager = TaskManager(client, WorldTools(engine, bus), bus, settings)
+            manager = TaskManager(client, WorldTools(engine, bus), bus, settings, hosted=hosted)
             task = manager.start(MISSIONS[number])
             await manager.runner
             passed = task.status == "completed" and mission_satisfied(number, task, engine.snapshot())
@@ -74,6 +75,8 @@ async def evaluate(numbers: list[int]) -> bool:
                               "completion_tokens": metrics.completion_tokens}), flush=True)
     finally:
         await client.close()
+        if hosted is not None:
+            await hosted.close()
     return all(results)
 
 

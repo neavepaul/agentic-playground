@@ -218,10 +218,25 @@ def observable_commands(context: TaskContext) -> tuple[dict, dict | None]:
 
 
 class Explorer:
-    def __init__(self, client: LLMClient, tool_schemas: dict, persona=None) -> None:
+    def __init__(self, client: LLMClient, tool_schemas: dict, persona=None,
+                 hosted=None, hosted_calls: int = 0) -> None:
         self.client = client
         self.tool_names = set(tool_schemas)
         self.persona = persona
+        # Web-research tasks may use a hosted model, under one call budget per task.
+        # Tasks that also drive the robot stay local: their prompts carry the house.
+        self.hosted, self.hosted_calls = hosted, hosted_calls
+        self._research: dict[str, object] = {}
+
+    def _research_client(self, task_id: str):
+        if self.hosted is None or not self.hosted_calls:
+            return self.client
+        if task_id not in self._research:
+            from app.llm.groq import HostedFirst
+            if len(self._research) >= 32:  # budgets of long-finished tasks
+                self._research.pop(next(iter(self._research)))
+            self._research[task_id] = HostedFirst(self.hosted, self.client, self.hosted_calls, "web research")
+        return self._research[task_id]
 
     async def decide(self, context: TaskContext, task: str) -> ExplorerDecision:
         if any(c.kind == "answer" for c in context.conditions):
@@ -369,7 +384,8 @@ class Explorer:
             prompt += PERSONA_ANSWER
             payload["persona"] = self.persona.voice_view(
                 [commands[id]["arguments"].get("person") for id in speaking])
-        choice = await structured(self.client, schema, prompt, payload,
+        client = self.client if mixed else self._research_client(context.id)
+        choice = await structured(client, schema, prompt, payload,
                                   metrics=context.metrics, role="explorer", compact_schema=True,
                                   repair_hint="Choose an available tool. Run missing tools before finish_answer.")
         selected = choice.action

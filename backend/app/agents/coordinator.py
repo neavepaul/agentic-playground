@@ -7,9 +7,13 @@ from .schemas import CoordinatorDecision, GoalCondition, GoalPlan
 
 
 class Coordinator:
-    def __init__(self, client: LLMClient, digital_enabled: bool = False) -> None:
+    def __init__(self, client: LLMClient, digital_enabled: bool = False,
+                 hosted=None, hosted_calls: int = 0) -> None:
         self.client = client
         self.digital_enabled = digital_enabled
+        # Goal planning is one high-value call per errand: worth a hosted model when
+        # one is configured. It sees only the goal and room names, never memory.
+        self.hosted, self.hosted_calls = hosted, hosted_calls
 
     async def decide(self, context: TaskContext) -> CoordinatorDecision:
         return await structured(self.client, CoordinatorDecision, COORDINATOR, context.compact(),
@@ -36,8 +40,12 @@ class Coordinator:
         # A narrow consistency check for an explicit delivery clause. This rejects
         # prerequisite-only plans without hardcoding an object, recipient or route.
         explicit_delivery = re.search(r"(?:^\s*(?:please\s+)?|\b(?:and|then)\s+)deliver\b", goal, re.I)
+        planner = self.client
+        if self.hosted is not None and self.hosted_calls:
+            from app.llm.groq import HostedFirst
+            planner = HostedFirst(self.hosted, self.client, self.hosted_calls, "goal planning")
         for attempt in range(2):
-            plan = await structured(self.client, GoalPlan, prompt,
+            plan = await structured(planner, GoalPlan, prompt,
                                     {"goal": goal, "floor_plan": {"rooms": room_names}},
                                     role="coordinator", metrics=metrics, compact_schema=self.digital_enabled)
             if unknown_recipient:

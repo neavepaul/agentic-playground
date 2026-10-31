@@ -95,15 +95,18 @@ def relevant_evidence(context: TaskContext, limit: int = 12) -> list[dict]:
 
 class TaskManager:
     def __init__(self, client: LLMClient, tools: WorldTools, bus: EventBus, settings: Settings,
-                 persistent: PersistentMemory | None = None, persona=None, memory_store=None) -> None:
+                 persistent: PersistentMemory | None = None, persona=None, memory_store=None,
+                 hosted=None) -> None:
         self.tools, self.bus, self.settings = tools, bus, settings
         self.client = client
         self.persistent = persistent
         self.persona = persona
         self.memory_store = memory_store
-        self.coordinator = Coordinator(client, digital_enabled=settings.digital_tools_enabled)
+        self.coordinator = Coordinator(client, digital_enabled=settings.digital_tools_enabled,
+                                       hosted=hosted, hosted_calls=settings.groq_plan_calls)
         self.capabilities = CapabilityTools(bus, enabled=settings.digital_tools_enabled)
-        self.explorer = Explorer(client, tools.schemas(), persona=persona)
+        self.explorer = Explorer(client, tools.schemas(), persona=persona,
+                                 hosted=hosted, hosted_calls=settings.groq_research_calls)
         self.tasks: dict[str, TaskContext] = {}
         self.active_id: str | None = None
         self.runner: asyncio.Task | None = None

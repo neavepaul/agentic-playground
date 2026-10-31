@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -16,6 +16,19 @@ class Settings(BaseSettings):
     colibri_model: str = "qwen3.6-colibri"
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen3:4b"
+    # Groq: a hosted model for a few bounded, high-value calls (goal planning and
+    # web-research tasks). Free-tier limits are per model, so several are listed and
+    # the first with quota left is used. Without a key, everything stays on Colibri.
+    groq_api_key: SecretStr | None = None
+    groq_base_url: str = "https://api.groq.com/openai/v1"
+    groq_models: str = "openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b"
+    groq_reasoning_effort: Literal["low", "medium", "high"] = "medium"
+    groq_timeout_seconds: float = Field(default=60, gt=0)
+    groq_max_output_tokens: int = Field(default=4096, ge=256, le=32768)
+    # Hard caps: Groq calls per goal plan, and per web-research task. Past a cap, or
+    # whenever Groq cannot serve a call, Colibri carries on.
+    groq_plan_calls: int = Field(default=2, ge=0, le=4)
+    groq_research_calls: int = Field(default=4, ge=0, le=10)
     world_file: Path | None = None
     # Legacy JSON stores: imported into memory_db_file once, then never read or written.
     memory_file: Path = _BACKEND_DIR / "memory" / "persistent.json"

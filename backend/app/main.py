@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.config import Settings, get_settings
 from app.events.bus import EventBus
 from app.chat import ChatSession
-from app.llm.factory import create_chat_client, create_client
+from app.llm.factory import create_chat_client, create_client, create_hosted_client
 from app.llm.priority import ConversationFirst
 from app.memory.recall import Embedder, MemoryStore
 from app.memory.beliefs import derive_beliefs
@@ -62,8 +62,10 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
     shared = chat_llm is llm
     # One local model for both: a person waiting for a reply goes before the next errand call.
     task_llm = ConversationFirst(llm) if shared else llm
+    # Optional Groq for goal planning and web research; injected test clients never get it.
+    hosted = create_hosted_client(config) if live else None
     manager = TaskManager(task_llm, WorldTools(engine, bus), bus, config, persistent, persona=persona,
-                          memory_store=store)
+                          memory_store=store, hosted=hosted)
     chat = ChatSession(chat_llm, bus, manager, engine, config, store=store, persona=persona,
                        shares_task_model=shared, session_id=config.chat_session_id)
     chat.gate = task_llm if shared else None
@@ -100,6 +102,8 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
             await llm.close()
             if chat_llm is not llm:
                 await chat_llm.close()
+        if hosted is not None:
+            await hosted.close()
         store.close()
 
     app = FastAPI(title="agentic_friend", lifespan=lifespan)
