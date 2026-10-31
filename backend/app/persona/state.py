@@ -1,8 +1,8 @@
 from pydantic import BaseModel, Field, model_validator
 
-from .profile import BASELINE, DRIFT, LEGACY_BASELINE, LEGACY_RENAMES
+from .profile import BASELINE, DRIFT, LEGACY_BASELINE, LEGACY_RENAMES, PREVIOUS_BASELINES
 
-CHARACTER_VERSION = 2
+CHARACTER_VERSION = 3  # 3: Rocky's younger brother
 
 
 class Mood(BaseModel):
@@ -87,9 +87,21 @@ class PersonaState(BaseModel):
     def _carry_over_earlier_character(cls, data):
         """A state saved by the earlier character keeps its experience: drift each trait
         earned is applied to the new baseline (within the new limits), and the old
-        values are kept verbatim in legacy_traits."""
-        if not isinstance(data, dict) or "character_version" in data or "traits" not in data:
+        values are kept verbatim in legacy_traits. A state from an earlier versioned
+        character has its drift carried onto the current baselines the same way."""
+        if not isinstance(data, dict) or "traits" not in data:
             return data
+        version = data.get("character_version")
+        if version is not None:
+            previous = PREVIOUS_BASELINES.get(version)
+            if previous is None:
+                return data
+            traits = dict(BASELINE)
+            for name, value in (data.get("traits") or {}).items():
+                if name in BASELINE:
+                    drift = value - previous.get(name, BASELINE[name])
+                    traits[name] = round(BASELINE[name] + max(-DRIFT[name], min(DRIFT[name], drift)), 4)
+            return {**data, "traits": traits, "character_version": CHARACTER_VERSION}
         old = dict(data.get("traits") or {})
         traits = dict(BASELINE)
         for name, value in old.items():

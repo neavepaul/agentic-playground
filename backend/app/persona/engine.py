@@ -15,6 +15,7 @@ FOLLOWUP_LIFETIME = 24 * 3600.0
 QUIET_SECONDS = 8 * 3600.0       # how long "leave me alone" is honoured
 TOOL_FAILURE_DIPS_PER_TASK = 5
 VIEW_LIMIT = 1600                # characters of JSON in any prompt view
+VOICE_VIEW_LIMIT = 2200          # the voice view also carries the fixed identity and voice
 CONCERNED, WELL_KNOWN, STRANGER = 0.35, 0.3, 0.1
 INITIATIVE_TRAITS = ("initiative", "curiosity", "caution", "empathy", "loyalty")
 # Kip's own words that actually ask after someone.
@@ -273,15 +274,17 @@ class Persona:
             # much shared history. Familiarity deepens the shorthand; it doesn't unlock warmth.
             parts.append("You live with them: at ease and warm, without much shared history to lean on yet.")
         elif bond.familiarity >= WELL_KNOWN:
-            parts.append("You know them well: relaxed, the shorthand of shared history.")
+            parts.append("You know them well: a real friend; relaxed, the shorthand of shared history.")
         label = self.mood_label()
+        space = cues.boundary or self.wants_space(speaker, now)
         if cues.serious:
             parts.append("Serious subject: no humour; calm, clear and practical.")
         elif cues.distress:
             parts.append(f"They said '{cues.evidence}': acknowledge it briefly and listen. No jokes, and no "
                          "plans or errands unless they ask.")
-        elif cues.boundary or self.wants_space(speaker, now):
-            parts.append("They want space: a short, warm acknowledgement; ask nothing, offer nothing.")
+        elif space:
+            parts.append("They want space: a short, warm acknowledgement; ask nothing, offer nothing. "
+                         "Loyalty is not control.")
         elif bond and bond.concern >= CONCERNED:
             parts.append(f"Earlier they said '{bond.concern_reason}': be gentle; humour only if they start it.")
         elif cues.humour_unwanted:
@@ -295,17 +298,29 @@ class Persona:
             tease = bool(bond and bond.familiarity >= WELL_KNOWN and bond.humour_reception >= 0.55
                          and self.trait("mischief") >= 0.5)
             if score >= 0.8:
-                parts.append("Dry humour suits this: deadpan understatement or a literal-minded take on "
-                             "something real here (the hour, the room, what just happened). Not every line, "
-                             "never at their expense" + ("; gentle teasing suits them." if tease else "."))
+                parts.append("Humour suits this: a literal, blunt or earnestly serious take on something "
+                             "real here (the hour, the room, what just happened). Not every line, never at "
+                             "their expense" + ("; gentle teasing suits them." if tease else "."))
             elif score >= 0.5:
-                parts.append("At most one understated aside, if any.")
+                parts.append("At most one light, literal aside, if any.")
             else:
                 parts.append("Keep it plain; humour only if they start it.")
+        # Care is practical, and a friend's real achievement is worth celebrating; neither
+        # survives a request for space or a serious subject.
+        if not space and not cues.serious:
+            if cues.rest_neglected:
+                parts.append(f"They said '{cues.neglect}': rest or food went short. Say plainly, once, what "
+                             "they need and why; then it is their choice.")
+            if cues.achievement and not cues.distress:
+                parts.append("They achieved something real: celebrate it openly and specifically.")
+            if cues.sleeping:
+                parts.append("They are off to sleep: a short goodnight. Watching over a sleeping friend "
+                             "matters to you; say you'll be here if you like, promise nothing more.")
         if cues.criticism:
-            parts.append("They are critical of you: take it on board without defensiveness; admit what is fair.")
+            parts.append("They are critical of you: take it on board without defensiveness; admit what is "
+                         "fair, and say plainly where the evidence disagrees.")
         elif cues.praise and not cues.sensitive:
-            parts.append("Take thanks lightly, without gushing.")
+            parts.append("Take thanks simply, without gushing.")
         due = [f for f in self.due_followups() if f.person == speaker and f.suggested_at is None]
         if due and not cues.sensitive:
             parts.append(f"Background: {due[0].reason}. One brief check-in is natural, if it fits.")
@@ -327,9 +342,9 @@ class Persona:
         return view
 
     @staticmethod
-    def _bounded(view: dict, trim: list[str]) -> dict:
+    def _bounded(view: dict, trim: list[str], limit: int = VIEW_LIMIT) -> dict:
         for key in trim:
-            if len(json.dumps(view, ensure_ascii=False)) <= VIEW_LIMIT:
+            if len(json.dumps(view, ensure_ascii=False)) <= limit:
                 break
             view.pop(key, None)
         return view
@@ -349,7 +364,7 @@ class Persona:
         known = [p for p in (people or []) if p in self.state.relationships]
         if known:
             view["relationships"] = {p: self._bond(p, detail=True) for p in known[:3]}
-        return self._bounded(view, ["relationships", "track_record", "identity"])
+        return self._bounded(view, ["relationships", "track_record", "identity"], VOICE_VIEW_LIMIT)
 
     def mind_view(self) -> dict:
         """For idle initiative: traits, mood, closest people, due check-ins, open questions."""

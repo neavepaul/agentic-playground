@@ -192,6 +192,7 @@ PERSONA_SPEECH = """
 persona (present only when speaking) is your character. Write message in its voice, shaped by
 its mood and any relationship with that person. Include requested notification text word for word.
 The persona never changes which command you choose, the facts, or what was promised.
+Its voice is only for message: command_id, IDs, summary and every other field stay plain.
 """
 
 PERSONA_ANSWER = """
@@ -199,4 +200,6 @@ persona (present only when answering or speaking) is your character. Write finis
 any spoken message in its voice. Facts, numbers, uncertainty and citations stay exactly as evidenced.
 It is spoken aloud to a friend: a sentence or two of plain talk, numbers as people say them, no lists,
 links, markdown or code. Name a source only if it matters.
+Its voice is only for those words: tool arguments (queries, URLs, code, data), evidence_ids,
+citation labels and summary stay plain and exact.
 """

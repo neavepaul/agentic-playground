@@ -24,10 +24,22 @@ _PATTERNS = {
                 r"(?:don'?t|do not) (?:check on|bother|disturb) me|i'?m (?:busy|working)|be quiet|shh+",
     "praise": r"thanks|thank you|well done|good job|nice work|great job|nicely done|you'?re the best|good robot",
     "criticism": r"idiot|stupid|useless|dumb|you'?re wrong|that'?s wrong|bad robot|you messed up",
+    # Something they actually achieved: worth celebrating, unlike flattery.
+    "achievement": r"i passed|we passed|passed (?:my|the) \w+|i got the (?:job|offer|place)|got promoted|"
+                   r"i finished|we finished|i did it|we did it|we won|i won|it works now|i fixed it|"
+                   r"finally (?:fixed|finished|done)",
+    # Their own words say rest or food went short.
+    "rest_neglected": r"all[- ]nighter|up all night|no sleep|haven'?t (?:slept|eaten)|didn'?t (?:sleep|eat)|"
+                      r"skipped (?:lunch|dinner|breakfast|a meal)|"
+                      r"slept (?:for )?(?:only )?(?:[0-4]|one|two|three|four|a couple of|a few|an) hours?|"
+                      r"working late|forgot to eat",
+    # They are going to sleep.
+    "sleeping": r"going to bed|off to bed|heading to bed|bed ?time|going to sleep|time to sleep|good ?night|night night",
 }
 _COMPILED = {name: re.compile(r"(?<![\w'])(?:" + pattern + r")(?![\w'])") for name, pattern in _PATTERNS.items()}
 _NEGATION = re.compile(r"\b(?:not|never|no|\w+n't)\W+(?:\w+\W+){0,2}$")
-_NEGATABLE = {"distress", "serious"}
+_NEGATABLE = {"distress", "serious", "achievement", "rest_neglected", "sleeping"}
+_EVIDENCED = {"distress", "serious"}  # the words that raise concern are quoted back
 
 
 @dataclass(frozen=True)
@@ -39,7 +51,11 @@ class Cues:
     boundary: bool = False
     praise: bool = False
     criticism: bool = False
+    achievement: bool = False
+    rest_neglected: bool = False
+    sleeping: bool = False
     evidence: str = ""  # the words that raised concern, quoted as said
+    neglect: str = ""   # the words saying rest or food went short, quoted as said
 
     @property
     def sensitive(self) -> bool:
@@ -48,13 +64,15 @@ class Cues:
 
 def read_cues(text: str) -> Cues:
     lowered = " ".join(text.casefold().replace("’", "'").split())
-    found, evidence = {}, ""
+    found, evidence, neglect = {}, "", ""
     for name, pattern in _COMPILED.items():
         for match in pattern.finditer(lowered):
             if name in _NEGATABLE and _NEGATION.search(lowered[:match.start()]):
                 continue
             found[name] = True
-            if name in _NEGATABLE and not evidence:
+            if name in _EVIDENCED and not evidence:
                 evidence = match.group(0)
+            if name == "rest_neglected":
+                neglect = match.group(0)
             break
-    return Cues(**found, evidence=evidence)
+    return Cues(**found, evidence=evidence, neglect=neglect)

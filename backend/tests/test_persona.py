@@ -10,7 +10,7 @@ from app.events.bus import EventBus
 from app.memory.store import PersistentMemory
 from app.mind.agent import AgentMind, _INTENTION_GENERATOR
 from app.persona import Persona
-from app.persona.engine import FOLLOWUP_DELAY, VIEW_LIMIT
+from app.persona.engine import FOLLOWUP_DELAY, VIEW_LIMIT, VOICE_VIEW_LIMIT
 from app.persona.profile import BASELINE, DRIFT
 from app.tasks.manager import TaskManager
 from app.world.engine import WorldEngine
@@ -103,7 +103,7 @@ def test_prompt_views_stay_small():
     for index in range(30):
         persona.observe(given(person=f"person_{index}", thing="a very long object name " * 3))
     assert len(json.dumps(persona.mind_view())) <= VIEW_LIMIT
-    assert len(json.dumps(persona.voice_view([f"person_{i}" for i in range(30)]))) <= VIEW_LIMIT
+    assert len(json.dumps(persona.voice_view([f"person_{i}" for i in range(30)]))) <= VOICE_VIEW_LIMIT
     assert persona.voice_view()["voice"]
 
 

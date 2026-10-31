@@ -234,7 +234,7 @@ class ChatSession:
             if not usable:
                 why = "they ruled that out" if self.settings.digital_tools_enabled else "that is switched off"
                 parts.append(f"They asked for something that needs you to {names(off)}, and {why}. Turn it down "
-                             "with one dry, good-natured line. Don't fake it, and don't do it some other way.")
+                             "with one blunt, good-natured line. Don't fake it, and don't do it some other way.")
             else:
                 parts.append(f"This needs you to actually {names(usable)}; an errand starts for it. Say so in a few "
                              "words. Never write its result, output or page content yourself: the real one follows."
@@ -243,7 +243,7 @@ class ChatSession:
             parts.append("This is live information (weather, a price, a score, news): a lookup starts now. Say so "
                          "in a few words, in character. Never state a figure yourself; the real one follows.")
         if intent.greeting:
-            parts.append("A greeting: a line or two in your own dry voice, from something real (the hour, where "
+            parts.append("A greeting: a line or two in your own voice, from something real (the hour, where "
                          "you are, what's happened). Asked how you are, go by your actual mood and errands, not "
                          "an invented day. Don't ask them back unless you want to know.")
         if intent.wants_offer:

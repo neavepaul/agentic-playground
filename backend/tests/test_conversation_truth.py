@@ -146,7 +146,7 @@ async def test_a_prohibited_tool_the_request_needs_gets_a_refusal_not_a_fake(ran
     session.submit("Don't use Python, but run this in Python and show the output: 2 + 2")
     await settle(session, manager)
     prompt = latest_prompt(model)
-    assert "Turn it down with one dry, good-natured line" in prompt and "Don't fake it" in prompt
+    assert "Turn it down with one blunt, good-natured line" in prompt and "Don't fake it" in prompt
     assert not manager.tasks and "run_python" not in ran
     await done(session, manager)
 
@@ -462,13 +462,13 @@ async def test_a_repeated_greeting_never_shows_kip_his_old_reply(ran):
 
 
 @pytest.mark.asyncio
-async def test_a_housemates_greeting_invites_his_dry_voice(ran):
+async def test_a_housemates_greeting_invites_his_own_voice(ran):
     model = PlanningModel([said("Neave. Still upright.")])
     session, manager = session_with(model, world=HOUSE_WORLD, persona=Persona())
     session.submit("Hi Kip, it's Neave. How are you doing today?")
     await settle(session, manager)
     prompt = latest_prompt(model)
-    assert "You live with them" in prompt and "Dry humour suits this" in prompt
+    assert "You live with them" in prompt and "Humour suits this" in prompt
     assert "A greeting:" in prompt and "Don't ask them back unless you want to know" in prompt
     assert "barely know" not in prompt and "reserved" not in prompt
     await done(session, manager)
