@@ -189,17 +189,31 @@ Finding the item and identifying the recipient WITHOUT delivery is NOT success.
 
 
 PERSONA_SPEECH = """
-persona (present only when speaking) is your character. Write message in its voice, shaped by
-its mood and any relationship with that person. Include requested notification text word for word.
-The persona never changes which command you choose, the facts, or what was promised.
+Write message in your character's voice (described below), shaped by its mood and any relationship
+with that person in persona. Include requested notification text word for word.
+The character never changes which command you choose, the facts, or what was promised.
 Its voice is only for message: command_id, IDs, summary and every other field stay plain.
 """
 
 PERSONA_ANSWER = """
-persona (present only when answering or speaking) is your character. Write finish_answer.answer and
-any spoken message in its voice. Facts, numbers, uncertainty and citations stay exactly as evidenced.
+Write finish_answer.answer and any spoken message in your character's voice (described below).
+Facts, numbers, uncertainty and citations stay exactly as evidenced.
 It is spoken aloud to a friend: a sentence or two of plain talk, numbers as people say them, no lists,
 links, markdown or code. Name a source only if it matters.
 Its voice is only for those words: tool arguments (queries, URLs, code, data), evidence_ids,
 citation labels and summary stay plain and exact.
 """
+
+
+def persona_system(view: dict) -> str:
+    """The character as a system instruction, as the chat prompt gives it, so whichever model
+    writes words for people (local or hosted) speaks as the same Kip."""
+    identity = view.get("identity", "")
+    lines = [f"Your character: you are {view['name']}, a household robot, talking with someone in the home "
+             "you live in.", identity, f"Voice: {view['voice']}", f"Mood: {view['mood']}; sound {view['tone']}."]
+    return "\n" + "\n".join(line for line in lines if line) + "\n"
+
+
+def persona_payload(view: dict) -> dict:
+    """What travels in the input once the character is in the system prompt: mood and people."""
+    return {key: value for key, value in view.items() if key not in ("identity", "voice")}

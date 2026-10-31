@@ -79,7 +79,9 @@ async def test_rocky_speech_reaches_people_while_planning_calls_never_see_the_ch
     carrying = [sent for sent, _ in fake.calls if "persona" in json.loads(sent[1]["content"])]
     assert carrying, "the speech decision carries the character"
     for sent in carrying:
-        assert json.loads(sent[1]["content"])["persona"]["identity"] == IDENTITY
+        # The character is a system instruction; the input carries only mood and people.
+        assert IDENTITY in sent[0]["content"] and VOICE in sent[0]["content"]
+        assert "identity" not in json.loads(sent[1]["content"])["persona"]
         assert "every other field stay plain" in sent[0]["content"]
     for sent, _ in fake.calls:
         if "persona" not in json.loads(sent[1]["content"]):

@@ -18,10 +18,10 @@ from app.llm.base import ModelError
 from app.memory.recall import prompt_memories
 from app.tasks.manager import TaskBusy
 from app.tasks.permissions import READ_ONLY, TOOL_PLAIN, Grant, digital_scope, plain
-from .consent import Offer, classify_reply, is_request, task_identity  # noqa: F401 (re-exported)
+from .consent import Offer, classify_reply, is_question, is_request, task_identity  # noqa: F401 (re-exported)
 from .evidence import (capabilities, contradicted_presence, denied_capabilities, last_seen, room_scans,
                        task_record, unsupported_execution)
-from .intent import Intent, introduced_as, read_intent
+from .intent import Intent, introduced_as, is_live_fact, read_intent
 from app.agents.schemas import GoalCondition, GoalPlan, InitialCapability
 from .prompt import ChatAction, TrailerSplitter, build_messages
 from .spoken import spoken
@@ -36,6 +36,11 @@ _OWN_OLD_LINE = re.compile(r"\s*\|\s*I replied:.*$", re.S)
 # A reading, price or score: a number with a unit or a currency.
 _FIGURE = re.compile(r"\d[\d,.]*\s*(?:°|degrees?|celsius|fahrenheit|%|percent|runs?|wickets?|overs?|points?|goals?|"
                      r"rupees?|dollars?|pounds?|euros?|crore|lakh)|[₹$£€]\s*\d|\b\d{1,3}\s*(?:/|for)\s*\d{1,2}\b")
+LOOKUP_PREFIX = "Look up online: "
+_TOPIC_STOP = {"about", "again", "could", "does", "from", "have", "just", "know", "last", "like", "much", "next",
+               "now", "okay", "please", "really", "right", "should", "still", "tell", "than", "that", "their",
+               "them", "then", "there", "they", "this", "what", "when", "where", "which", "while", "will",
+               "with", "would", "your", "today", "tonight", "tomorrow", "yesterday", "think", "going"}
 _HALF_YES = re.compile(r"^\W*(yes|yeah|yep|sure|ok|okay)\b")  # "Yes? What do you mean?" is not a yes
 FIRST_PERSON = re.compile(r"\b(i|i'm|i've|me|my|mine|myself|the user)\b")
 
@@ -297,6 +302,17 @@ class ChatSession:
         try:
             async with self._lock:  # FIFO: one reply at a time, in order
                 queue_seconds = time.monotonic() - queued_at
+                said = user_turn["text"]
+                lookup = self._direct_lookup(user_turn, self._intents.get(user_turn["id"]) or read_intent(said),
+                                             earlier)
+                if lookup:
+                    # A live fact needs no chat reply first: the lookup starts now, and its
+                    # answer, written in Kip's voice, is the reply. One model step, not two.
+                    goal, query = lookup
+                    self._start_or_queue(goal, user_turn["id"], Grant.read_only(said), plan=_lookup_plan(query))
+                    self._intents.pop(user_turn["id"], None)
+                    finished = True
+                    return
                 self.replying = True
                 waiting = self.shares_task_model and self.manager.active_id is not None
                 self.bus.emit("chat_thinking", self.name, skip_history=True, reply_id=reply_id,
@@ -344,7 +360,7 @@ class ChatSession:
                 metrics["memory_recall_seconds"] = round(recall_seconds, 3)
                 metrics["input_chars"] = sum(len(m["content"]) for m in messages)
                 metrics["estimated_prompt_tokens"] = message_tokens(messages)
-                metrics["token_estimator"] = "utf8_byte_upper_estimate"
+                metrics["token_estimator"] = "utf8_bytes_div3_estimate"
                 metrics["queue_seconds"] = round(queue_seconds, 3)
                 metrics["chat_model_calls"] = 1
                 action, action_error = parsed.action, parsed.error
@@ -476,12 +492,10 @@ class ChatSession:
             # Permissions changed or something was turned down: nothing new to do, and no
             # earlier request is replayed, whatever the model wrote.
             return
-        if (intent.live_fact and not intent.needs_tools and self.settings.digital_tools_enabled
-                and not self.manager.restrictions.forbids_tool("web_search") and not intent.wants_offer
-                and not self._involves_the_house(said)):
+        if self._pure_lookup(intent, said):
             # Weather, prices, scores, news: always looked up, never recited from memory. A pure
             # lookup's plan is known, so it starts straight away without a planning call.
-            goal = next((g for g in (proposed, offered) if g and digital_scope(g)), f"Look up online: {said}")
+            goal = next((g for g in (proposed, offered) if g and digital_scope(g)), f"{LOOKUP_PREFIX}{said}")
             self._start_or_queue(goal, user_turn["id"], Grant.read_only(said), plan=_lookup_plan(said))
             return
         needs = intent.needs_tools
@@ -526,10 +540,63 @@ class ChatSession:
         if not refusing:
             self._make_offer(suggestion, user_turn, asked_for=False, small_talk=intent.small_talk)
 
+    def _pure_lookup(self, intent: Intent, said: str, live: bool | None = None) -> bool:
+        """Weather, prices, scores, news, with nothing in the house involved: a web lookup."""
+        live = intent.live_fact if live is None else live
+        return (live and not intent.needs_tools and self.settings.digital_tools_enabled
+                and not self.manager.restrictions.forbids_tool("web_search") and not intent.wants_offer
+                and not self._involves_the_house(said))
+
+    def _direct_lookup(self, user_turn: dict, intent: Intent,
+                       earlier: list[dict] = ()) -> tuple[str, str] | None:
+        """(goal, search query) for a live-fact question or request that can go straight to
+        the lookup, unreplied: including a follow-up on the lookup Kip just answered
+        ("is there a fifth match in that series?"), which carries that topic along.
+
+        Anything else keeps the normal reply: small talk that merely mentions cricket, an
+        answer to Kip's open offer, what Kip did earlier, a cancellation or permission change."""
+        if self._closed or intent.cancel or intent.changes_state_only or intent.about_past:
+            return None
+        if not (intent.question or intent.request):
+            return None
+        if self._turn_epochs.get(user_turn["id"], self._work_epoch) != self._work_epoch:
+            return None
+        seen = self._offer_seen.get(user_turn["id"])
+        if seen is not None and self._offer_valid() and self.offer.id == seen:
+            return None
+        said = user_turn["text"]
+        topic = None if intent.live_fact else self._lookup_followed_up(said, earlier)
+        if not self._pure_lookup(intent, said, live=intent.live_fact or topic is not None):
+            return None
+        if topic:
+            return _clip(f"{LOOKUP_PREFIX}{said} (following up on: {topic})", 600), f"{topic} {said}"
+        return f"{LOOKUP_PREFIX}{said}", said
+
+    def _lookup_followed_up(self, said: str, earlier: list[dict]) -> str | None:
+        """The question Kip's last web lookup answered, if its answer came within the last three
+        exchanges and this message shares its topic; otherwise None."""
+        last = next((t for t in reversed(earlier[-6:]) if t.get("role") == "kip" and t.get("source") == "narration"),
+                    None)
+        if not last or last.get("outcome") != "completed":
+            return None
+        finished = [t for t in self.manager.tasks.values() if t.status != "running"]
+        if not finished or finished[-1].status != "completed" or not finished[-1].goal.startswith(LOOKUP_PREFIX):
+            return None
+        asked = finished[-1].goal.removeprefix(LOOKUP_PREFIX)
+        if not _topic_words(said) & _topic_words(asked + " " + last.get("text", "")):
+            return None
+        return _clip(asked, 200)
+
     def _involves_the_house(self, text: str) -> bool:
-        """Mentions someone or somewhere in the house ("...and tell Paul"): not a pure lookup."""
+        """Mentions someone or somewhere in the house ("...and tell Paul"): not a pure lookup.
+
+        Chat before the lookup question ("Let Moira enjoy her book. When's the next race?")
+        counts only if it asks for something; from the question on, any mention counts."""
         world = self.engine.snapshot()
-        lowered = text.casefold().replace("_", " ")
+        sentences = re.split(r"(?<=[.!?;])\s+", text.strip())
+        start = next((i for i, sentence in enumerate(sentences) if is_live_fact(sentence)), 0)
+        lowered = " ".join(sentence for i, sentence in enumerate(sentences)
+                           if i >= start or is_request(sentence) or is_question(sentence)).casefold().replace("_", " ")
         names = [str(v.get("name", k)).casefold() for k, v in {**world.get("people", {}),
                                                                  **world.get("rooms", {})}.items()]
         names += [k.replace("_", " ") for k in {**world.get("people", {}), **world.get("rooms", {})}]
@@ -782,6 +849,11 @@ def _lookup_plan(said: str) -> GoalPlan:
 
 
 # ── status and narration helpers (deterministic, no model calls) ───────────────
+def _topic_words(text: str) -> set[str]:
+    words = (w.split("'")[0] for w in re.findall(r"[a-z][a-z0-9]*(?:'[a-z]+)?", text.casefold().replace("’", "'")))
+    return {w for w in words if len(w) >= 4 and w not in _TOPIC_STOP}
+
+
 def _clip(text: str, limit: int) -> str:
     text = " ".join(text.split())
     return text if len(text) <= limit else text[:limit - 1] + "…"

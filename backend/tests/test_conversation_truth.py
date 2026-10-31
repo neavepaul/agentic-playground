@@ -351,7 +351,7 @@ async def test_persona_reaches_the_conversation_and_an_introduction_names_the_sp
 @pytest.mark.asyncio
 async def test_the_same_character_writes_the_answer_after_a_tool_handoff(ran):
     def answer(payload):
-        assert payload["persona"]["identity"] == IDENTITY and payload["persona"]["voice"]
+        assert payload["persona"]["mood"] and "identity" not in payload["persona"]  # it's in the system prompt
         ids = [o["evidence_id"] for o in payload["tool_observations"] if o["success"]]
         return {"summary": "Ready.", "action": {"tool": "finish_answer", "answer": "It's a placeholder page.",
                                                 "evidence_ids": ids}}
@@ -361,6 +361,8 @@ async def test_the_same_character_writes_the_answer_after_a_tool_handoff(ran):
     task = manager.start("Read https://example.com and summarise it")
     await manager.runner
     assert task.status == "completed" and task.answer["answer"] == "It's a placeholder page."
+    answering = [messages for messages, _ in model.calls if "persona" in json.loads(messages[1]["content"])]
+    assert answering and all(IDENTITY in messages[0]["content"] for messages in answering)
     assert IDENTITY in CHAT_SYSTEM.format(name="Kip", identity=IDENTITY + "\n", voice="")
     await done(session, manager)
 
@@ -476,7 +478,7 @@ async def test_a_housemates_greeting_invites_his_own_voice(ran):
 
 # ── 11. a voice companion: live facts looked up, everything said aloud ─────────
 @pytest.mark.asyncio
-async def test_live_facts_are_looked_up_at_once_and_a_guessed_figure_is_retracted(ran):
+async def test_live_facts_go_straight_to_the_lookup_and_its_answer_is_the_reply(ran):
     def answer(payload):
         ids = [o["evidence_id"] for o in payload["tool_observations"] if o["success"]]
         return {"summary": "Ready.", "action": {"tool": "finish_answer", "evidence_ids": ids, "answer":
@@ -485,16 +487,96 @@ async def test_live_facts_are_looked_up_at_once_and_a_guessed_figure_is_retracte
     session, manager = session_with(model)
     session.submit("What's the weather like in Mumbai today?")
     await settle(session, manager)
-    assert "This is live information" in latest_prompt(model)
-    assert "that figure was a guess" in kip_lines(session, "correction")[0]
     await manager.runner
+    # No chat reply comes first, so nothing can guess a figure or promise a lookup that never starts.
+    assert model.prompts == []
     task = next(iter(manager.tasks.values()))
     assert task.grant.source == "question" and task.status == "completed"
     assert ran[:3] == ["get_status", "get_map", "web_search"]
     assert "GoalPlan" not in model.titles  # the plan was known: no planning call
-    spoken_answer = kip_lines(session, "narration")[-1]
-    assert spoken_answer == "31°C and muggy, says the forecast. Umbrella optional."
+    lines = [t for t in session.history() if t["role"] == "kip"]
+    assert [t["text"] for t in lines] == ["31°C and muggy, says the forecast. Umbrella optional."]
     await done(session, manager)
+
+
+@pytest.mark.asyncio
+async def test_a_guessed_live_figure_in_ordinary_chat_is_retracted(ran):
+    # Small talk that mentions the weather still gets a normal reply, and a guessed figure is corrected.
+    model = PlanningModel([said("Probably 31 degrees and muggy.")])
+    session, manager = session_with(model)
+    session.submit("I love this weather.")
+    await settle(session, manager)
+    assert model.prompts and "that figure was a guess" in kip_lines(session, "correction")[0]
+    await done(session, manager)
+
+
+@pytest.mark.asyncio
+async def test_a_follow_up_on_a_lookup_is_looked_up_too_with_its_topic(ran):
+    answers = iter(["New Zealand beat India by 87 runs in the fourth T20I and lead the series 3-1.",
+                    "Yes: the fifth T20I is on Sunday."])
+
+    def answer(payload):
+        ids = [o["evidence_id"] for o in payload["tool_observations"] if o["success"]]
+        return {"summary": "Ready.", "action": {"tool": "finish_answer", "evidence_ids": ids,
+                                                "answer": next(answers)}}
+    model = PlanningModel([said("Fifth match? No idea, honestly.")], task=[answer, answer])
+    session, manager = session_with(model)
+    session.submit("What happened in the last India vs New Zealand cricket game?")
+    await settle(session, manager)
+    await manager.runner
+    session.submit("Is there a fifth match still to play in that series?")  # no live-fact word of its own
+    await settle(session, manager)
+    await manager.runner
+    assert model.prompts == []  # neither question waited for a chat reply
+    follow_up = list(manager.tasks.values())[-1]
+    assert follow_up.status == "completed"
+    assert "following up on: What happened in the last India vs New Zealand cricket game?" in follow_up.goal
+    assert kip_lines(session, "narration")[-1] == "Yes: the fifth T20I is on Sunday."
+    await done(session, manager)
+
+
+@pytest.mark.asyncio
+async def test_an_unrelated_question_after_a_lookup_gets_an_ordinary_reply(ran):
+    def answer(payload):
+        ids = [o["evidence_id"] for o in payload["tool_observations"] if o["success"]]
+        return {"summary": "Ready.", "action": {"tool": "finish_answer", "evidence_ids": ids,
+                                                "answer": "Sunny, 24 degrees."}}
+    model = PlanningModel([said("Blue. Very blue.")], task=[answer])
+    session, manager = session_with(model)
+    session.submit("What's the weather in Pune today?")
+    await settle(session, manager)
+    await manager.runner
+    session.submit("What's your favourite colour?")
+    await settle(session, manager)
+    assert len(model.prompts) == 1 and len(manager.tasks) == 1
+    await done(session, manager)
+
+
+@pytest.mark.asyncio
+async def test_a_sports_question_after_small_talk_about_someone_is_still_looked_up_at_once(ran):
+    def answer(payload):
+        ids = [o["evidence_id"] for o in payload["tool_observations"] if o["success"]]
+        return {"summary": "Ready.", "action": {"tool": "finish_answer", "evidence_ids": ids,
+                                                "answer": "Next race is Sunday, says the calendar."}}
+    model = PlanningModel([said("I check the web.")], task=[answer])
+    session, manager = session_with(model, world=HOUSE_WORLD)
+    session.submit("Ha, good to hear. Let Moira enjoy her book. Hey, when's the next F1 race? "
+                   "And who's leading the championship right now?")
+    await settle(session, manager)
+    assert session.offer is None  # not held for a yes: a lookup changes nothing in the house
+    await manager.runner
+    task = next(iter(manager.tasks.values()))
+    assert task.grant.source == "question" and task.status == "completed"
+    assert ran[:3] == ["get_status", "get_map", "web_search"]
+    await done(session, manager)
+
+
+def test_house_mentions_that_ask_for_something_still_make_a_lookup_house_work():
+    session, _ = session_with(PlanningModel([]), world=HOUSE_WORLD)
+    assert not session._involves_the_house("Let Moira enjoy her book. When's the next F1 race?")
+    assert session._involves_the_house("Tell Paul. When's the next F1 race?")
+    assert session._involves_the_house("When's the next F1 race? Then let Paul know.")
+    assert session._involves_the_house("What's the weather like for Moira's walk?")
 
 
 @pytest.mark.asyncio

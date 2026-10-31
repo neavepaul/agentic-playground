@@ -1,8 +1,9 @@
 """Bounded conversational context without additional inference.
 
-The fallback counts UTF-8 bytes conservatively (one byte per token plus framing),
-not characters divided by four. Deployments can inject their local tokenizer.
-This is an upper estimate, not reported provider usage or a Qwen benchmark.
+The fallback counts one token per three UTF-8 bytes (rounded up) plus framing: still
+generous for Qwen on English, which averages nearer four bytes a token, without starving
+the prompt the way one token per byte did. Deployments can inject their local tokenizer.
+This is an estimate, not reported provider usage or a Qwen benchmark.
 """
 import json
 import re
@@ -18,7 +19,7 @@ class ContextBudgetError(ModelError):
 
 
 def estimate_tokens(text: str) -> int:
-    return len(text.encode("utf-8"))
+    return -(-len(text.encode("utf-8")) // 3)
 
 
 def message_tokens(messages: list[dict], counter: TokenCounter = estimate_tokens) -> int:

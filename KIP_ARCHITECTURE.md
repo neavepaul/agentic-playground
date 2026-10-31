@@ -14,8 +14,8 @@ See `KIP_IMPLEMENTATION_PLAN.md` for acceptance results, commands and remaining 
 - `chat/context.py` replaces eight clipped turns with budgeted whole turns and exact
   older excerpts ranked by relevance/recency, favoring corrections and commitments.
   `CHAT_CONTEXT_TOKENS` defaults to 6,000 and also respects context capacity minus
-  reserved generation. UTF-8 byte counting is deliberately conservative and labeled
-  as an estimate; a tokenizer callback is supported. Required context is never silently
+  reserved generation. Tokens are estimated as UTF-8 bytes ÷ 3, still generous for Qwen
+  on English, and labeled as an estimate; a tokenizer callback is supported. Required context is never silently
   clipped. Full transcript storage and existing memory retrieval supplement the window.
 - Turns carry `content`, `screen_text`, `spoken_text`, and `session_id`; legacy `text`
   remains spoken text. Frontend uses canonical text with preserved whitespace and no

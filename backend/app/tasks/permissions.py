@@ -226,7 +226,7 @@ class Grant(BaseModel):
 
 # A goal that explicitly scopes itself to the web or a calculation. Only used to decide
 # whether a question may *start* a read-only task; the grant is what limits it.
-_DIGITAL_SCOPE = re.compile(r"\b(online|the web|web ?search|internet|website|webpage|google|python|look up|"
+_DIGITAL_SCOPE = re.compile(r"\b(online|the web|web ?(?:search|lookup)|internet|website|webpage|google|python|look ?up|"
                             r"calculat\w*|comput\w*|convert\w*)\b|https?://")
 
 

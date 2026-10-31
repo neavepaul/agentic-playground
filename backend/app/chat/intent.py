@@ -24,7 +24,8 @@ _ABOUT_PAST = re.compile(r"\b(what (?:did|have) you (?:do|done|been doing|been u
 _LIVE_FACT = re.compile(r"\b(weather|forecast|temperature|raining|humidity|aqi|air quality|stocks?|shares?|share price|"
                         r"stock price|price of|trading at|sensex|nifty|nasdaq|dow jones|bitcoin|crypto|exchange rate|"
                         r"scores?|cricket|ipl|test match|odi|t20|innings|wickets?|football|premier league|who won|"
-                        r"headlines|the news|news today)\b")
+                        r"f1|formula (?:1|one)|grand prix|motogp|nba|nfl|tennis|championship|standings|league table|"
+                        r"next (?:race|match|game)|who'?s leading|headlines|the news|news today)\b")
 _GREETING = re.compile(r"^\W*(?:hi|hello|hey|hiya|morning|evening|howdy|good (?:morning|afternoon|evening))\b"
                        r"|\bhow are you\b|\bhow'?s it going\b|\bhow'?s your (?:day|morning|evening)\b")
 _INTRODUCES = re.compile(r"\b(?:it'?s|this is|i'?m|i am|me,)\s+([a-z][a-z'-]+)\b")
@@ -54,6 +55,10 @@ class Intent:
     def small_talk(self) -> bool:
         return not (self.request or self.question or self.needs_tools or self.wants_offer or self.cancel
                     or self.granted or self.revoked)
+
+
+def is_live_fact(text: str) -> bool:
+    return bool(_LIVE_FACT.search(" ".join(text.casefold().replace("’", "'").split())))
 
 
 def read_intent(text: str, granted: list[str] = (), revoked: list[str] = ()) -> Intent:

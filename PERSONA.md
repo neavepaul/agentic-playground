@@ -181,9 +181,8 @@ Cue detection is keyword-based and conservative. It prefers missing a cue to inv
 
 Persona time is simulated time (60× real time by default), so "8 hours of quiet" after "leave me
 alone" is about 8 real minutes in realtime mode. Engine constants live at the top of
-`persona/engine.py`, and the character text lives in `persona/profile.py`. The chat prompt guard
-(`test_chat_prompt_stays_small`) has about 100 bytes of headroom with the current identity and voice,
-so trim elsewhere before growing them.
+`persona/engine.py`, and the character text lives in `persona/profile.py`. The identity and voice
+are fixed cost in every chat prompt (about 1,100 bytes), so keep them compact.
 
 Canon notes used for the character: Rocky's "question" tag, words repeated or tripled for emphasis,
 literal handling of idioms, and the Eridian custom of watching over each other while they sleep.

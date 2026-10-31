@@ -303,10 +303,10 @@ class Explorer:
         prompt = EXPLORER
         if self.persona and speaking:
             # Character applies to the words spoken, never to which command is chosen.
-            from .prompts import PERSONA_SPEECH
-            prompt += PERSONA_SPEECH
-            payload["persona"] = self.persona.voice_view(
-                [commands[id]["arguments"].get("person") for id in speaking])
+            from .prompts import PERSONA_SPEECH, persona_payload, persona_system
+            view = self.persona.voice_view([commands[id]["arguments"].get("person") for id in speaking])
+            prompt += PERSONA_SPEECH + persona_system(view)
+            payload["persona"] = persona_payload(view)
         choice = await structured(self.client, schema, prompt,
                                   {**payload, "delegated_task": task,
                                    "ready_handoffs": ready_handoffs,
@@ -380,10 +380,10 @@ class Explorer:
         prompt = CAPABILITY_EXPLORER
         speaking = [id for id, command in commands.items() if command["tool"] == "talk_to"]
         if self.persona and (progress["can_finish"] or speaking):
-            from .prompts import PERSONA_ANSWER
-            prompt += PERSONA_ANSWER
-            payload["persona"] = self.persona.voice_view(
-                [commands[id]["arguments"].get("person") for id in speaking])
+            from .prompts import PERSONA_ANSWER, persona_payload, persona_system
+            view = self.persona.voice_view([commands[id]["arguments"].get("person") for id in speaking])
+            prompt += PERSONA_ANSWER + persona_system(view)
+            payload["persona"] = persona_payload(view)
         client = self.client if mixed else self._research_client(context.id)
         choice = await structured(client, schema, prompt, payload,
                                   metrics=context.metrics, role="explorer", compact_schema=True,
