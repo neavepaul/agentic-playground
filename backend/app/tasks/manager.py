@@ -104,7 +104,7 @@ class TaskManager:
         self.memory_store = memory_store
         self.coordinator = Coordinator(client, digital_enabled=settings.digital_tools_enabled,
                                        hosted=hosted, hosted_calls=settings.groq_plan_calls)
-        self.capabilities = CapabilityTools(bus, enabled=settings.digital_tools_enabled)
+        self.capabilities = CapabilityTools(bus, enabled=settings.digital_tools_enabled, hosted=hosted)
         self.explorer = Explorer(client, tools.schemas(), persona=persona,
                                  hosted=hosted, hosted_calls=settings.groq_research_calls)
         self.tasks: dict[str, TaskContext] = {}
@@ -331,6 +331,47 @@ class TaskManager:
             return True
         return False
 
+    async def _web_answer(self, context: TaskContext, goal_plan) -> bool:
+        """A plain lookup answered in one Groq call: its browser search finds the pages and
+        writes the answer in Kip's voice. Anything it cannot settle goes the usual way."""
+        actions = goal_plan.initial_actions
+        if (len(context.conditions) != 1 or context.conditions[0].required_tools != ["web_search"]
+                or len(actions) != 1 or actions[0].tool != "web_search"
+                or not self.capabilities.can_answer_from_web()):
+            return False
+        arguments = {"query": actions[0].arguments.get("query") or context.goal}
+        self._ensure_running(context)
+        if self._refused(context, "web_search", arguments) or context.tool_count >= self.settings.max_tool_calls:
+            return False
+        from datetime import date
+        from app.agents.prompts import WEB_ANSWER, persona_system
+        today = date.today()
+        system = WEB_ANSWER.format(today=today.strftime("%A %d %B %Y"), year=today.year)
+        if self.persona:
+            system += persona_system(self.persona.voice_view())
+        # The date travels with the question too: these models otherwise search last year.
+        asked = f"{context.goal}\n(Asked on {today.strftime('%d %B %Y')}.)"
+        context.tool_count += 1
+        self._before_dispatch(context, "web_search", arguments)
+        result, answer = await self.capabilities.web_answer(
+            arguments["query"], [{"role": "system", "content": system}, {"role": "user", "content": asked}], context)
+        reported = self.capabilities.hosted.last_metrics
+        context.metrics.llm_calls += 1
+        context.metrics.explorer_llm_calls += 1
+        context.metrics.llm_seconds += reported.get("groq_seconds", 0)
+        context.metrics.prompt_tokens += reported.get("prompt_tokens", 0)
+        context.metrics.completion_tokens += reported.get("completion_tokens", 0)
+        self._record_capability(context, "web_search", arguments, result)
+        context.pending_action = None
+        if not result["success"]:
+            return False
+        finished = await self.call_capability(context, "finish_answer", {"answer": answer,
+                                                                        "evidence_ids": [result["evidence_id"]]})
+        if finished.get("success") and not [c for c in check_conditions(context) if not c["satisfied"]]:
+            self.finish(context, "completed", "Answered from Groq's web search.")
+            return True
+        return False
+
     def call_tool(self, context: TaskContext, tool: str, arguments: dict) -> dict:
         self._ensure_running(context)
         refused = self._refused(context, tool, arguments)
@@ -470,6 +511,8 @@ class TaskManager:
             # These initial calls are explicitly independent, fully specified
             # by the model, and validated by the same capability executor.
             self.bus.emit("agent_active", "explorer", task_id=context.id)
+            if await self._web_answer(context, goal_plan):
+                return
             if goal_plan.initial_actions:
                 self.message(context, "explorer", "Running the model's independent tool calls together.")
                 await self.call_capability_batch(context, [action.model_dump() for action in goal_plan.initial_actions])

@@ -32,8 +32,32 @@ def required_tool_progress(context) -> dict:
 
 
 class CapabilityTools:
-    def __init__(self, bus: EventBus, enabled: bool = True):
+    def __init__(self, bus: EventBus, enabled: bool = True, hosted=None):
         self.bus, self.enabled = bus, enabled
+        # Groq, whose built-in browser search can look a question up and answer it in one call.
+        self.hosted = hosted
+
+    def can_answer_from_web(self) -> bool:
+        return self.enabled and self.hosted is not None and self.hosted.can_search()
+
+    async def web_answer(self, query: str, messages: list[dict], context) -> tuple[dict, str]:
+        """(web_search result, answer): the search run by Groq's browser search, which also
+        writes the answer. Its pages are the evidence, recorded like any web_search."""
+        from app.llm.base import ModelError
+        answer = ""
+        try:
+            answer, sources = await self.hosted.search(messages)
+            if not sources or not answer:
+                raise ValueError("Groq answered without searching the web.")
+            result = {"success": True, "observation": {"query": query, "results": sources, "provider": "groq",
+                                                       "untrusted_content": True}}
+            event_type = "capability_observed"
+        except (ModelError, ValueError) as exc:
+            logging.getLogger("agentic_friend.capabilities").info("Groq web search failed: %s", exc)
+            result, event_type, answer = {"success": False, "error": str(exc)[:400]}, "tool_failed", ""
+        event = self.bus.emit(event_type, "explorer", task_id=context.id,
+                              tool="web_search", arguments={"query": query}, **result)
+        return {**result, "evidence_id": event["id"]}, answer
 
     async def execute(self, tool: str, arguments: dict, context) -> dict:
         try:

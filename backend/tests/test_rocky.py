@@ -28,8 +28,10 @@ def test_identity_is_rockys_younger_brother_without_borrowed_memories():
     assert "Never fake a result" in IDENTITY and "investigate, never invent" in IDENTITY
     assert "respect their choices" in IDENTITY  # protective, not controlling
     # The speech pattern, with the guard against playing it as dim or babyish.
-    assert "question?" in VOICE and "Grammar imperfect, reasoning precise" in VOICE
-    assert "never babyish, robotic or dim" in VOICE and "Praise only real achievements" in VOICE
+    assert "Talk like Rocky always" in VOICE and "ending in ', question?'; statements and answers never get it" in VOICE
+    assert "drop articles" in VOICE and "You want I look it up, question?" in VOICE
+    assert "Grammar imperfect, reasoning precise" in VOICE and "Praise only real achievements" in VOICE
+    assert "never babyish, gibberish, misspelled or dim" in VOICE and "numbers exact" in VOICE
     assert all(not tone.startswith("dry") for tone in TONES.values())
 
 

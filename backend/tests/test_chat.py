@@ -99,12 +99,12 @@ async def test_task_trailer_starts_an_errand_and_queues_the_next():
     session.submit("Could you find the keys?")
     await session.drain()
     assert manager.active()["goal"] == "Find the missing keys."
-    # Kip's own reply acknowledged it; no second "On it" narration.
-    assert not any(t["text"].startswith("On it") for t in session.history())
+    # Kip's own reply acknowledged it; no second "Start now" narration.
+    assert not any(t["text"].startswith("Start now") for t in session.history())
     session.submit("Also tell Neave dinner is ready")
     await session.drain()
     assert list(session.pending_goals) == ["Find Neave and tell him dinner is ready."]
-    assert "right after my current errand" in session.history()[-1]["text"]
+    assert "Right after, I do" in session.history()[-1]["text"]
     await manager.cancel(manager.active_id)
     await session.close()
     await manager.close()
@@ -153,7 +153,7 @@ async def test_model_errors_become_a_friendly_reply():
     session, _, _, _ = make_session([ModelError("offline")])
     session.submit("Hello?")
     await session.drain()
-    assert "language model isn't answering" in session.history()[-1]["text"]
+    assert "language model not answer" in session.history()[-1]["text"]
     assert not session.busy
 
 

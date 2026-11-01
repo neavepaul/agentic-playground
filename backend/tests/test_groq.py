@@ -260,3 +260,127 @@ async def test_inline_reasoning_and_a_fence_are_stripped_from_the_reply(content)
         assert await client.generate([{"role": "user", "content": "JSON"}], {}) == REVIEW
     finally:
         await client.close()
+
+
+# ── Groq's built-in browser search: a lookup and its answer in one call ─────────
+SEARCHED = [
+    {"type": "browser_search", "arguments": '{"query": "Lando Norris qualifying Mexico"}',
+     "search_results": {"results": [
+         {"title": "2026 Mexico City GP qualifying report", "url": "https://example.com/report", "content": ""},
+         {"title": "Starting grid", "url": "https://example.com/grid", "content": ""}]}},
+    {"type": "browser.open", "arguments": '{"cursor": 1, "id": 0}',
+     "search_results": {"results": [
+         {"title": "example.com - viewing lines [0 - 64] of 64", "url": "https://example.com/report"}]}},
+]
+
+
+def searched(content="Lando qualify sixth. Bad day. Very bad.【2†L26-L28】", tools=SEARCHED,
+             model="openai/gpt-oss-120b"):
+    return httpx.Response(200, json={"model": model, "usage": {"prompt_tokens": 5000, "completion_tokens": 40},
+                                     "choices": [{"finish_reason": "stop", "message": {
+                                         "role": "assistant", "content": content, "executed_tools": tools}}]})
+
+
+async def test_search_runs_browser_search_on_a_gpt_oss_model_and_cleans_the_answer():
+    bodies = []
+
+    def respond(request):
+        bodies.append(json.loads(request.content))
+        return searched()
+
+    client = await groq(respond, models="qwen/qwen3.8-27b,openai/gpt-oss-120b")
+    try:
+        assert client.can_search()
+        answer, sources = await client.search([{"role": "user", "content": "where did lando qualify?"}])
+        # Only models that support browser_search are asked; the inline citation is dropped.
+        assert [b["model"] for b in bodies] == ["openai/gpt-oss-120b"]
+        assert bodies[0]["tools"] == [{"type": "browser_search"}] and bodies[0]["include_reasoning"] is False
+        assert answer == "Lando qualify sixth. Bad day. Very bad."
+        # The page it opened is the source, titled from the search result rather than the viewer.
+        assert sources == [{"title": "2026 Mexico City GP qualifying report", "url": "https://example.com/report",
+                            "snippet": ""}]
+    finally:
+        await client.close()
+
+
+async def test_a_refused_search_never_benches_the_model_for_plain_calls():
+    def respond(request):
+        if "tools" in json.loads(request.content):
+            return httpx.Response(400, json={"error": {"code": "invalid_request"}})
+        return ok()
+
+    client = await groq(respond, models="openai/gpt-oss-120b")
+    try:
+        with pytest.raises(ModelError):
+            await client.search([{"role": "user", "content": "q"}])
+        assert await client.generate([{"role": "user", "content": "JSON"}], {}) == REVIEW
+    finally:
+        await client.close()
+
+
+async def test_without_a_gpt_oss_model_there_is_no_search():
+    client = await groq(lambda request: ok(), models="qwen/qwen3.8-27b")
+    try:
+        assert not client.can_search()
+    finally:
+        await client.close()
+
+
+async def _lookup(respond, monkeypatch, local=None):
+    from datetime import date
+    from app.chat.session import _lookup_plan
+    from app.events.bus import EventBus
+    from app.persona import Persona
+    from app.tasks.manager import TaskManager
+    from app.tasks.permissions import Grant
+    from app.world.engine import WorldEngine
+    from tests.test_persona import LEGACY_WORLD
+    import app.capabilities.tools as tools
+    monkeypatch.setattr(tools, "web_search", lambda query: {"query": query, "results": [
+        {"url": "https://example.org", "title": "Local search", "snippet": "P6"}]})
+    client = await groq(respond, models="openai/gpt-oss-120b")
+    engine, bus = WorldEngine(LEGACY_WORLD), EventBus()
+    persona = Persona()
+    persona.attach(bus)
+    local = local or ScriptedLLM([])
+    manager = TaskManager(local, WorldTools(engine, bus), bus, Settings(), persona=persona, hosted=client)
+    said = "where did lando qualify in mexico?"
+    task = manager.start("web lookup: " + said, Grant.read_only(said), plan=_lookup_plan(said))
+    await manager.runner
+    await client.close()
+    return task, local, date.today().strftime("%d %B %Y")
+
+
+async def test_a_lookup_is_answered_by_one_groq_search_in_kips_voice(monkeypatch):
+    from app.persona.profile import VOICE
+    bodies = []
+
+    def respond(request):
+        bodies.append(json.loads(request.content))
+        return searched()
+
+    task, local, today = await _lookup(respond, monkeypatch)
+    assert task.status == "completed", task.summary
+    assert task.answer["answer"] == "Lando qualify sixth. Bad day. Very bad."
+    assert [s["url"] for s in task.answer["sources"]] == ["https://example.com/report"]
+    assert [a["tool"] for a in task.action_history] == ["get_status", "get_map", "web_search", "finish_answer"]
+    assert local.calls == [] and len(bodies) == 1  # no local model call, no second search
+    system = bodies[0]["messages"][0]["content"]
+    assert today in system and "browser_search" in system and VOICE in system
+    # The date travels with the question too, or the model searches last year's race.
+    asked = bodies[0]["messages"][1]["content"]
+    assert asked == f"web lookup: where did lando qualify in mexico?\n(Asked on {today}.)"
+
+
+async def test_an_answer_with_nothing_searched_falls_back_to_the_usual_lookup(monkeypatch):
+    finish = json.dumps({"summary": "Done.", "action": {"tool": "finish_answer", "answer": "Sixth.",
+                                                        "evidence_ids": ["e1"]}})
+
+    def respond(request):
+        return searched(tools=[]) if "tools" in json.loads(request.content) else ok(finish)
+
+    task, local, _ = await _lookup(respond, monkeypatch)
+    # Groq's unsearched answer is a failed search; the usual search and research step take over.
+    tools_run = [(a["tool"], a["success"]) for a in task.action_history]
+    assert tools_run[:4] == [("get_status", True), ("get_map", True), ("web_search", False), ("web_search", True)]
+    assert task.status == "completed" and task.answer["answer"] == "Sixth."

@@ -25,6 +25,8 @@ _LIVE_FACT = re.compile(r"\b(weather|forecast|temperature|raining|humidity|aqi|a
                         r"stock price|price of|trading at|sensex|nifty|nasdaq|dow jones|bitcoin|crypto|exchange rate|"
                         r"scores?|cricket|ipl|test match|odi|t20|innings|wickets?|football|premier league|who won|"
                         r"f1|formula (?:1|one)|grand prix|motogp|nba|nfl|tennis|championship|standings|league table|"
+                        r"qualif(?:y|ied|ying|ication)|pole position|on pole|podium|race results?|final score|"
+                        r"fixtures?|semi-?finals?|playoffs?|"
                         r"next (?:race|match|game)|who'?s leading|headlines|the news|news today)\b")
 _GREETING = re.compile(r"^\W*(?:hi|hello|hey|hiya|morning|evening|howdy|good (?:morning|afternoon|evening))\b"
                        r"|\bhow are you\b|\bhow'?s it going\b|\bhow'?s your (?:day|morning|evening)\b")

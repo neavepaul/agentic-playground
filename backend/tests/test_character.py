@@ -281,7 +281,7 @@ async def test_failure_narration_is_plain_fact_without_stock_reactions():
     task = {"goal": "Find the keys", "status": "failed", "task_memory": {"observed_rooms": {"kitchen": {}}}}
     session.bus.emit("task_failed", task=task, summary="The keys were not in any room I could reach.")
     text = session.history()[-1]["text"]
-    assert text.startswith("I couldn't finish that.") and "kitchen" in text
+    assert text.startswith("Not finish. Bad.") and "kitchen" in text
     assert not any(phrase in text.casefold() for phrase in BANNED)
 
 

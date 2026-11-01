@@ -7,6 +7,8 @@ at most once per call: nothing here loops, waits or retries.
 
 Requests are plain chat completions: the system, user and history messages as given,
 with no JSON mode, tools or reasoning parameters. Callers validate any JSON locally.
+The one exception is search(): Groq's built-in browser_search, on the gpt-oss models
+that support it, which looks something up on the web and writes the answer in one call.
 """
 import logging
 import re
@@ -24,6 +26,11 @@ _UNIT_SECONDS = {"h": 3600, "m": 60, "s": 1, "ms": 0.001}
 # Reasoning that some models (qwen) write inline, and a fence around the whole reply.
 _THINK = re.compile(r"<think>.*?</think>\s*", re.S)
 _FENCED = re.compile(r"^```[\w-]*\n(.*)\n```$", re.S)
+# browser_search answers cite what they read inline, like 【2†L26-L28】.
+_CITATION = re.compile(r"\s*【[^】]*】")
+# The models browser_search runs on, and the room its search results take in the prompt.
+SEARCH_MODELS = ("openai/gpt-oss",)
+SEARCH_TOKENS = 6000
 
 
 def reset_seconds(value: str | None) -> float | None:
@@ -87,23 +94,41 @@ class GroqClient:
             base_url=settings.groq_base_url.rstrip("/") + "/", timeout=settings.groq_timeout_seconds,
             headers={"Authorization": f"Bearer {settings.groq_api_key.get_secret_value()}"})
 
-    def candidates(self, need_tokens: int) -> list[str]:
+    def candidates(self, need_tokens: int, searching: bool = False) -> list[str]:
         now = self.now()
-        return [model for model in self.models if self.quota[model].available(need_tokens, now)]
+        return [model for model in self.models if self.quota[model].available(need_tokens, now)
+                and (not searching or model.startswith(SEARCH_MODELS))]
 
     def has_capacity(self, messages: list[dict] | None = None) -> bool:
         return bool(self.candidates(estimate_tokens(messages or [])))
 
+    def can_search(self, messages: list[dict] | None = None) -> bool:
+        return bool(self.candidates(estimate_tokens(messages or []) + SEARCH_TOKENS, searching=True))
+
     async def generate(self, messages: list[dict], response_schema: dict) -> str:
-        return await self._complete(estimate_tokens(messages), lambda model: {
+        message = await self._complete(estimate_tokens(messages), lambda model: {
             "model": model, "messages": messages, "temperature": self.settings.temperature,
             "max_completion_tokens": self.settings.groq_max_output_tokens})
+        return message["content"]
 
-    async def _complete(self, need: int, body) -> str:
-        """The reply from the first model in preference order that can answer."""
+    async def search(self, messages: list[dict]) -> tuple[str, list[dict]]:
+        """(answer, sources): Groq searches the web itself and answers from what it found.
+
+        Sources are the pages it opened, else its top search results, at most three.
+        An answer with nothing searched behind it has no sources, and is no evidence."""
+        message = await self._complete(estimate_tokens(messages) + SEARCH_TOKENS, lambda model: {
+            "model": model, "messages": messages, "temperature": self.settings.chat_temperature,
+            "max_completion_tokens": self.settings.groq_max_output_tokens,
+            "reasoning_effort": "medium", "include_reasoning": False,
+            "tools": [{"type": "browser_search"}]}, searching=True)
+        answer = " ".join(_CITATION.sub("", message["content"]).split())
+        return answer, search_sources(message.get("executed_tools"))
+
+    async def _complete(self, need: int, body, searching: bool = False) -> dict:
+        """The reply message from the first model in preference order that can answer."""
         self.last_metrics = {}
         tried = []
-        for model in self.candidates(need):
+        for model in self.candidates(need, searching):
             tried.append(model)
             started = time.monotonic()
             try:
@@ -123,9 +148,10 @@ class GroqClient:
                 _log.info("groq model=%s rate-limited for %.0fs; trying the next model", model, wait or 60)
                 continue
             code = _error_code(response) if status == 400 else ""
-            if status == 400 and code != "tool_use_failed":  # a made-up tool call is one bad generation
+            if status == 400 and code != "tool_use_failed" and not searching:  # a made-up tool call is one bad generation
                 # A request this model refuses (e.g. an unknown model) will keep failing,
-                # so it sits out for an hour instead of costing a call each time.
+                # so it sits out for an hour instead of costing a call each time. A refused
+                # search says nothing about plain calls, so it never benches the model.
                 self.quota[model].blocked_until = now + 3600
                 _log.warning("groq model=%s refused the request (HTTP 400 %s); skipping it for an hour",
                              model, code or "no code")
@@ -153,12 +179,36 @@ class GroqClient:
                                  "groq_seconds": round(time.monotonic() - started, 3),
                                  **{key: usage[key] for key in ("prompt_tokens", "completion_tokens")
                                     if isinstance(usage.get(key), int)}}
-            return content
+            return {**choice["message"], "content": content}
         reason = "every model failed" if tried else "no model has quota left"
         raise ModelError(f"Groq could not answer: {reason}.")
 
     async def close(self) -> None:
         await self.http.aclose()
+
+
+def search_sources(executed_tools, limit: int = 3) -> list[dict]:
+    """The pages a browser_search answer rests on: those it opened, else its top results."""
+    found, opened = [], []
+    for tool in executed_tools or []:
+        if not isinstance(tool, dict):
+            continue
+        page = "open" in f"{tool.get('type', '')} {tool.get('name', '')}"
+        for result in (tool.get("search_results") or {}).get("results") or []:
+            url = result.get("url") if isinstance(result, dict) else None
+            if isinstance(url, str) and url.startswith(("http://", "https://")):
+                (opened if page else found).append({"title": str(result.get("title") or ""), "url": url})
+    titles = {item["url"]: item["title"] for item in found if item["title"]}
+    sources = []
+    for item in opened or found:
+        if any(source["url"] == item["url"] for source in sources):
+            continue
+        # An opened page is titled like "www.site.com - viewing lines [0 - 64] of 64".
+        title = titles.get(item["url"]) or re.sub(r"\s+-\s+viewing lines.*$", "", item["title"]) or item["url"]
+        sources.append({"title": title[:250], "url": item["url"], "snippet": ""})
+        if len(sources) == limit:
+            break
+    return sources
 
 
 def _seconds(value: str | None) -> float | None:

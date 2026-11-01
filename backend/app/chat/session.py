@@ -375,25 +375,25 @@ class ChatSession:
                           "input_chars=%d truncated=%s", metrics.get("first_token_seconds"),
                           metrics.get("total_seconds"), len(memories), bool(action and action.task), recall_seconds,
                           metrics["input_chars"], bool(metrics.get("truncated")))
-                text = text or "Sorry, I lost my words for a moment. Could you say that again?"
+                text = text or "Lost my words. Say again, question?"
                 reply_turn = self._finish_turn(user_turn, reply_id, text, action, metrics, action_error=action_error)
                 finished = True
                 await self._act(action, user_turn, reply_turn, written=text)
         except ContextBudgetError as exc:
             self._finish_turn(user_turn, reply_id,
-                              "I can't fit all the context for that into one reply. Could you split the request "
-                              "into smaller parts?", None, {"chat_model_calls": 0}, error=str(exc))
+                              "Too much context for one answer. Too big. You split in smaller parts, "
+                              "question?", None, {"chat_model_calls": 0}, error=str(exc))
             finished = True
         except ModelError as exc:
-            self._finish_turn(user_turn, reply_id, "I can't think clearly right now: my language model isn't "
-                                                   "answering. Please check that it's running.", None, {},
+            self._finish_turn(user_turn, reply_id, "Cannot think now. My language model not "
+                                                   "answer. You check it run, question?", None, {},
                               error=str(exc))
             finished = True
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             _log.exception("Chat reply failed")
-            self._finish_turn(user_turn, reply_id, "Sorry, something went wrong on my side while answering.",
+            self._finish_turn(user_turn, reply_id, "Something break in me while I answer. Bad. Very bad.",
                               None, {}, error=type(exc).__name__)
             finished = True
         finally:
@@ -483,7 +483,7 @@ class ChatSession:
                 self.offer_log.append(offer.public())
                 self.offer = Offer(goal=offer.goal, reply_turn_id=offer.reply_turn_id, generation=self.generation,
                                    effects=offer.effects)
-                self._add_turn("kip", f"Just to be sure: would you like me to {_lower_first(offer.goal)}?",
+                self._add_turn("kip", f"Want to be sure. I {_lower_first(offer.goal)}, question?",
                                source="clarification")
                 return
             else:
@@ -760,18 +760,18 @@ class ChatSession:
             _log.info("Ignoring a repeated errand request: %s", goal)
             return
         try:
-            # Kip's own reply already acknowledged this errand; skip "On it".
+            # Kip's own reply already acknowledged this errand; skip "Start now".
             self._announced.add(task_identity(goal))
             self.manager.start(goal, grant, plan=plan)
         except TaskBusy:
-            # It will start later, when an "On it" is genuinely news again. It keeps the
+            # It will start later, when a "Start now" is genuinely news again. It keeps the
             # grant it was given; restrictions are re-checked when its tools run.
             self._announced.discard(task_identity(goal))
             self.pending_goals.append(goal)
             self._queued_grants[task_identity(goal)] = grant
             if plan is not None:
                 self._queued_plans[task_identity(goal)] = plan
-            self._add_turn("kip", f"I'll do that right after my current errand: {goal}", source="narration")
+            self._add_turn("kip", f"First I finish current errand. Right after, I do: {goal}", source="narration")
 
     async def _start_next_when_free(self, generation: int) -> None:
         while self.manager.active_id is not None and not self._closed:
@@ -796,7 +796,7 @@ class ChatSession:
             if task_identity(goal) in self._announced:
                 self._announced.discard(task_identity(goal))
             else:
-                self._add_turn("kip", f"On it: {goal}", source="narration")
+                self._add_turn("kip", f"Start now: {goal}", source="narration")
         elif kind in {"task_completed", "task_failed"}:
             outcome = kind.removeprefix("task_")
             answer = task.get("answer") or {}
@@ -809,7 +809,7 @@ class ChatSession:
                 if outcome == "completed":
                     text = found or data.get("summary", "") or "Done."
                 else:
-                    text = " ".join(part for part in ("I couldn't finish that.", found, data.get("summary", ""))
+                    text = " ".join(part for part in ("Not finish. Bad.", found, data.get("summary", ""))
                                     if part)
             notes = list(task.get("answer_notes") or [])
             if task.get("blocked"):
@@ -822,7 +822,7 @@ class ChatSession:
             self._needs_permission(data)
         elif kind == "agent_intention":
             self._announced.add(task_identity(data.get("summary", "")))
-            self._add_turn("kip", f"I'm going to take care of something: {data.get('summary', '')}. "
+            self._add_turn("kip", f"I take care of something: {data.get('summary', '')}. "
                                   f"{data.get('reason', '')}".strip(), source="narration")
 
 
@@ -830,14 +830,14 @@ class ChatSession:
         """A task stopped before acting because it needed more than it was cleared for."""
         goal, needs = data.get("goal", ""), set(data.get("needs", []))
         if data.get("ruled_out"):
-            self._add_turn("kip", f"I've left that alone: it would mean {plain(needs)}, and you asked me not to.",
+            self._add_turn("kip", f"I leave it. It mean {plain(needs)}, and you say no to that.",
                            source="narration")
             return
         if task_identity(goal) in self._declined:
             return  # they already said no to this once; don't ask again
         self._expire_offer("superseded")
         self.offer = Offer(goal=goal, reply_turn_id="", generation=self.generation, effects=frozenset(needs) | READ_ONLY)
-        self._add_turn("kip", f"I can't answer that from here: it would mean {plain(needs)}. Want me to?",
+        self._add_turn("kip", f"Cannot answer from here. It mean {plain(needs)}. I do it, question?",
                        source="narration")
 
 
