@@ -355,3 +355,50 @@ async def test_the_clock_answers_the_time_but_what_time_after_a_match_question_m
     await settle(session, manager)
     assert len(manager.tasks) == 2 and "following up on" in list(manager.tasks.values())[-1].goal
     await done(session, manager)
+
+
+# ── "who is playing?" after the match question: the conversation already knows ──
+@pytest.mark.parametrize("text,focus", [("who is playing", "teams"), ("which channel?", "broadcast"),
+                                        ("where is it being played?", "venue"), ("who's playing kip?", "teams")])
+def test_match_follow_ups_keep_the_match(router, text, focus):
+    route = conversation(router, "when is the india cricket game today?", text)
+    assert route.followup and route.focus == focus and route.entities == ["India"], text
+    assert "result 2026" not in route.query and "India" in route.query and "1 November 2026" in route.query
+
+
+def test_who_is_playing_is_answered_from_the_topic_when_both_sides_are_known(router):
+    frame = Frame("information.sports", "cricket", "start time", ["India", "New Zealand"], None, "today or next",
+                  "when is the india cricket game today?", 0)
+    assert router.route("who is playing", frame, 1, TODAY).known == "India and New Zealand."
+    assert router.route("who is playing", Frame("information.sports", "cricket", "start time", ["India"], None,
+                                                "today", "x", 0), 1, TODAY).known == ""
+
+
+@pytest.mark.asyncio
+async def test_the_teams_a_lookup_found_answer_who_is_playing_without_a_search(ran):
+    model = PlanningModel([], task=[answering("Today. New Zealand vs India, Hamilton.")])
+    session, manager = session_with(model, settings=Settings(direct_initial_delegation=True))
+    session.submit("when is the india cricket game today?")
+    await settle(session, manager)
+    await manager.runner
+    session.submit("who is playing")
+    await settle(session, manager)
+    assert session.history()[-1]["text"] == "India and New Zealand."
+    assert len(manager.tasks) == 1 and model.prompts == []  # no second lookup, no chat-model call
+    await done(session, manager)
+
+
+@pytest.mark.asyncio
+async def test_a_follow_up_lookup_carries_kips_last_answer(ran):
+    model = PlanningModel([], task=[answering("Today. New Zealand vs India."), answering("Sony Sports.")])
+    session, manager = session_with(model, settings=Settings(direct_initial_delegation=True))
+    session.submit("when is the india cricket game today?")
+    await settle(session, manager)
+    await manager.runner
+    session.submit("which channel?")
+    await settle(session, manager)
+    await manager.runner
+    second = list(manager.tasks.values())[-1]
+    assert "Kip answered: Today. New Zealand vs India." in second.goal
+    assert second.action_history[2]["arguments"]["query"].startswith("India vs New Zealand live TV channel")
+    await done(session, manager)

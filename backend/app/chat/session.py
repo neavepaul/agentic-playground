@@ -22,8 +22,8 @@ from .consent import Offer, classify_reply, is_question, is_request, task_identi
 from .evidence import (capabilities, contradicted_presence, denied_capabilities, last_seen, room_scans,
                        task_record, unsupported_execution)
 from .intent import Intent, introduced_as, is_live_fact, read_intent
-from .router import (THRESHOLD as ROUTER_THRESHOLD, LIVE, Frame, Route, clock_question, default_router, fast_path,
-                     frame_of)
+from .router import (THRESHOLD as ROUTER_THRESHOLD, LIVE, SPORTS, Frame, Route, clock_question, default_router,
+                     fast_path, frame_of, read_slots)
 from app.world.clock import spoken_time
 from app.agents.schemas import GoalCondition, GoalPlan, InitialCapability
 from .prompt import ChatAction, TrailerSplitter, build_messages
@@ -90,6 +90,7 @@ class ChatSession:
         self.router = None
         self._frame: Frame | None = None               # the last information request, for follow-ups
         self._frame_route: Route | None = None
+        self._frame_answer = ""                        # what Kip's lookup said about that request
         self._routed = 0
         self._routes: dict[str, Route] = {}            # user turn id -> how the router read it
         self._correction_goals: dict[tuple[str, ...], int] = {}  # corrected lookup -> correction record
@@ -322,6 +323,12 @@ class ChatSession:
                         # "How did he do?" with nobody named: ask who, no model call.
                         finished = self._finish_turn(user_turn, reply_id, question, None,
                                                      {"chat_model_calls": 0, "intent_router": route.intent})
+                        self._intents.pop(user_turn["id"], None)
+                        return
+                    if route.known and route.followup and not (intent.cancel or intent.changes_state_only):
+                        # "Who is playing?" when the last lookup already named both sides.
+                        finished = self._finish_turn(user_turn, reply_id, route.known, None,
+                                                     {"chat_model_calls": 0, "intent_router": "known"})
                         self._intents.pop(user_turn["id"], None)
                         return
                     if self._asks_the_time(intent, route, said):
@@ -628,6 +635,8 @@ class ChatSession:
             self._record_correction(user_turn, route)
         frame = frame_of(route, said, turn)
         if frame:
+            if not route.followup:
+                self._frame_answer = ""  # a new request: the old answer is about something else
             self._frame, self._frame_route = frame, route
         self._routes[user_turn["id"]] = route
         router_fast = self._router_fast(user_turn, intent, route)
@@ -663,7 +672,8 @@ class ChatSession:
         if route.correction:
             goal = f"{LOOKUP_PREFIX}{route.earlier} (they corrected: {said}; they mean: {route.meaning})"
         elif route.followup:
-            goal = f"{LOOKUP_PREFIX}{said} (following up on: {route.earlier}; they mean: {route.meaning})"
+            answered = f"; Kip answered: {_clip(self._frame_answer, 200)}" if self._frame_answer else ""
+            goal = f"{LOOKUP_PREFIX}{said} (following up on: {route.earlier}{answered}; they mean: {route.meaning})"
         else:
             goal = f"{LOOKUP_PREFIX}{said} (they mean: {route.meaning})"
         goal = _clip(goal, 600)
@@ -682,6 +692,20 @@ class ChatSession:
         if seen is not None and self._offer_valid() and self.offer.id == seen:
             return None
         return route.clarify
+
+    def _learn_from_answer(self, text: str) -> None:
+        """A lookup's answer joins the conversation topic: "New Zealand vs India, 12:30" names the
+        opponent, so "who is playing?" next needs no search."""
+        if self._frame is None:
+            return
+        self._frame_answer = text
+        if self._frame.domain in SPORTS:
+            slots = read_slots(text)
+            found = sorted(((c, d) for c, d in slots.entities + slots.ambiguous if d in SPORTS),
+                           key=lambda item: slots.order.get(item[0], 0))
+            for name, _ in found:
+                if name not in self._frame.entities:
+                    self._frame.entities.append(name)
 
     def _asks_the_time(self, intent: Intent, route: Route, said: str) -> bool:
         """ "What time is it?" on its own, not "what time?" about the match just asked about."""
@@ -945,6 +969,8 @@ class ChatSession:
             if correction and self.store:
                 self.store.set_intent_outcome(correction, "answered" if outcome == "completed" else "failed")
             answer = task.get("answer") or {}
+            if answer.get("answer") and str(task.get("goal", "")).startswith(LOOKUP_PREFIX):
+                self._learn_from_answer(answer["answer"])
             if answer.get("answer"):
                 # The answer is already written in Kip's voice; no stock opener.
                 text = answer["answer"]

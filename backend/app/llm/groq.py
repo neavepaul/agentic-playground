@@ -171,7 +171,8 @@ class GroqClient:
                              model, code or "no code")
                 continue
             if status >= 400:
-                _log.info("groq model=%s returned HTTP %d; trying the next model", model, status)
+                _log.info("groq model=%s returned HTTP %d (%s); trying the next model", model, status,
+                          _error_detail(response))
                 continue
             try:
                 envelope = response.json()
@@ -253,6 +254,15 @@ def _seconds(value: str | None) -> float | None:
         return None
 
 
+def _error_detail(response: httpx.Response) -> str:
+    """Groq's error code and message (never request content or credentials)."""
+    try:
+        error = response.json()["error"]
+        return f"{error.get('code') or error.get('type') or 'no code'}: {str(error.get('message') or '')[:200]}"
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return "no error body"
+
+
 def _error_code(response: httpx.Response) -> str:
     try:
         return str(response.json()["error"].get("code") or "")
@@ -273,6 +283,11 @@ class HostedFirst:
         self.last_metrics: dict = {}
 
     async def generate(self, messages: list[dict], response_schema: dict) -> str:
+        if self.used >= self.limit:
+            _log.info("Groq call budget for %s used (%d); using the local model.", self.purpose, self.limit)
+        elif not self.hosted.has_capacity(messages):
+            # Every model is rate-limited: say so, since the local model can take minutes.
+            _log.warning("Groq has no quota left for %s; using the local model, which is slower.", self.purpose)
         if self.used < self.limit and self.hosted.has_capacity(messages):
             self.used += 1
             try:

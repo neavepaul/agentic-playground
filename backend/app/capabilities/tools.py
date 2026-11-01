@@ -108,6 +108,24 @@ class CapabilityTools:
         return {**result, "evidence_id": event["id"]}
 
     @staticmethod
+    def _wrong_event(answer: str, evidence: list[dict], goal: str) -> list[str]:
+        """Times in a sports answer the cited pages give only for another match."""
+        from datetime import datetime
+        from app.chat.router import SPORTS, read_slots
+        from .grounding import wrong_event
+        slots = read_slots(goal)
+        teams = list(dict.fromkeys(c for c, d in slots.entities + slots.ambiguous if d in SPORTS))
+        if not teams:
+            return []
+        pages = []
+        for item in evidence:
+            obs = item["observation"]
+            pages.append(str(obs.get("text") or ""))
+            pages += [f"{r.get('title', '')} {r.get('snippet', '')}" for r in obs.get("results", [])]
+        offset = int(datetime.now().astimezone().utcoffset().total_seconds() // 60)
+        return wrong_event(answer, [p for p in pages if p.strip()], teams, offset)
+
+    @staticmethod
     def finish_answer(args, context) -> dict:
         by_id = {a["evidence_id"]: a for a in context.action_history
                  if a["success"] and a["tool"] in DIGITAL_TOOLS - {"finish_answer"}}
@@ -125,6 +143,11 @@ class CapabilityTools:
         if missing:
             raise ValueError("Answer is missing cited tool evidence for: " + ", ".join(sorted(missing))
                              + ". Run any unfinished tools and cite their successful evidence IDs.")
+        wrong = CapabilityTools._wrong_event(args.answer, evidence + attached, context.goal)
+        if wrong:
+            # "8:05 a.m." from a fixture list where 8:05 is another match's start: try again.
+            raise ValueError("Answer gives a time the pages list for a different match: " + "; ".join(wrong)
+                             + ". Use the time listed with the match that was asked about.")
         sources = []
         for item in evidence + [a for a in attached if a["tool"] == "read_webpage"]:
             obs = item["observation"]

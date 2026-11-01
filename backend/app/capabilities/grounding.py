@@ -113,3 +113,57 @@ def unsupported(answer: str, quote: str, evidence: str, local_offset: int, today
     for number in sorted(_numbers(answer) - known):
         problems.append(f"{number} is in nothing that was read")
     return problems
+
+
+# ── a time belongs to the match it is listed with ──────────────────────────────
+# Fixture lists put many matches on one page ("08:05 am IST ... Sri Lanka vs Hong Kong",
+# "12:30 pm IST ... New Zealand vs India"). A time is only the answer if the page lists it
+# with the teams asked about, not under some other fixture.
+_VS = re.compile(r"([a-z][a-z .'&-]{1,40}?)\s+(?:vs?\.?|versus)\s+([a-z][a-z .'&-]{1,40})", re.I)
+_CODES = {"india": {"ind"}, "new zealand": {"nz"}, "australia": {"aus"}, "england": {"eng"}, "pakistan": {"pak"},
+          "south africa": {"sa", "rsa"}, "sri lanka": {"sl"}, "bangladesh": {"ban"}, "afghanistan": {"afg"},
+          "west indies": {"wi"}}
+
+
+def _listed_times(text: str) -> list[tuple[Clock, str]]:
+    """Every clock time in a page, with the text that follows it up to the next time: the
+    record a fixture list attaches to that time."""
+    spans = []
+    for match in _TIME.finditer(text):
+        found = clock_times(match.group(0))
+        if found:
+            spans.append((found[0], match.start(), match.end()))
+    return [(clock, text[end:(spans[i + 1][1] if i + 1 < len(spans) else len(text))][:250])
+            for i, (clock, _, end) in enumerate(spans)]
+
+
+def _names(team: str) -> set[str]:
+    team = team.casefold()
+    return {team, *_CODES.get(team, set()), *team.split()[-1:]} if " " in team else {team, *_CODES.get(team, set())}
+
+
+def wrong_event(answer: str, pages: list[str], teams: list[str], local_offset: int) -> list[str]:
+    """Times in the answer that the pages give only for some other match; empty when every
+    time is listed with one of `teams` somewhere, or no fixture is named near it."""
+    if not teams:
+        return []
+    wanted = set().union(*(_names(t) for t in teams))
+    mentions = lambda side: any(re.search(rf"\b{re.escape(name)}\b", side.casefold()) for name in wanted)
+    listed = [entry for page in pages for entry in _listed_times(page)]
+    problems = []
+    for said in clock_times(answer):
+        records = [record for clock, record in listed if _same(said, clock, local_offset)]
+        label = f"{said.minutes // 60:02d}:{said.minutes % 60:02d}"
+        if not records:
+            problems.append(f"{label} is in none of the pages read")
+            continue
+        others = []
+        for record in records:
+            pairs = _VS.findall(record)
+            if not pairs or any(mentions(a) or mentions(b) for a, b in pairs):
+                break  # listed with the requested teams, or a time for the whole series
+            first, second = pairs[0]
+            others.append(f"{' '.join(first.split()[-2:])} vs {' '.join(second.split()[:2])}")
+        else:
+            problems.append(f"{label} is the time of {others[0]}, not of {' vs '.join(teams)}")
+    return problems

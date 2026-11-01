@@ -59,7 +59,9 @@ _CRICKET = {"virat|kohli": "Virat Kohli", "rohit": "Rohit Sharma", "bumrah|jaspr
             "rcb": "Royal Challengers Bengaluru", "csk": "Chennai Super Kings", "mi": "Mumbai Indians",
             "kkr": "Kolkata Knight Riders", "srh": "Sunrisers Hyderabad", "rr": "Rajasthan Royals",
             "india": "India", "australia": "Australia", "england": "England", "pakistan": "Pakistan",
-            "new zealand": "New Zealand", "south africa": "South Africa", "sri lanka": "Sri Lanka"}
+            "new zealand|nz": "New Zealand", "south africa": "South Africa", "sri lanka": "Sri Lanka",
+            "bangladesh": "Bangladesh", "afghanistan": "Afghanistan", "west indies": "West Indies",
+            "ireland": "Ireland", "zimbabwe": "Zimbabwe"}
 _FOOTBALL = {"arsenal": "Arsenal", "liverpool": "Liverpool", "chelsea": "Chelsea", "spurs|tottenham": "Tottenham",
              "man city|manchester city|city": "Manchester City", "man united|man utd|manchester united|united":
              "Manchester United", "real madrid|madrid": "Real Madrid", "barcelona|barca": "Barcelona",
@@ -99,6 +101,13 @@ def _lexicon() -> dict[str, tuple[str, str]]:
 
 
 LEXICON = _lexicon()
+# Names that are sides in a match (teams, not players or drivers): "who is playing" is two of these.
+_SIDES = {"Royal Challengers Bengaluru", "Chennai Super Kings", "Mumbai Indians", "Kolkata Knight Riders",
+          "Sunrisers Hyderabad", "Rajasthan Royals", "India", "Australia", "England", "Pakistan", "New Zealand",
+          "South Africa", "Sri Lanka", "Bangladesh", "Afghanistan", "West Indies", "Ireland", "Zimbabwe",
+          "Arsenal", "Liverpool", "Chelsea", "Tottenham", "Manchester City", "Manchester United", "Real Madrid",
+          "Barcelona", "Bayern Munich", "Paris Saint-Germain", "Juventus", "Los Angeles Lakers",
+          "Golden State Warriors", "Boston Celtics"}
 _ALIAS = re.compile(r"\b(" + "|".join(sorted(map(re.escape, LEXICON), key=len, reverse=True)) + r")\b")
 _PLACE = re.compile(r"\b(" + "|".join(sorted(map(re.escape, set(_PLACES)), key=len, reverse=True)) + r")\b")
 
@@ -127,6 +136,12 @@ _SPORT_FOCUS = (
     ("sprint result", r"sprint"),
     ("practice times", r"practice|fp[123]"),
     ("pit stops", r"pit(?:ted|stop)?s?"),
+    ("teams", r"who(?:'s| is| are)? playing|who plays|playing who|which teams?|the teams|opponents?|"
+              r"against (?:who|whom)|vs who|line ?-?ups?|squads?|playing (?:xi|eleven)"),
+    ("venue", r"which (?:ground|stadium|venue)|what (?:ground|stadium|venue)|venue|where is (?:it|the (?:game|match))|"
+              r"where(?:'s| is) it (?:on|played|being played)"),
+    ("broadcast", r"which channel|what channel|channel|where (?:can i|do i|to) (?:watch|stream)|streaming|"
+                  r"live stream|on tv"),
     ("match status", r"already (?:started|begun|over|finished)|started yet|still on|over yet|finished yet|"
                      r"live now|is it on|still going|still playing"),
     # "When is the game today?" asks about one game: its start time. "When's the next race" is the schedule.
@@ -140,6 +155,10 @@ _SPORT_FOCUS = (
                r"how did .* (?:do|get on|go)|how(?:'s| is) .* doing|position"),
 )
 _SPORT_FOCUS = tuple((name, re.compile(r"\b(?:" + pattern + r")")) for name, pattern in _SPORT_FOCUS)
+_MATCH_ASPECTS = {"teams", "venue", "broadcast", "match status"}
+# What a search for each aspect looks for: "who is playing" searches the fixture, not "teams".
+_SEARCH_WORDS = {"teams": "match today opponent", "venue": "match venue ground", "broadcast": "live TV channel streaming",
+                 "match status": "live score", "start time": "start time"}
 _RESULT_WORDS = re.compile(r"\b(?:finish\w*|won|wins?|beat|podium|results?|race|lost|lose|end(?:ed)? up|came)\b")
 _TIMES = (
     ("now", r"right now|now|currently|at the moment"),
@@ -386,6 +405,7 @@ class Route:
     earlier: str = ""                # the question a follow-up or correction leans on
     asked: str = ""                  # a follow-up's own question, when it asks something new
     clarify: str | None = None       # a short question back, when a pronoun has nobody to point at
+    known: str = ""                  # an answer the conversation already holds ("India and New Zealand.")
     scores: dict = field(default_factory=dict)
     evidence: bool = False           # a domain word, name or place in the message itself
     lookup_phrase: bool = False      # "ipl points table", "price of gold": a lookup with no verb
@@ -510,6 +530,8 @@ class IntentRouter:
             return False
         if slots.follow_cue or refers:
             return True
+        if frame.domain in SPORTS and slots.sport_focus in _MATCH_ASPECTS and len(lowered.split()) <= 7:
+            return True  # "where is it being played?", "who's playing?" right after a match question
         # A question too short to have a subject of its own: "what time?", "who won?", "already
         # started?". Never a greeting or a question about something else ("what time is it?").
         asks_aspect = bool(slots.sport_focus or slots.time or _ASPECT.search(lowered))   # never "whats up?"
@@ -554,6 +576,9 @@ class IntentRouter:
             route.focus = _weather_focus(route.time, None)
         if route.domain in SPORTS:
             route.time = _sport_time(route.time, route.focus, True)
+            teams = [e for e in route.entities if e in _SIDES]
+            if route.focus == "teams" and len(teams) >= 2 and not named:
+                route.known = f"{teams[0]} and {teams[1]}."  # already found: no search needed
         return route
 
     def _fill(self, route: Route, slots: Slots, lowered: str) -> None:
@@ -603,7 +628,7 @@ def _sport_focus(focus: str | None, domain: str | None) -> str | None:
 def _sport_time(time: str | None, focus: str | None, past: bool) -> str | None:
     if focus == "match status":
         return time if time not in (None, "latest", "next upcoming") else "now"
-    if focus == "start time":
+    if focus in ("start time", "teams", "venue", "broadcast"):
         return time if time not in (None, "latest", "next upcoming") else "today or next"
     if focus == "schedule":
         return time if time not in (None, "latest") else "next upcoming"
@@ -645,13 +670,16 @@ def _query(route: Route, said: str, today: date) -> tuple[str, str]:
         event += "Grand Prix" if route.domain == "f1" else ("race" if route.domain == "motogp" else "")
         # A new question about the same subject searches its own words, about that subject.
         aspect = route.focus or (f"“{route.asked}”" if route.asked else "result")
-        timed = route.focus in ("start time", "match status") or route.time in ("now", "today or next")
-        query = " ".join(filter(None, [who, route.focus or route.asked or "result", event.strip(), domain,
+        timed = route.focus in _SEARCH_WORDS or route.time in ("now", "today", "today or next")
+        searched = _SEARCH_WORDS.get(route.focus) or route.focus or route.asked or "result"
+        query = " ".join(filter(None, [who, searched, event.strip(), domain,
                                        day if timed else str(today.year)
                                        if route.time in ("latest completed", "next upcoming", None) else route.time]))
         place_note = " (a position, not a place)" if route.focus and "position" in route.focus else ""
-        if route.focus == "start time":
-            place_note = " (a clock time and day: just that, not the whole series)"
+        place_note = {"start time": " (a clock time and day: just that, not the whole series)",
+                      "teams": " (the two sides playing)", "venue": " (the ground and city)",
+                      "broadcast": " (the TV channel and streaming service in the listener's country)"
+                      }.get(route.focus, place_note)
         meaning = f"{domain or 'Sport'}: {(who + ' — ') if who else ''}{aspect}{place_note}"
         meaning += f" at the {event.strip()}" if event.strip() else ""
         meaning += f", {when}." if when else "."
