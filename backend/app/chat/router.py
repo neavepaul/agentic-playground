@@ -129,7 +129,9 @@ _SPORT_FOCUS = (
     ("pit stops", r"pit(?:ted|stop)?s?"),
     ("match status", r"already (?:started|begun|over|finished)|started yet|still on|over yet|finished yet|"
                      r"live now|is it on|still going|still playing"),
-    ("start time", r"what time|start(?:s|ing)?\b|begin(?:s|ning)?\b|kick ?off|first ball|toss time"),
+    # "When is the game today?" asks about one game: its start time. "When's the next race" is the schedule.
+    ("start time", r"what time|start(?:s|ing)?\b|begin(?:s|ning)?\b|kick ?off|first ball|toss time|"
+                   r"when(?:'s| is| does)\b(?:(?!\bnext\b).){0,40}\b(?:game|match)\b"),
     ("schedule", r"next (?:race|match|game|grand prix|gp|odi|test)|when(?:'s| is| are| does| do)|what time|"
                  r"fixtures?|schedule|start\b"),
     ("standings", r"standings|championship|points table|table|leading|top of|how many points|title"),

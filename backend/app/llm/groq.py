@@ -111,18 +111,32 @@ class GroqClient:
             "max_completion_tokens": self.settings.groq_max_output_tokens})
         return message["content"]
 
-    async def search(self, messages: list[dict]) -> tuple[str, list[dict]]:
-        """(answer, sources): Groq searches the web itself and answers from what it found.
+    async def search(self, messages: list[dict]) -> "WebAnswer":
+        """Groq searches the web itself and answers from what it found.
 
-        Sources are the pages it opened, else its top search results, at most three.
-        An answer with nothing searched behind it has no sources, and is no evidence."""
+        Sources are the pages it opened, else its top search results, at most three. The
+        reply's closing SOURCE: line is split off, and everything it read is kept as evidence,
+        so the caller can check the answer against it. An answer with nothing searched behind
+        it has no sources, and is no evidence."""
         message = await self._complete(estimate_tokens(messages) + SEARCH_TOKENS, lambda model: {
             "model": model, "messages": messages, "temperature": self.settings.chat_temperature,
             "max_completion_tokens": self.settings.groq_max_output_tokens,
             "reasoning_effort": "medium", "include_reasoning": False,
             "tools": [{"type": "browser_search"}]}, searching=True)
-        answer = " ".join(_CITATION.sub("", message["content"]).split())
-        return answer, search_sources(message.get("executed_tools"))
+        from app.capabilities.grounding import split_source
+        answer, quote = split_source(_CITATION.sub("", message["content"]))
+        tools = [t for t in message.get("executed_tools") or [] if isinstance(t, dict)]
+        found = WebAnswer(answer=" ".join(answer.split()), quote=" ".join(quote.split()),
+                          sources=search_sources(tools), evidence=search_evidence(tools),
+                          searches=sum("open" not in f"{t.get('type', '')} {t.get('name', '')}" for t in tools),
+                          pages=sum("open" in f"{t.get('type', '')} {t.get('name', '')}" for t in tools))
+        # Most of the prompt tokens are Groq's own browsing: each result page it reads is fed back in.
+        _log.info("groq browser_search model=%s searches=%d pages_opened=%d read_chars=%d own_prompt_chars=%d "
+                  "prompt_tokens=%s completion_tokens=%s", self.last_metrics.get("model"), found.searches,
+                  found.pages, len(found.evidence), sum(len(m.get("content") or "") for m in messages),
+                  self.last_metrics.get("prompt_tokens"), self.last_metrics.get("completion_tokens"))
+        self.last_metrics.update(searches=found.searches, pages_opened=found.pages, read_chars=len(found.evidence))
+        return found
 
     async def _complete(self, need: int, body, searching: bool = False) -> dict:
         """The reply message from the first model in preference order that can answer."""
@@ -185,6 +199,27 @@ class GroqClient:
 
     async def close(self) -> None:
         await self.http.aclose()
+
+
+@dataclass
+class WebAnswer:
+    answer: str
+    quote: str              # the words the answer says it rests on, copied from what was read
+    sources: list[dict]
+    evidence: str           # everything browser_search returned: result lists and page text
+    searches: int = 0
+    pages: int = 0
+
+
+def search_evidence(executed_tools) -> str:
+    """All text browser_search saw: its tool outputs, and result titles and contents."""
+    parts = []
+    for tool in executed_tools or []:
+        parts.append(str(tool.get("output") or ""))
+        for result in (tool.get("search_results") or {}).get("results") or []:
+            if isinstance(result, dict):
+                parts.append(f"{result.get('title') or ''} {result.get('content') or ''}")
+    return "\n".join(part for part in parts if part.strip())
 
 
 def search_sources(executed_tools, limit: int = 3) -> list[dict]:

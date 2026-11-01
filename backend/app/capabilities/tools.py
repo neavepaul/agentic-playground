@@ -42,18 +42,32 @@ class CapabilityTools:
 
     async def web_answer(self, query: str, messages: list[dict], context) -> tuple[dict, str]:
         """(web_search result, answer): the search run by Groq's browser search, which also
-        writes the answer. Its pages are the evidence, recorded like any web_search."""
+        writes the answer. Its pages are the evidence, recorded like any web_search.
+
+        The answer is used only if what it states is in what Groq read: its quoted source must
+        be there, and every time and figure must come from it (grounding.py). Otherwise the
+        search counts as failed and the usual lookup, which reads the pages itself, takes over."""
+        from datetime import datetime
         from app.llm.base import ModelError
+        from .grounding import unsupported
         answer = ""
         try:
-            answer, sources = await self.hosted.search(messages)
-            if not sources or not answer:
+            found = await self.hosted.search(messages)
+            answer = found.answer
+            if not found.sources or not answer:
                 raise ValueError("Groq answered without searching the web.")
-            result = {"success": True, "observation": {"query": query, "results": sources, "provider": "groq",
-                                                       "untrusted_content": True}}
+            now = datetime.now().astimezone()
+            problems = unsupported(answer, found.quote, found.evidence,
+                                   int(now.utcoffset().total_seconds() // 60),
+                                   today=now.date())
+            if problems:
+                raise ValueError("Groq's answer is not backed by what it read: " + "; ".join(problems)
+                                 + f". It said: {answer[:200]!r}")
+            result = {"success": True, "observation": {"query": query, "results": found.sources, "provider": "groq",
+                                                       "quote": found.quote, "untrusted_content": True}}
             event_type = "capability_observed"
         except (ModelError, ValueError) as exc:
-            logging.getLogger("agentic_friend.capabilities").info("Groq web search failed: %s", exc)
+            logging.getLogger("agentic_friend.capabilities").warning("Groq web search not used: %s", exc)
             result, event_type, answer = {"success": False, "error": str(exc)[:400]}, "tool_failed", ""
         event = self.bus.emit(event_type, "explorer", task_id=context.id,
                               tool="web_search", arguments={"query": query}, **result)

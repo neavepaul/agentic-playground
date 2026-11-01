@@ -269,12 +269,17 @@ SEARCHED = [
          {"title": "2026 Mexico City GP qualifying report", "url": "https://example.com/report", "content": ""},
          {"title": "Starting grid", "url": "https://example.com/grid", "content": ""}]}},
     {"type": "browser.open", "arguments": '{"cursor": 1, "id": 0}',
+     "output": "L3: McLaren report\nL4: Lando Norris qualified sixth for the 2026 Mexico City Grand Prix.",
      "search_results": {"results": [
          {"title": "example.com - viewing lines [0 - 64] of 64", "url": "https://example.com/report"}]}},
 ]
 
 
-def searched(content="Lando qualify sixth. Bad day. Very bad.【2†L26-L28】", tools=SEARCHED,
+QUOTED = ("Lando qualify sixth. Bad day. Very bad.【2†L26-L28】\n"
+          "SOURCE: Lando Norris qualified sixth for the 2026 Mexico City Grand Prix")
+
+
+def searched(content=QUOTED, tools=SEARCHED,
              model="openai/gpt-oss-120b"):
     return httpx.Response(200, json={"model": model, "usage": {"prompt_tokens": 5000, "completion_tokens": 40},
                                      "choices": [{"finish_reason": "stop", "message": {
@@ -291,14 +296,17 @@ async def test_search_runs_browser_search_on_a_gpt_oss_model_and_cleans_the_answ
     client = await groq(respond, models="qwen/qwen3.8-27b,openai/gpt-oss-120b")
     try:
         assert client.can_search()
-        answer, sources = await client.search([{"role": "user", "content": "where did lando qualify?"}])
+        found = await client.search([{"role": "user", "content": "where did lando qualify?"}])
         # Only models that support browser_search are asked; the inline citation is dropped.
         assert [b["model"] for b in bodies] == ["openai/gpt-oss-120b"]
         assert bodies[0]["tools"] == [{"type": "browser_search"}] and bodies[0]["include_reasoning"] is False
-        assert answer == "Lando qualify sixth. Bad day. Very bad."
+        assert found.answer == "Lando qualify sixth. Bad day. Very bad."
+        # The SOURCE line is split off, and what was read is kept to check the answer against.
+        assert found.quote == "Lando Norris qualified sixth for the 2026 Mexico City Grand Prix"
+        assert "qualified sixth" in found.evidence and (found.searches, found.pages) == (1, 1)
         # The page it opened is the source, titled from the search result rather than the viewer.
-        assert sources == [{"title": "2026 Mexico City GP qualifying report", "url": "https://example.com/report",
-                            "snippet": ""}]
+        assert found.sources == [{"title": "2026 Mexico City GP qualifying report",
+                                  "url": "https://example.com/report", "snippet": ""}]
     finally:
         await client.close()
 
@@ -386,3 +394,39 @@ async def test_an_answer_with_nothing_searched_falls_back_to_the_usual_lookup(mo
     tools_run = [(a["tool"], a["success"]) for a in task.action_history]
     assert tools_run[:4] == [("web_search", False), ("get_status", True), ("get_map", True), ("web_search", True)]
     assert task.status == "completed" and task.answer["answer"] == "Sixth."
+
+
+async def test_an_answer_stating_a_time_no_page_gave_is_never_spoken(monkeypatch):
+    """The live failure: "starts 2:00 am GMT = 7:30 am IST" when the page said 7:00 am UTC."""
+    page = [{"type": "browser.open", "arguments": "{}",
+             "output": "L14: T20I Sun, 1 Nov 2026, 7:00 am\nL30: 7:00 am UTC starts\nL32: Seddon Park, Hamilton",
+             "search_results": {"results": [{"title": "NZ vs India, 5th T20I", "url": "https://bcci.example/m"}]}}]
+    wrong = "5th T20I today starts 2:00 am GMT = 7:30 am IST, already past.\nSOURCE: 7:00 am UTC starts"
+    finish = json.dumps({"summary": "Done.", "action": {"tool": "finish_answer", "answer": "Twelve thirty.",
+                                                        "evidence_ids": ["e1"]}})
+
+    def respond(request):
+        return searched(wrong, page) if "tools" in json.loads(request.content) else ok(finish)
+
+    task, _, _ = await _lookup(respond, monkeypatch)
+    failed = task.action_history[0]
+    assert failed["tool"] == "web_search" and not failed["success"]
+    assert "02:00 GMT is not in the quoted source" in failed["error"]
+    assert task.answer["answer"] == "Twelve thirty."  # the usual lookup answered instead
+
+
+@pytest.mark.parametrize("answer,quote,ok_", [
+    ("Starts 12:30 pm IST, already under way.", "Time 7:00 am UTC starts", True),   # converted in code
+    ("12:30 today.", "Time 7:00 am UTC starts", True),                                # the listener's zone
+    ("Starts 7:30 am IST.", "Time 7:00 am UTC starts", False),
+    ("Starts 12:30 pm IST.", "", False),                                               # no source quoted
+    ("Starts 12:30 pm IST.", "Match starts 12:30 pm IST", False),                      # quote not in the page
+    ("India 185/4 after 20 overs.", "Time 7:00 am UTC starts", False),                 # figures from nowhere
+    ("12:30 pm today, Saturday.", "Time 7:00 am UTC starts", False),                   # 1 Nov 2026 is a Sunday
+    ("12:30 pm today, Sunday.", "Time 7:00 am UTC starts", True),
+])
+def test_grounding_checks_times_and_figures_against_the_quoted_page(answer, quote, ok_):
+    from app.capabilities.grounding import unsupported
+    evidence = "L28: Time\nL29:\nL30: 7:00 am UTC starts\nL32: Seddon Park, Hamilton, 1 Nov 2026"
+    from datetime import date
+    assert (unsupported(answer, quote, evidence, local_offset=330, today=date(2026, 11, 1)) == []) is ok_
