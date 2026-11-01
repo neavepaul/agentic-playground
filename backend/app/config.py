@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     # Conversation on Groq while it has quota, streamed, falling back to the local chat model.
     # Qwen first: web search runs only on the gpt-oss models, so chat leaves their quota alone.
     chat_hosted: bool = True
+    # How hard Groq's browser search thinks. Each extra step re-reads every page read so far.
+    groq_search_reasoning: Literal["low", "medium", "high"] = "low"
     groq_chat_models: str = "qwen/qwen3.8-27b,openai/gpt-oss-20b"
     world_file: Path | None = None
     # Legacy JSON stores: imported into memory_db_file once, then never read or written.

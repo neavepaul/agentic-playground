@@ -300,6 +300,8 @@ async def test_search_runs_browser_search_on_a_gpt_oss_model_and_cleans_the_answ
         # Only models that support browser_search are asked; the inline citation is dropped.
         assert [b["model"] for b in bodies] == ["openai/gpt-oss-120b"]
         assert bodies[0]["tools"] == [{"type": "browser_search"}] and bodies[0]["include_reasoning"] is False
+        # Low effort and a browsing budget: one opened page can be ~50k tokens, re-read every step.
+        assert bodies[0]["reasoning_effort"] == "low"
         assert found.answer == "Lando qualify sixth. Bad day. Very bad."
         # The SOURCE line is split off, and what was read is kept to check the answer against.
         assert found.quote == "Lando Norris qualified sixth for the 2026 Mexico City Grand Prix"
@@ -374,6 +376,7 @@ async def test_a_lookup_is_answered_by_one_groq_search_in_kips_voice(monkeypatch
     assert [a["tool"] for a in task.action_history] == ["web_search", "finish_answer"]  # no house bootstrap
     assert local.calls == [] and len(bodies) == 1  # no local model call, no second search
     system = bodies[0]["messages"][0]["content"]
+    assert "Browsing budget: one" in system and "never open a page to double-check" in system
     assert today in system and "browser_search" in system and VOICE in system
     assert "Say every clock time in that timezone" in system and "UTC" in system
     # The date and local time travel with the question too, or the model searches last year's race.

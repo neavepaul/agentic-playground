@@ -124,7 +124,8 @@ class GroqClient:
         message = await self._complete(estimate_tokens(messages) + SEARCH_TOKENS, lambda model: {
             "model": model, "messages": messages, "temperature": self.settings.chat_temperature,
             "max_completion_tokens": self.settings.groq_max_output_tokens,
-            "reasoning_effort": "medium", "include_reasoning": False,
+            # Low effort: fewer browsing steps, and each step re-reads everything read so far.
+            "reasoning_effort": self.settings.groq_search_reasoning, "include_reasoning": False,
             "tools": [{"type": "browser_search"}]}, searching=True)
         from app.capabilities.grounding import split_source
         answer, quote = split_source(_CITATION.sub("", message["content"]))

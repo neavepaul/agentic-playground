@@ -335,6 +335,7 @@ Copy `backend/.env.example` to `backend/.env`. Environment variables override it
 | `GROQ_MODELS` | `openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b` | Preference order. Free-tier limits are per model, so a model whose quota is spent is skipped until its reset |
 | `GROQ_PLAN_CALLS` / `GROQ_RESEARCH_CALLS` | `2` / `4` | Hard caps on Groq calls per goal plan and per web-research task; past a cap, or on any Groq failure, Colibri continues |
 | `CHAT_HOSTED` / `GROQ_CHAT_MODELS` | `true` / `qwen/qwen3.8-27b,openai/gpt-oss-20b` | Conversation on Groq while it has quota, streamed, falling back to the local chat model |
+| `GROQ_SEARCH_REASONING` | `low` | Effort for Groq's browser search. Higher opens more pages, and every step re-reads each page read so far (one page can be ~50k tokens) |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Optional Ollama endpoint |
 | `OLLAMA_MODEL` | `qwen3:4b` | Used only when LLM_PROVIDER=ollama |
 | `WORLD_FILE` | `backend/worlds/house.json` | Optional absolute path to a scenario JSON |

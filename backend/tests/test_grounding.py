@@ -50,3 +50,26 @@ def test_the_explorer_cannot_finish_with_another_matchs_time():
     done = CapabilityTools.finish_answer(AnswerAction(tool="finish_answer", answer="12:30 pm today.",
                                                       evidence_ids=["p1"]), context)
     assert done["answer"] == "12:30 pm today."
+
+
+# ── a zone named in words, with its daylight saving on the day ─────────────────
+LIVE_QUOTE = "First ball at Seddon Park in Hamilton is 8:00 pm Sunday 1 November: it’s played on New Zealand time."
+
+
+@pytest.mark.parametrize("answer,day,ok", [
+    ("12:30 pm IST, Sunday 1 November 2026.", (2026, 11, 1), True),   # NZDT, UTC+13: a live answer once rejected
+    ("1:30 pm IST, Sunday 1 November 2026.", (2026, 11, 1), False),
+    ("1:30 pm IST.", (2026, 5, 3), True),                              # NZST in May, UTC+12
+])
+def test_a_zone_the_quote_names_in_words_converts_with_daylight_saving(answer, day, ok):
+    from datetime import date
+    from app.capabilities.grounding import unsupported
+    assert (unsupported(answer, LIVE_QUOTE, LIVE_QUOTE, 330, date(*day)) == []) is ok
+
+
+def test_a_quote_naming_two_zones_lends_neither_to_a_bare_time():
+    from datetime import date
+    from app.capabilities.grounding import quote_zone
+    assert quote_zone(LIVE_QUOTE, date(2026, 11, 1)) == "Pacific/Auckland"
+    assert quote_zone("8:00 pm NZDT, which is 12:30 pm IST", date(2026, 11, 1)) is None
+    assert quote_zone("Kick-off at 3 pm", date(2026, 11, 1)) is None

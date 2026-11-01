@@ -8,7 +8,7 @@ time zones itself (07:00 UTC is 12:30 IST). An answer that fails is never spoken
 """
 import re
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 # Fixed offsets in minutes. Daylight-saving names are listed separately (NZDT, BST).
 ZONES = {"utc": 0, "gmt": 0, "z": 0, "ist": 330, "nzdt": 780, "nzst": 720, "bst": 60, "cet": 60, "cest": 120,
@@ -16,6 +16,18 @@ ZONES = {"utc": 0, "gmt": 0, "z": 0, "ist": 330, "nzdt": 780, "nzst": 720, "bst"
          "acdt": 630, "awst": 480, "jst": 540, "sgt": 480, "gst": 240, "pkt": 300, "sast": 120, "bdt": 360,
          "npt": 345}
 _ZONE = "|".join(sorted(ZONES, key=len, reverse=True))
+# Zones pages name in words ("played on New Zealand time"): their offset on the day, daylight
+# saving included, from the IANA database.
+_ZONE_WORDS = {"new zealand": "Pacific/Auckland", "nz": "Pacific/Auckland", "india": "Asia/Kolkata",
+               "indian": "Asia/Kolkata", "uk": "Europe/London", "british": "Europe/London",
+               "london": "Europe/London", "central european": "Europe/Berlin", "eastern": "America/New_York",
+               "central": "America/Chicago", "pacific": "America/Los_Angeles", "australian eastern": "Australia/Sydney",
+               "sydney": "Australia/Sydney", "melbourne": "Australia/Melbourne", "perth": "Australia/Perth",
+               "dubai": "Asia/Dubai", "uae": "Asia/Dubai", "gulf": "Asia/Dubai", "pakistan": "Asia/Karachi",
+               "south africa": "Africa/Johannesburg", "singapore": "Asia/Singapore", "japan": "Asia/Tokyo"}
+_ZONE_PHRASE = re.compile(r"\b(" + "|".join(sorted(map(re.escape, _ZONE_WORDS), key=len, reverse=True))
+                          + r")(?:\s+(?:standard|daylight|local))?\s+time\b", re.I)
+_ZONE_NAME = re.compile(r"\b(" + "|".join(z for z in sorted(ZONES, key=len, reverse=True) if len(z) > 1) + r")\b", re.I)
 _TIME = re.compile(r"\b(\d{1,2})(?:[:.](\d{2}))?\s*(a\.?\s?m\.?|p\.?\s?m\.?)?(?=\W|$)(?:\s*\(?\s*(" + _ZONE + r")\b)?",
                    re.I)
 _SOURCE = re.compile(r"\n?\s*\**source\**\s*:\s*(.*)\s*$", re.I | re.S)
@@ -79,15 +91,37 @@ def quote_found(quote: str, evidence: str) -> bool:
     return bool(words) and all(d in present for d in digits) and sum(w in present for w in words) >= 0.9 * len(words)
 
 
-def _same(said: Clock, source: Clock, local_offset: int) -> bool:
+def _offset(zone: str, day: date) -> int | None:
+    """Minutes east of UTC for an abbreviation (fixed) or an IANA zone (on that day)."""
+    if zone in ZONES:
+        return ZONES[zone]
+    try:
+        from zoneinfo import ZoneInfo
+        offset = datetime(day.year, day.month, day.day, 12, tzinfo=ZoneInfo(zone)).utcoffset()
+    except Exception:  # no time-zone data on this machine: the zone stays unknown
+        return None
+    return int(offset.total_seconds() // 60)
+
+
+def quote_zone(text: str, day: date) -> str | None:
+    """The one time zone a quote names, by abbreviation or in words; None for none or several."""
+    named = {m.group(1).casefold() for m in _ZONE_NAME.finditer(text)}
+    named |= {_ZONE_WORDS[m.group(1).casefold()] for m in _ZONE_PHRASE.finditer(text)}
+    offsets = {_offset(zone, day) for zone in named} - {None}
+    return next(iter(named)) if len(offsets) == 1 else None
+
+
+def _same(said: Clock, source: Clock, local_offset: int, day: date | None = None) -> bool:
     """Do these two clock times name the same moment? A time with no zone is the listener's
     when Kip says it, and the page's own when the page says it."""
     if said.zone is None and source.zone is None:
         return said.minutes == source.minutes
-    said_zone = ZONES[said.zone] if said.zone else local_offset
-    if source.zone is None:
+    day = day or date.today()
+    said_offset = _offset(said.zone, day) if said.zone else local_offset
+    source_offset = _offset(source.zone, day) if source.zone else None
+    if source_offset is None or said_offset is None:
         return said.minutes == source.minutes  # converted from nothing: must be the page's figure
-    return (said.minutes - said_zone - (source.minutes - ZONES[source.zone])) % 1440 == 0
+    return (said.minutes - said_offset - (source.minutes - source_offset)) % 1440 == 0
 
 
 def unsupported(answer: str, quote: str, evidence: str, local_offset: int, today: date | None = None) -> list[str]:
@@ -105,8 +139,13 @@ def unsupported(answer: str, quote: str, evidence: str, local_offset: int, today
             if re.search(rf"\b{word}\b", lowered) and named and day.strftime("%A").casefold() not in named:
                 problems.append(f"it says {word} is {named[0].title()}, but {word} is {day.strftime('%A')}")
     sources = clock_times(quote)
+    # "8:00 pm Sunday: it's played on New Zealand time": the zone the quote names applies to
+    # its times that carry none of their own.
+    shared = quote_zone(quote, today or date.today())
+    for source in sources:
+        source.zone = source.zone or shared
     for said in clock_times(answer):
-        if not any(_same(said, source, local_offset) for source in sources):
+        if not any(_same(said, source, local_offset, today) for source in sources):
             problems.append(f"time {said.minutes // 60:02d}:{said.minutes % 60:02d}"
                             f"{' ' + said.zone.upper() if said.zone else ''} is not in the quoted source")
     known = _numbers(quote) | _numbers(evidence) | (_numbers(today.strftime("%Y-%m-%d %d")) if today else set())
