@@ -43,8 +43,10 @@ async def evaluate(numbers: list[int]) -> bool:
     try:
         for number in numbers:
             started = time.monotonic()
+            # Missions are simulations: the device clock would make them depend on the time of day.
+            mode = "realtime" if settings.simulation_mode == "device" else settings.simulation_mode
             clock = WorldClock(speed=settings.clock_speed, start_hour=settings.clock_start_hour,
-                               mode=settings.simulation_mode, action_seconds=settings.action_seconds)
+                               mode=mode, action_seconds=settings.action_seconds)
             engine, bus = WorldEngine(settings.world_file, clock=clock), EventBus()
             manager = TaskManager(client, WorldTools(engine, bus), bus, settings, hosted=hosted)
             task = manager.start(MISSIONS[number])
@@ -55,7 +57,7 @@ async def evaluate(numbers: list[int]) -> bool:
             print(json.dumps({"mission": number, "passed": passed, "status": task.status,
                               "summary": task.summary, "tools": task.tool_count,
                               "elapsed_seconds": round(time.monotonic() - started, 1),
-                              "simulation_mode": settings.simulation_mode,
+                              "simulation_mode": clock.mode,
                               # The headline number: inference calls per completed task.
                               "llm_calls": metrics.llm_calls,
                               "llm_seconds": round(metrics.llm_seconds, 1),

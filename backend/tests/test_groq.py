@@ -363,13 +363,14 @@ async def test_a_lookup_is_answered_by_one_groq_search_in_kips_voice(monkeypatch
     assert task.status == "completed", task.summary
     assert task.answer["answer"] == "Lando qualify sixth. Bad day. Very bad."
     assert [s["url"] for s in task.answer["sources"]] == ["https://example.com/report"]
-    assert [a["tool"] for a in task.action_history] == ["get_status", "get_map", "web_search", "finish_answer"]
+    assert [a["tool"] for a in task.action_history] == ["web_search", "finish_answer"]  # no house bootstrap
     assert local.calls == [] and len(bodies) == 1  # no local model call, no second search
     system = bodies[0]["messages"][0]["content"]
     assert today in system and "browser_search" in system and VOICE in system
-    # The date travels with the question too, or the model searches last year's race.
+    assert "Say every clock time in that timezone" in system and "UTC" in system
+    # The date and local time travel with the question too, or the model searches last year's race.
     asked = bodies[0]["messages"][1]["content"]
-    assert asked == f"web lookup: where did lando qualify in mexico?\n(Asked on {today}.)"
+    assert asked.startswith(f"web lookup: where did lando qualify in mexico?\n(Asked on {today} at ")
 
 
 async def test_an_answer_with_nothing_searched_falls_back_to_the_usual_lookup(monkeypatch):
@@ -380,7 +381,8 @@ async def test_an_answer_with_nothing_searched_falls_back_to_the_usual_lookup(mo
         return searched(tools=[]) if "tools" in json.loads(request.content) else ok(finish)
 
     task, local, _ = await _lookup(respond, monkeypatch)
-    # Groq's unsearched answer is a failed search; the usual search and research step take over.
+    # Groq's unsearched answer is a failed search; only then does the usual loop read the house,
+    # and its search and research step take over.
     tools_run = [(a["tool"], a["success"]) for a in task.action_history]
-    assert tools_run[:4] == [("get_status", True), ("get_map", True), ("web_search", False), ("web_search", True)]
+    assert tools_run[:4] == [("web_search", False), ("get_status", True), ("get_map", True), ("web_search", True)]
     assert task.status == "completed" and task.answer["answer"] == "Sixth."

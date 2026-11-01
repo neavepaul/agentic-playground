@@ -207,3 +207,31 @@ def test_schedule_with_equal_hours_fails_validation():
     from app.world.models import ScheduleEntry
     with pytest.raises(ValidationError, match="must differ"):
         ScheduleEntry(from_hour=9, to_hour=9, room="office")
+
+
+# ── device mode: the real Kip runs on the machine's own clock ──────────────────
+def test_device_mode_follows_the_machine_clock_and_knows_the_date():
+    from datetime import datetime
+    from app.world.clock import spoken_time
+    clock = WorldClock(speed=60, start_hour=8, mode="device")  # speed and start hour are ignored
+    now = datetime.now()
+    assert clock.time_str() == now.strftime("%H:%M") or clock.time_str() == datetime.now().strftime("%H:%M")
+    assert abs(clock.hour() - (now.hour + now.minute / 60 + now.second / 3600)) < 0.01
+    assert clock.now().tzinfo is not None and now.strftime("%B %Y") in clock.date_str()
+    assert clock.date_str().split(",")[0] == f"{now.strftime('%A')} {now.day} {now.strftime('%B %Y')}"
+    assert "UTC" in clock.date_str()
+    before = clock.simulated_seconds()
+    clock.advance(10)  # actions never move a real clock
+    assert clock.simulated_seconds() - before < 1
+    assert spoken_time(clock).endswith(f" {now.strftime('%A')}.")
+
+
+def test_a_simulated_clock_has_no_date_and_device_mode_is_the_default():
+    from app.config import Settings
+    from app.world.clock import spoken_time
+    assert WorldClock(speed=0, start_hour=13.5).now() is None
+    assert spoken_time(WorldClock(speed=0, start_hour=13.5)) == "1:30 afternoon."
+    assert spoken_time(WorldClock(speed=0, start_hour=0.25)) == "12:15 night."
+    assert Settings().simulation_mode == "device"
+    engine = WorldEngine(clock=WorldClock(mode="device"))
+    assert "today" in engine.get_status() and "today" not in WorldEngine(clock=WorldClock(speed=0)).get_status()

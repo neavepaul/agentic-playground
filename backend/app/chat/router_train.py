@@ -98,7 +98,7 @@ def evaluate(router: IntentRouter, rows: list[dict]) -> dict:
         if "context" in case.get("tags", []) or (case.get("context") and "correction" not in case):
             mark("context resolution", not problems)
         if "regression" in case.get("tags", []):
-            mark("lando regression", not problems)
+            mark("regression cases", not problems)
         legacy_fast += old
         router_fast += fast
         wrong_fast += fast and not case["fast"]

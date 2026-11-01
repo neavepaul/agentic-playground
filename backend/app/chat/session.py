@@ -22,7 +22,9 @@ from .consent import Offer, classify_reply, is_question, is_request, task_identi
 from .evidence import (capabilities, contradicted_presence, denied_capabilities, last_seen, room_scans,
                        task_record, unsupported_execution)
 from .intent import Intent, introduced_as, is_live_fact, read_intent
-from .router import THRESHOLD as ROUTER_THRESHOLD, LIVE, Frame, Route, default_router, fast_path, frame_of
+from .router import (THRESHOLD as ROUTER_THRESHOLD, LIVE, Frame, Route, clock_question, default_router, fast_path,
+                     frame_of)
+from app.world.clock import spoken_time
 from app.agents.schemas import GoalCondition, GoalPlan, InitialCapability
 from .prompt import ChatAction, TrailerSplitter, build_messages
 from .spoken import spoken
@@ -320,6 +322,12 @@ class ChatSession:
                         # "How did he do?" with nobody named: ask who, no model call.
                         finished = self._finish_turn(user_turn, reply_id, question, None,
                                                      {"chat_model_calls": 0, "intent_router": route.intent})
+                        self._intents.pop(user_turn["id"], None)
+                        return
+                    if self._asks_the_time(intent, route, said):
+                        # The clock answers "what time is it?": no model call, never a guess.
+                        finished = self._finish_turn(user_turn, reply_id, spoken_time(self.engine.clock), None,
+                                                     {"chat_model_calls": 0, "intent_router": "clock"})
                         self._intents.pop(user_turn["id"], None)
                         return
                     lookup = self._routed_lookup(user_turn, intent, route)
@@ -674,6 +682,11 @@ class ChatSession:
         if seen is not None and self._offer_valid() and self.offer.id == seen:
             return None
         return route.clarify
+
+    def _asks_the_time(self, intent: Intent, route: Route, said: str) -> bool:
+        """ "What time is it?" on its own, not "what time?" about the match just asked about."""
+        return (self.engine.clock is not None and not (route.followup or route.correction)
+                and not (intent.cancel or intent.changes_state_only or self._closed) and clock_question(said))
 
     def _is_live(self, turn_id: str, intent: Intent) -> bool:
         """Live information? When it is on, the router decides for messages that ask something;

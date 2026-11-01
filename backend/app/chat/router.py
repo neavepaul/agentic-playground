@@ -21,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .intent import is_live_fact
+from .intent import is_live_fact, read_intent
 
 DATA = Path(__file__).parent / "router_data" / "intents.tsv"
 LABELS = ("conversation.casual", "conversation.emotional", "information.sports", "information.weather",
@@ -127,6 +127,9 @@ _SPORT_FOCUS = (
     ("sprint result", r"sprint"),
     ("practice times", r"practice|fp[123]"),
     ("pit stops", r"pit(?:ted|stop)?s?"),
+    ("match status", r"already (?:started|begun|over|finished)|started yet|still on|over yet|finished yet|"
+                     r"live now|is it on|still going|still playing"),
+    ("start time", r"what time|start(?:s|ing)?\b|begin(?:s|ning)?\b|kick ?off|first ball|toss time"),
     ("schedule", r"next (?:race|match|game|grand prix|gp|odi|test)|when(?:'s| is| are| does| do)|what time|"
                  r"fixtures?|schedule|start\b"),
     ("standings", r"standings|championship|points table|table|leading|top of|how many points|title"),
@@ -164,6 +167,11 @@ _DEFINITION = re.compile(r"^(?:what(?:'s| is| are) (?:a|an)\b|what does .+ (?:me
                          r"explain (?:what|how)\b)")
 _REFERS_BACK = re.compile(r"\b(?:that|this|the same) (?:series|match|game|race|tournament|test|one|session|"
                           r"team|driver|player|stock|share|city|place)\b")
+_ASPECT = re.compile(r"\b(?:where|who won|winning|score|result|price|how much|how many|how hot|how cold|"
+                     r"forecast|rain)\b")
+# A subject of its own: "what time is it?", "how are you?", "do you like it?".
+_OWN_SUBJECT = re.compile(r"\b(?:is|are|was|were|am|do|does|did|will|can|have|has) (?:it|you|i|we|that|this|there)\b|"
+                          r"\b(?:you|your|i|i'm|me|my|it's)\b")
 _QUESTION = re.compile(r"\?\s*$|^(?:who|what|where|when|why|how|which|is|are|did|does|do|will|can|should)\b")
 _NEGATED = re.compile(r"\bnot (?:the |his |her |in )?[a-z0-9]+")
 _PLACE_AFTER = re.compile(r"\b(?:in|at|for)\s+([a-z][a-z'-]+(?:\s+city)?)")
@@ -174,6 +182,28 @@ _NOT_PLACES = {"the", "a", "an", "qualifying", "quali", "practice", "q1", "q2", 
 
 def normalize(text: str) -> str:
     return " ".join(text.casefold().replace("’", "'").split())
+
+
+_ADDRESS = re.compile(r"[,\s]*\b(?:kip|bud|buddy|mate|man|bro|dude|pal)\b(?=[\s?!.,]*$)")
+_FILLER = re.compile(r"^\W*(?:(?:ah+|oh+|aw|shit|damn|dang|wow|hmm+|ok(?:ay)?|so|wait|well|right|yeah|haha|"
+                     r"hey|kip)\b[\s,!.]*)+")
+
+
+def bare(text: str) -> str:
+    """The message without who it is said to or leading exclamations: "what time kip?" ->
+    "what time?", "ah shit already started?" -> "already started?"."""
+    core = _FILLER.sub("", _ADDRESS.sub("", text.strip()))
+    return core if core.strip(" ?!.,") else text
+
+
+_CLOCK = re.compile(r"^(?:what(?:'s|s| is) the time(?: now)?|what time is it(?: now)?|what time(?: now)?|"
+                    r"time(?: now| please)?|got the time|do you (?:know|have) the time)\W*$")
+
+
+def clock_question(text: str) -> bool:
+    """ "What time is it?", "what's the time, kip?". The caller checks first that it is not a
+    follow-up: "what time?" right after a question about a match asks about the match."""
+    return bool(_CLOCK.match(normalize(bare(text))))
 
 
 def asking_clause(text: str) -> str:
@@ -200,6 +230,7 @@ class Slots:
     past: bool = False
     generic_position: bool = False   # "what position", with nothing saying which one
     words: list[str] = field(default_factory=list)
+    order: dict[str, int] = field(default_factory=dict)   # canonical name -> where it was said
 
 
 def read_slots(text: str) -> Slots:
@@ -211,6 +242,7 @@ def read_slots(text: str) -> Slots:
         alias = match.group(1)
         canonical, domain = LEXICON[alias]
         target = slots.ambiguous if alias in _AMBIGUOUS else slots.entities
+        slots.order.setdefault(canonical, match.start())
         if (canonical, domain) not in target:
             target.append((canonical, domain))
     places = [m.group(1) for m in _PLACE.finditer(lowered)]
@@ -428,18 +460,20 @@ class IntentRouter:
         # "Don't read any webpages; what's the AQI?": the permission is handled elsewhere,
         # so the clause that asks something is what gets read.
         text = asking_clause(text)
-        slots = read_slots(text)
+        # "what time kip?", "ah shit already started?": the words that carry meaning.
+        core = bare(text)
+        slots = read_slots(core)
         scores = self.scores(text)
         intent = max(scores, key=scores.get)
         confidence = scores[intent]
         fresh = frame if frame is not None and turn - frame.turn <= FRAME_TURNS else None
         route = Route(intent=intent, confidence=confidence, scores=scores)
-        lowered = normalize(text)
+        lowered = normalize(core)
         route.evidence = bool(slots.domains or slots.entities or slots.places)
         route.lookup_phrase = len(lowered.split()) <= 6 and not _VERB.search(lowered)
         if fresh and _CORRECTION.search(lowered):
             route = self._resolve(fresh, slots, scores, "correction")
-        elif fresh and self._leans_on(fresh, slots, intent, confidence, lowered):
+        elif fresh and self._leans_on(fresh, slots, intent, confidence, lowered, read_intent(text).greeting):
             route = self._resolve(fresh, slots, scores, "context")
         elif _DEFINITION.search(lowered) and not slots.time:
             # "What is a grand prix?", "how does qualifying work?": knowledge, not today's data.
@@ -463,15 +497,24 @@ class IntentRouter:
             route.query, route.meaning = _query(route, text, today)
         return route
 
-    def _leans_on(self, frame: Frame, slots: Slots, intent: str, confidence: float, lowered: str) -> bool:
+    def _leans_on(self, frame: Frame, slots: Slots, intent: str, confidence: float, lowered: str,
+                  greeting: bool = False) -> bool:
         """A short message that only makes sense with the last request: "and Max?", "how did he
-        finish?", "and yesterday?". A message about something else stands on its own."""
+        finish?", "and yesterday?", "what time?". A message about something else stands on its own."""
         own = [d for d in slots.domains if INTENT_OF_DOMAIN.get(d) not in (None, frame.intent)]
         own += [d for _, d in slots.entities if INTENT_OF_DOMAIN.get(d) not in (None, frame.intent)]
         refers = bool(_REFERS_BACK.search(lowered))   # "...in that series?"
         if own or (len(lowered.split()) > 9 and not refers):
             return False
         if slots.follow_cue or refers:
+            return True
+        # A question too short to have a subject of its own: "what time?", "who won?", "already
+        # started?". Never a greeting or a question about something else ("what time is it?").
+        asks_aspect = bool(slots.sport_focus or slots.time or _ASPECT.search(lowered))   # never "whats up?"
+        elliptic = (len(lowered.split()) <= 4 and _QUESTION.search(lowered) and not _OWN_SUBJECT.search(lowered)
+                    and asks_aspect and not (slots.entities or slots.ambiguous or slots.places or slots.domains
+                                             or greeting))
+        if elliptic and not (intent.startswith("conversation.") and confidence >= THRESHOLD):
             return True
         bare_time = slots.time and len(lowered.split()) <= 3   # "yesterday?"
         if intent not in LIVE and confidence >= THRESHOLD and not (slots.sport_focus or bare_time):
@@ -486,8 +529,9 @@ class IntentRouter:
                       focus=frame.focus, entities=list(frame.entities), place=frame.place, time=frame.time,
                       source=source, followup=source == "context", correction=source == "correction", scores=scores,
                       evidence=True, earlier=frame.said)
-        named = [c for c, d in slots.entities + slots.ambiguous
-                 if d == frame.domain or (frame.domain in SPORTS and d in SPORTS)]
+        named = sorted((c for c, d in slots.entities + slots.ambiguous
+                        if d == frame.domain or (frame.domain in SPORTS and d in SPORTS)),
+                       key=lambda c: slots.order.get(c, 0))
         if named:
             route.entities = named
         if frame.intent == "information.weather" and slots.places:
@@ -516,6 +560,7 @@ class IntentRouter:
                                   if d in slots.domains or (intent == "information.sports" and d in SPORTS)
                                   or (intent == "information.finance" and d == "finance")
                                   or any(d == d2 for _, d2 in slots.entities)]
+        named.sort(key=lambda item: slots.order.get(item[0], 0))
         if intent == "information.sports":
             sport = [d for d in slots.domains if d in SPORTS] + [d for _, d in named if d in SPORTS]
             # A race, a grid or a driver says Formula 1; a match alone says nothing yet.
@@ -554,6 +599,10 @@ def _sport_focus(focus: str | None, domain: str | None) -> str | None:
 
 
 def _sport_time(time: str | None, focus: str | None, past: bool) -> str | None:
+    if focus == "match status":
+        return time if time not in (None, "latest", "next upcoming") else "now"
+    if focus == "start time":
+        return time if time not in (None, "latest", "next upcoming") else "today or next"
     if focus == "schedule":
         return time if time not in (None, "latest") else "next upcoming"
     if time in (None, "latest"):
@@ -581,18 +630,26 @@ def _capability(route: Route) -> str | None:
 def _query(route: Route, said: str, today: date) -> tuple[str, str]:
     """(search query, meaning): built from the resolved intent, not the question's wording."""
     domain = DOMAIN_NAMES.get(route.domain or "", "")
-    who = ", ".join(route.entities)
+    # Two teams or players in one question are a fixture: "India vs New Zealand".
+    joiner = " vs " if route.domain in SPORTS - {"f1", "motogp"} and len(route.entities) == 2 else ", "
+    who = joiner.join(route.entities)
+    day = today.strftime("%d %B %Y").lstrip("0")
     when = {"latest completed": f"the latest completed one ({today.year})", "next upcoming": "the next one",
-            "now": "right now", "upcoming": "the coming hours"}.get(route.time or "", route.time or "")
+            "now": f"right now ({day})", "upcoming": "the coming hours",
+            "today or next": f"the match on today ({day}), or else the next one"}.get(route.time or "",
+                                                                                     route.time or "")
     if route.intent == "information.sports":
         event = f"{route.place} " if route.place else ""
         event += "Grand Prix" if route.domain == "f1" else ("race" if route.domain == "motogp" else "")
         # A new question about the same subject searches its own words, about that subject.
         aspect = route.focus or (f"“{route.asked}”" if route.asked else "result")
+        timed = route.focus in ("start time", "match status") or route.time in ("now", "today or next")
         query = " ".join(filter(None, [who, route.focus or route.asked or "result", event.strip(), domain,
-                                       str(today.year) if route.time in ("latest completed", "next upcoming", None)
-                                       else route.time]))
+                                       day if timed else str(today.year)
+                                       if route.time in ("latest completed", "next upcoming", None) else route.time]))
         place_note = " (a position, not a place)" if route.focus and "position" in route.focus else ""
+        if route.focus == "start time":
+            place_note = " (a clock time and day: just that, not the whole series)"
         meaning = f"{domain or 'Sport'}: {(who + ' — ') if who else ''}{aspect}{place_note}"
         meaning += f" at the {event.strip()}" if event.strip() else ""
         meaning += f", {when}." if when else "."

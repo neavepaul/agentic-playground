@@ -152,7 +152,7 @@ def test_the_evaluation_set_holds_its_measured_quality(router):
     right = lambda key: report["accuracy"][key][0] / report["accuracy"][key][1]
     assert report["false_positive_fast"] == 0          # never a lookup nobody asked for
     assert right("fast path") >= 0.95 and right("tool routing") >= 0.93 and right("intent") >= 0.9
-    assert right("lando regression") == 1 and right("context resolution") == 1
+    assert right("regression cases") == 1 and right("context resolution") == 1
     assert right("correction detection") == 1 and right("entities") >= 0.95
     assert report["accuracy"]["legacy fast path"][0] < report["accuracy"]["fast path"][0]
     assert report["latency_ms"]["p95"] < 20
@@ -194,7 +194,7 @@ def answering(text):
 
 @pytest.mark.asyncio
 async def test_shadow_mode_records_the_router_and_changes_nothing(ran):
-    model = PlanningModel([said("Not sure. You want I look it up, question?")])
+    model = PlanningModel([said("Not sure. I check.")])
     session, manager = session_with(model, settings=Settings(direct_initial_delegation=True,
                                                              intent_router="shadow"))
     session.submit("where did russell end up?")  # no live-fact word: the usual path replies first
@@ -279,3 +279,79 @@ async def test_on_small_talk_about_sport_gets_a_reply_not_a_lookup(ran):
 
 def test_live_intents_are_the_ones_that_change_by_the_hour():
     assert LIVE == {"information.sports", "information.weather", "information.finance", "information.news"}
+
+
+# ── the run that went wrong: "when is the india new zealand game starting" ──────
+def test_a_start_time_question_keeps_its_aspect_teams_and_today(router):
+    route = router.route("when is the india new zealand game starting", today=TODAY)
+    assert route.focus == "start time" and route.entities == ["India", "New Zealand"]
+    assert route.query == "India vs New Zealand start time cricket 1 November 2026"
+    assert "not the whole series" in route.meaning and "today (1 November 2026)" in route.meaning
+
+
+def test_bare_follow_ups_inherit_the_match_and_real_questions_stand_alone(router):
+    first = "when is the india new zealand game starting"
+    for text, focus in (("what time kip?", "start time"), ("ah shit already started?", "match status")):
+        route = conversation(router, first, text)
+        assert route.followup and route.focus == focus and route.entities == ["India", "New Zealand"], text
+        assert allowed(route, text)
+    for text in ("whats up?", "what time is it?", "how are you bud?", "thanks kip"):
+        route = conversation(router, first, text)
+        assert not route.followup and not allowed(route, text), text
+
+
+def test_kip_never_asks_permission_for_a_web_lookup():
+    from app.chat.prompt import CHAT_SYSTEM
+    from app.persona.profile import VOICE
+    assert "never ask whether to" in CHAT_SYSTEM and "offer to check" in CHAT_SYSTEM  # the house still asks
+    assert "look it up, question" not in VOICE
+
+
+@pytest.mark.asyncio
+async def test_the_router_is_on_by_default_and_answers_the_match_and_its_follow_up(ran):
+    assert Settings().intent_router == "on"
+    model = PlanningModel([], task=[answering("Twelve thirty today. Hamilton."), answering("Twelve thirty.")])
+    session, manager = session_with(model, settings=Settings(direct_initial_delegation=True))
+    session.submit("when is the india new zealand game starting")
+    await settle(session, manager)
+    await manager.runner
+    session.submit("what time kip?")
+    await settle(session, manager)
+    await manager.runner
+    assert model.prompts == []  # no chat-model reply, so nothing to ask permission or guess
+    first, second = list(manager.tasks.values())
+    assert first.action_history[2]["arguments"]["query"].startswith("India vs New Zealand start time cricket")
+    assert "following up on: when is the india new zealand game starting" in second.goal
+    assert kip_lines(session, "narration") == ["Twelve thirty today. Hamilton.", "Twelve thirty."]
+    await done(session, manager)
+
+
+# ── "what time is it?": the device clock answers, no model call ───────────────
+@pytest.mark.parametrize("text", ["what time is it?", "whats the time kip", "what time kip?", "time please"])
+def test_clock_questions_are_recognised(text):
+    from app.chat.router import clock_question
+    assert clock_question(text)
+
+
+@pytest.mark.parametrize("text", ["what time is the match?", "what time is it in london?", "what time do you wake up"])
+def test_other_time_questions_are_not_the_clock(text):
+    from app.chat.router import clock_question
+    assert not clock_question(text)
+
+
+@pytest.mark.asyncio
+async def test_the_clock_answers_the_time_but_what_time_after_a_match_question_means_the_match(ran):
+    from app.world.clock import WorldClock
+    model = PlanningModel([], task=[answering("Twelve thirty today. Hamilton.")])
+    session, manager = session_with(model, settings=Settings(direct_initial_delegation=True))
+    session.engine._clock = WorldClock(speed=0, start_hour=13.25)
+    session.submit("what time is it?")
+    await settle(session, manager)
+    assert session.history()[-1]["text"] == "1:15 afternoon." and model.prompts == [] and not manager.tasks
+    session.submit("when is the india new zealand game starting")
+    await settle(session, manager)
+    await manager.runner
+    session.submit("what time kip?")  # about the match now, not the clock
+    await settle(session, manager)
+    assert len(manager.tasks) == 2 and "following up on" in list(manager.tasks.values())[-1].goal
+    await done(session, manager)

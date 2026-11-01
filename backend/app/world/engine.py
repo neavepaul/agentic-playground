@@ -103,6 +103,10 @@ class WorldEngine:
     def simulated_time(self) -> str | None:
         return self._clock.time_str() if self._clock else None
 
+    @property
+    def clock(self) -> WorldClock | None:
+        return self._clock
+
     def people_schedules(self) -> dict:
         """Return each person's schedule as serialisable dicts, keyed by person id."""
         return {
@@ -119,6 +123,8 @@ class WorldEngine:
         result = {"room": self._world.robot.room, "inventory": self.snapshot()["robot"]["inventory"]}
         if self._clock:
             result["time"] = self._clock.time_str()
+            if self._clock.now() is not None:  # the device clock knows the date and timezone too
+                result["today"] = self._clock.date_str()
         return result
 
     def look(self) -> dict:

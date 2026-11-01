@@ -21,7 +21,7 @@
 {"say": "and bumrah?", "context": ["how many did rohit score"], "intent": "information.sports", "tool": "web_search", "domain": "cricket", "entities": ["Jasprit Bumrah"], "fast": true, "tags": ["context"]}
 {"say": "is india batting or bowling", "intent": "information.sports", "tool": "web_search", "domain": "cricket", "fast": true}
 {"say": "ipl points table", "intent": "information.sports", "tool": "web_search", "domain": "cricket", "focus": "standings", "fast": true}
-{"say": "when does the test start", "intent": "information.sports", "tool": "web_search", "domain": "cricket", "focus": "schedule", "fast": true}
+{"say": "when does the test start", "intent": "information.sports", "tool": "web_search", "domain": "cricket", "focus": "start time", "fast": true}
 {"say": "did chelsea beat spurs", "intent": "information.sports", "tool": "web_search", "domain": "football", "focus": "match result", "fast": true}
 {"say": "how did arsenal get on", "intent": "information.sports", "tool": "web_search", "domain": "football", "entities": ["Arsenal"], "fast": true}
 {"say": "who scored for liverpool", "intent": "information.sports", "tool": "web_search", "domain": "football", "entities": ["Liverpool"], "focus": "score", "fast": true}
@@ -125,3 +125,10 @@
 {"say": "what about max?", "context": ["where did lando qualify?"], "correction": false, "intent": "information.sports", "tool": "web_search", "fast": true, "tags": ["correction"], "note": "a follow-up, not a correction"}
 {"say": "thanks, and where did he finish?", "context": ["where did lando qualify?"], "correction": false, "intent": "information.sports", "tool": "web_search", "focus": "finishing position", "fast": true, "tags": ["correction", "context"]}
 {"say": "i meant to tell you, i'm going out", "context": ["where did lando qualify?"], "correction": false, "intent": "conversation.casual", "tool": null, "fast": false, "tags": ["correction"]}
+{"say": "when is the india new zealand game starting", "intent": "information.sports", "tool": "web_search", "domain": "cricket", "entities": ["India", "New Zealand"], "focus": "start time", "time": "today or next", "fast": true, "tags": ["regression"], "note": "a live run asked permission, then answered with the whole tour schedule"}
+{"say": "what time kip?", "context": ["when is the india new zealand game starting"], "intent": "information.sports", "tool": "web_search", "entities": ["India", "New Zealand"], "focus": "start time", "fast": true, "tags": ["regression", "context"], "note": "a live run answered with the house clock"}
+{"say": "ah shit already started?", "context": ["when is the india new zealand game starting"], "intent": "information.sports", "tool": "web_search", "entities": ["India", "New Zealand"], "focus": "match status", "fast": true, "tags": ["context"]}
+{"say": "who won?", "context": ["did chelsea play arsenal today"], "intent": "information.sports", "tool": "web_search", "entities": ["Chelsea", "Arsenal"], "focus": "match result", "fast": true, "tags": ["context"]}
+{"say": "whats up?", "context": ["when is the india new zealand game starting"], "intent": "conversation.casual", "tool": null, "fast": false, "tags": ["no_tool"]}
+{"say": "what time is it?", "context": ["when is the india new zealand game starting"], "tool": null, "fast": false, "tags": ["no_tool"], "note": "a question of its own, not about the match"}
+{"say": "how are you bud?", "context": ["when is the india new zealand game starting"], "intent": "conversation.casual", "tool": null, "fast": false}

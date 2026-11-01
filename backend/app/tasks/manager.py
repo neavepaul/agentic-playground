@@ -343,14 +343,16 @@ class TaskManager:
         self._ensure_running(context)
         if self._refused(context, "web_search", arguments) or context.tool_count >= self.settings.max_tool_calls:
             return False
-        from datetime import date
+        from datetime import datetime
         from app.agents.prompts import WEB_ANSWER, persona_system
-        today = date.today()
-        system = WEB_ANSWER.format(today=today.strftime("%A %d %B %Y"), year=today.year)
+        now = datetime.now().astimezone()
+        today = now.date()
+        clock = f"{now.strftime('%A %d %B %Y, %H:%M')} {now.tzname()} (UTC{now.strftime('%z')})"
+        system = WEB_ANSWER.format(now=clock, year=today.year)
         if self.persona:
             system += persona_system(self.persona.voice_view())
         # The date travels with the question too: these models otherwise search last year.
-        asked = f"{context.goal}\n(Asked on {today.strftime('%d %B %Y')}.)"
+        asked = f"{context.goal}\n(Asked on {today.strftime('%d %B %Y')} at {now.strftime('%H:%M')} {now.tzname()}.)"
         context.tool_count += 1
         self._before_dispatch(context, "web_search", arguments)
         result, answer = await self.capabilities.web_answer(
@@ -496,9 +498,20 @@ class TaskManager:
         return current != signature
 
     async def _loop(self, context: TaskContext, plan=None) -> None:
-        # Bootstrap through a permitted tool; no agent gets an omniscient snapshot.
-        self.call_tool(context, "get_status", {})
-        self.call_tool(context, "get_map", {})
+        # A plain web lookup known in advance never needs the house: the robot's status and map
+        # are read only if it has to fall back to the usual loop.
+        known_lookup = plan is not None and all(c.kind == "answer" for c in plan.conditions)
+        booted = False
+
+        def bootstrap() -> None:
+            # Through a permitted tool; no agent gets an omniscient snapshot.
+            nonlocal booted
+            if not booted:
+                booted = True
+                self.call_tool(context, "get_status", {})
+                self.call_tool(context, "get_map", {})
+        if not known_lookup:
+            bootstrap()
         self.bus.emit("agent_active", "coordinator", task_id=context.id)
         # A plan known in advance (a plain lookup of a live fact) needs no planning call.
         goal_plan = plan or await self.coordinator.define_goal(context.goal, context.floor_plan,
@@ -513,11 +526,13 @@ class TaskManager:
             self.bus.emit("agent_active", "explorer", task_id=context.id)
             if await self._web_answer(context, goal_plan):
                 return
+            bootstrap()
             if goal_plan.initial_actions:
                 self.message(context, "explorer", "Running the model's independent tool calls together.")
                 await self.call_capability_batch(context, [action.model_dump() for action in goal_plan.initial_actions])
                 if await self._report_execution(context):
                     return
+        bootstrap()
         self.message(context, "coordinator", "Required outcomes defined. Locating targets requires tool observations.")
         disagreements = 0
         rejections = 0                     # consecutive rejected suggestions, reset by real progress

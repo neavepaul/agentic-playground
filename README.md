@@ -135,13 +135,13 @@ better on wording the examples never used.
 
 `INTENT_ROUTER` sets how much it does:
 
-- `shadow` (default): the router reads every message and records what it would have done
-  next to what the usual path did, and changes nothing.
-- `on`: a confident live-information question (sport, weather, markets, news) goes
-  straight to the one-call web lookup with a search built from what it means. Everything
-  else (chat, feelings, memory, house errands, complex requests, anything uncertain) takes
-  the usual path. Stop, permissions, offers, requested tools and the house checks always
-  come first.
+- `on` (default): a confident live-information question (sport, weather, markets, news)
+  goes straight to the one-call web lookup with a search built from what it means, with no
+  chat-model reply first. Everything else (chat, feelings, memory, house errands, complex
+  requests, anything uncertain) takes the usual path. Stop, permissions, offers, requested
+  tools and the house checks always come first.
+- `shadow`: the router reads every message and records what it would have done next to
+  what the usual path did, and changes nothing.
 - `off`: no router.
 
 Offline, from `backend`:
@@ -340,25 +340,32 @@ Copy `backend/.env.example` to `backend/.env`. Environment variables override it
 | `MAX_CRITIC_REVIEWS` | `8` | Bounds transfer/completion reviews and recovery |
 | `MAX_SEMANTIC_STALL` | `3` | Barren physical actions before the strategy is replanned |
 | `SEARCH_STALE_AFTER` | `12` | Actions after which a room scan is worth repeating |
-| `SIMULATION_MODE` | `realtime` | `realtime` or `action_driven` (see below) |
+| `SIMULATION_MODE` | `device` | `device` (the machine's local time), or the simulated `realtime` / `action_driven` (see below) |
 | `CLOCK_SPEED` | `60` | Simulated seconds per real second in `realtime` |
-| `CLOCK_START_HOUR` | `8` | Simulated hour at startup |
+| `CLOCK_START_HOUR` | `8` | Simulated hour at startup in `realtime` and `action_driven` |
 | `ACTION_SECONDS` | `60` | Simulated seconds per action in `action_driven` |
 | `LOG_LEVEL` | `INFO` | Use `DEBUG` for application diagnostics |
 | `CHAT_PROVIDER` / `CHAT_MODEL` / `CHAT_BASE_URL` | unset | Optional separate (faster) model for conversation; unset uses the main model |
 | `CHAT_MAX_TOKENS` | `300` | Upper bound on one chat reply |
 | `CHAT_TEMPERATURE` | `0.6` | Conversational variety (tasks keep `TEMPERATURE`) |
 | `CHAT_QUIET_SECONDS` | `90` | Idle mind waits this long after chat activity |
-| `INTENT_ROUTER` | `shadow` | Local intent router: `shadow` records only, `on` lets it send live questions straight to the lookup, `off` |
+| `INTENT_ROUTER` | `on` | Local intent router: `on` sends confident live questions straight to the lookup, `shadow` only records what it would do, `off` |
 | `MEMORY_DB_FILE` | `backend/memory/kip.db` | Kip's durable store: memories and structured state |
 | `MEMORY_FILE` / `GRAPH_FILE` | `backend/memory/persistent.json` / `beliefs.json` | Legacy JSON stores, read once to import |
 | `EMBEDDINGS_ENABLED` | `true` | Meaning search with fastembed; false means keyword-only |
 | `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | fastembed model name |
 | `PERSONA_ENABLED` / `PERSONA_NAME` | `true` / `Kip` | Personality layer |
 
-### Simulation modes
+### Clock modes
 
-In `realtime` the world advances with wall-clock time, so a slow local model
+`device` (the default) is the real Kip: the house clock is the machine's own local time, at
+normal speed. Kip's status carries the date and timezone, people's routines follow the
+real hour, web lookups are told the local time, and "what time is it?" is answered straight
+from the clock with no model call. "What time?" right after a question about a match still
+asks about the match.
+
+The two simulated modes are for running the house as a simulation. In `realtime` the
+world advances at `CLOCK_SPEED` times wall-clock speed from `CLOCK_START_HOUR`, so a slow local model
 costs simulated minutes while it thinks — NPCs move during inference. In
 `action_driven` the clock advances only on successful robot actions, so
 inference latency cannot move the world. Use `action_driven` for evaluation and

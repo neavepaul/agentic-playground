@@ -57,8 +57,9 @@ class Settings(BaseSettings):
     # Actions after which a room scan is treated as stale and worth repeating.
     search_stale_after: int = Field(default=12, ge=1, le=200)
     log_level: str = "INFO"
-    # Simulated world clock
-    simulation_mode: Literal["realtime", "action_driven"] = "realtime"
+    # The house clock. device: the machine's own local time (the real Kip). realtime: a
+    # simulated day at clock_speed from clock_start_hour. action_driven: advances per action.
+    simulation_mode: Literal["device", "realtime", "action_driven"] = "device"
     clock_speed: float = Field(default=60.0, gt=0)   # 1 real second = 1 simulated minute
     clock_start_hour: float = Field(default=8.0, ge=0, lt=24)
     action_seconds: float = Field(default=60.0, gt=0)  # simulated seconds per action
@@ -92,7 +93,7 @@ class Settings(BaseSettings):
     # Local intent router (app/chat/router.py). shadow: it reads every message and records what
     # it would have done next to what the usual path did, changing nothing. on: it decides which
     # live-information questions go straight to the web lookup, and resolves follow-ups.
-    intent_router: Literal["off", "shadow", "on"] = "shadow"
+    intent_router: Literal["off", "shadow", "on"] = "on"
     # Idle initiative: may the idle mind start errands on its own?
     autonomous_errands: bool = True
     # Kip's durable store: searchable memories (FTS5 + sqlite-vec) and structured state
