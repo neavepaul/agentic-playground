@@ -89,6 +89,10 @@ class Settings(BaseSettings):
     chat_offer_seconds: float = Field(default=600.0, gt=0)
     # Person id assumed to be talking when the UI does not say (empty = unknown speaker).
     chat_default_speaker: str = ""
+    # Local intent router (app/chat/router.py). shadow: it reads every message and records what
+    # it would have done next to what the usual path did, changing nothing. on: it decides which
+    # live-information questions go straight to the web lookup, and resolves follow-ups.
+    intent_router: Literal["off", "shadow", "on"] = "shadow"
     # Idle initiative: may the idle mind start errands on its own?
     autonomous_errands: bool = True
     # Kip's durable store: searchable memories (FTS5 + sqlite-vec) and structured state

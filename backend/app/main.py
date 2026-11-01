@@ -70,6 +70,10 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
                        shares_task_model=shared, session_id=config.chat_session_id)
     chat.gate = task_llm if shared else None
     chat.attach()
+    if config.intent_router != "off":
+        # Reviewed corrections join the shipped examples; the embedding model joins once loaded.
+        from app.chat.router import IntentRouter
+        chat.router = IntentRouter(store.accepted_intent_examples(), embedder=embedder)
     mind = AgentMind(task_llm, manager, engine, bus, config, persistent, persona=persona,
                      memory_store=store, chat=chat)
     mutation_lock = asyncio.Lock()
@@ -81,6 +85,9 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
             # then index any memories saved while meaning search was unavailable.
             async def prepare_memory():
                 await asyncio.to_thread(embedder.embed_sync, ["warm up"])
+                if chat.router is not None:
+                    # A second or two in a worker thread; until then the router uses TF-IDF alone.
+                    await asyncio.to_thread(chat.router.add_embeddings)
                 await store.backfill()
             app.state.memory_ready = asyncio.create_task(prepare_memory())
         mind.start()

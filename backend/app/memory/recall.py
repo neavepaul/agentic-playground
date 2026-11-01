@@ -11,6 +11,7 @@ persona), written in one transaction so they can never be half-saved.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -159,6 +160,28 @@ class MemoryStore:
             );
             CREATE INDEX IF NOT EXISTS conversation_session
                 ON conversation_turns(session_id, sequence);
+            CREATE TABLE IF NOT EXISTS intent_corrections (
+                id INTEGER PRIMARY KEY,
+                key TEXT NOT NULL UNIQUE,
+                utterance TEXT NOT NULL,
+                context TEXT NOT NULL,
+                predicted TEXT NOT NULL,
+                corrected TEXT NOT NULL,
+                correction TEXT NOT NULL,
+                outcome TEXT NOT NULL DEFAULT 'pending',
+                status TEXT NOT NULL DEFAULT 'unreviewed',
+                label TEXT,
+                seen INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS intent_shadow (
+                id INTEGER PRIMARY KEY,
+                at TEXT NOT NULL,
+                utterance TEXT NOT NULL,
+                route TEXT NOT NULL,
+                router_fast INTEGER NOT NULL,
+                live_fast INTEGER NOT NULL
+            );
             CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
                 text, about, content='memories', content_rowid='id');
             CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
@@ -449,6 +472,72 @@ class MemoryStore:
                                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
                                "updated_at = excluded.updated_at",
                                [(key, value, _now()) for key, value in values.items()])
+
+    # ── intent router: corrections and shadow comparisons ──────────────────
+    # A correction is evidence the router read a message wrongly. It stays "unreviewed" until a
+    # person accepts it offline (python -m app.chat.router_train review): unverified guesses
+    # never become training data on their own.
+    def add_intent_correction(self, utterance: str, context: dict, predicted: dict, corrected: dict,
+                              correction: str) -> int | None:
+        """The id of a new correction, or None when the same one is already recorded."""
+        key = hashlib.sha1(json.dumps([" ".join(utterance.casefold().split()), corrected.get("intent"),
+                                       corrected.get("focus"), corrected.get("time")]).encode()).hexdigest()
+        with self._lock:
+            db = self._db
+            with db:
+                cursor = db.execute(
+                    "INSERT OR IGNORE INTO intent_corrections(key, utterance, context, predicted, corrected, "
+                    "correction, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (key, utterance, json.dumps(context), json.dumps(predicted), json.dumps(corrected),
+                     correction, _now()))
+                if cursor.rowcount:
+                    return cursor.lastrowid
+                db.execute("UPDATE intent_corrections SET seen = seen + 1 WHERE key = ?", (key,))
+                return None
+
+    def set_intent_outcome(self, correction_id: int, outcome: str) -> None:
+        with self._lock:
+            db = self._db
+            with db:
+                db.execute("UPDATE intent_corrections SET outcome = ? WHERE id = ?", (outcome, correction_id))
+
+    def intent_corrections(self, status: str | None = None) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute("SELECT * FROM intent_corrections" + (" WHERE status = ?" if status else "")
+                                    + " ORDER BY id", (status,) if status else ()).fetchall()
+        return [{**dict(row), **{k: json.loads(row[k]) for k in ("context", "predicted", "corrected")}}
+                for row in rows]
+
+    def review_intent_correction(self, correction_id: int, status: str, label: str | None = None) -> bool:
+        with self._lock:
+            db = self._db
+            with db:
+                return bool(db.execute("UPDATE intent_corrections SET status = ?, label = COALESCE(?, label) "
+                                       "WHERE id = ?", (status, label, correction_id)).rowcount)
+
+    def accepted_intent_examples(self) -> list[tuple[str, str]]:
+        """(label, utterance) for reviewed corrections: extra training examples at startup."""
+        return [(row["label"] or row["corrected"].get("intent"), row["utterance"])
+                for row in self.intent_corrections("accepted") if row["label"] or row["corrected"].get("intent")]
+
+    def log_intent_shadow(self, utterance: str, route: dict, router_fast: bool, live_fast: bool) -> None:
+        with self._lock:
+            db = self._db
+            with db:
+                db.execute("INSERT INTO intent_shadow(at, utterance, route, router_fast, live_fast) "
+                           "VALUES (?, ?, ?, ?, ?)", (_now(), utterance, json.dumps(route), int(router_fast),
+                                                      int(live_fast)))
+                db.execute("DELETE FROM intent_shadow WHERE id <= (SELECT MAX(id) FROM intent_shadow) - 5000")
+
+    def intent_shadow_summary(self, examples: int = 15) -> dict:
+        with self._lock:
+            rows = self._db.execute("SELECT * FROM intent_shadow ORDER BY id").fetchall()
+        both = sum(r["router_fast"] and r["live_fast"] for r in rows)
+        only_router = [r["utterance"] for r in rows if r["router_fast"] and not r["live_fast"]]
+        only_live = [r["utterance"] for r in rows if r["live_fast"] and not r["router_fast"]]
+        return {"messages": len(rows), "agree": len(rows) - len(only_router) - len(only_live),
+                "both_fast": both, "router_only_fast": len(only_router), "live_only_fast": len(only_live),
+                "router_only_examples": only_router[-examples:], "live_only_examples": only_live[-examples:]}
 
     def close(self) -> None:
         with self._lock:

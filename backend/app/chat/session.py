@@ -22,6 +22,7 @@ from .consent import Offer, classify_reply, is_question, is_request, task_identi
 from .evidence import (capabilities, contradicted_presence, denied_capabilities, last_seen, room_scans,
                        task_record, unsupported_execution)
 from .intent import Intent, introduced_as, is_live_fact, read_intent
+from .router import THRESHOLD as ROUTER_THRESHOLD, LIVE, Frame, Route, default_router, fast_path, frame_of
 from app.agents.schemas import GoalCondition, GoalPlan, InitialCapability
 from .prompt import ChatAction, TrailerSplitter, build_messages
 from .spoken import spoken
@@ -82,6 +83,14 @@ class ChatSession:
         self._last_unasked_offer: tuple[int, Offer | None] = (-99, None)
         self._introduced: str | None = None            # who said "it's Neave" when the picker was unset
         self.gate = None                               # shared-model priority (conversation first)
+        # Intent router (router.py), per settings.intent_router. The app hands in one trained with
+        # reviewed corrections and the embedding model; without one, the shipped TF-IDF router.
+        self.router = None
+        self._frame: Frame | None = None               # the last information request, for follow-ups
+        self._frame_route: Route | None = None
+        self._routed = 0
+        self._routes: dict[str, Route] = {}            # user turn id -> how the router read it
+        self._correction_goals: dict[tuple[str, ...], int] = {}  # corrected lookup -> correction record
 
     def attach(self) -> None:
         self.bus.add_listener(self._narrate)
@@ -245,7 +254,7 @@ class ChatSession:
             status["asked_not_to"] = self.manager.restrictions.describe()
         return status
 
-    def _guidance(self, intent: Intent) -> str:
+    def _guidance(self, intent: Intent, live: bool | None = None) -> str:
         """How this particular message must be handled, decided by code from its words."""
         restrictions, parts = self.manager.restrictions, []
         if intent.cancel:
@@ -266,7 +275,7 @@ class ChatSession:
                 parts.append(f"This needs you to actually {names(usable)}; an errand starts for it. Say so in a few "
                              "words. Never write its result, output or page content yourself: the real one follows."
                              + (f" You won't {names(off)}: it was ruled out." if off else ""))
-        if intent.live_fact and not intent.changes_state_only:
+        if (intent.live_fact if live is None else live) and not intent.changes_state_only:
             parts.append("This is live information (weather, a price, a score, news): a lookup starts now. Say so "
                          "in a few words, in character. Never state a figure yourself; the real one follows.")
         if intent.greeting:
@@ -303,8 +312,19 @@ class ChatSession:
             async with self._lock:  # FIFO: one reply at a time, in order
                 queue_seconds = time.monotonic() - queued_at
                 said = user_turn["text"]
-                lookup = self._direct_lookup(user_turn, self._intents.get(user_turn["id"]) or read_intent(said),
-                                             earlier)
+                intent = self._intents.get(user_turn["id"]) or read_intent(said)
+                route = await self._route(user_turn, intent, earlier)
+                if route is not None and self.settings.intent_router == "on":
+                    question = self._router_clarifies(user_turn, intent, route)
+                    if question:
+                        # "How did he do?" with nobody named: ask who, no model call.
+                        finished = self._finish_turn(user_turn, reply_id, question, None,
+                                                     {"chat_model_calls": 0, "intent_router": route.intent})
+                        self._intents.pop(user_turn["id"], None)
+                        return
+                    lookup = self._routed_lookup(user_turn, intent, route)
+                else:
+                    lookup = self._direct_lookup(user_turn, intent, earlier)
                 if lookup:
                     # A live fact needs no chat reply first: the lookup starts now, and its
                     # answer, written in Kip's voice, is the reply. One model step, not two.
@@ -329,7 +349,7 @@ class ChatSession:
                 anchors = {t["id"]: index for index, t in enumerate(earlier)}
                 earlier.sort(key=lambda t: (anchors.get(t.get("in_reply_to"), anchors[t["id"]]),
                                            bool(t.get("in_reply_to")), anchors[t["id"]]))
-                guidance = self._guidance(self._intents.get(user_turn["id"]) or read_intent(user_turn["text"]))
+                guidance = self._guidance(intent, live=self._is_live(user_turn["id"], intent))
                 messages = build_messages(self.name, voice, prompt_memories(memories),
                                           self._status(user_turn.get("speaker")), earlier, user_turn["text"],
                                           guidance=guidance, context_tokens=min(
@@ -420,7 +440,8 @@ class ChatSession:
         intent = self._intents.get(user_turn["id"]) or read_intent(said)
         self._decide_errands(action, user_turn)
         # Claims are judged on what the model wrote, before it was tidied for speech.
-        self._check_claims(written or reply, intent)
+        self._check_claims(written or reply, intent, live=self._is_live(user_turn["id"], intent))
+        self._routes.pop(user_turn["id"], None)
         self._intents.pop(user_turn["id"], None)
         if self.store:
             await self._remember(action, user_turn, reply)
@@ -492,11 +513,13 @@ class ChatSession:
             # Permissions changed or something was turned down: nothing new to do, and no
             # earlier request is replayed, whatever the model wrote.
             return
-        if self._pure_lookup(intent, said):
+        if self._pure_lookup(intent, said, live=self._is_live(user_turn["id"], intent)):
             # Weather, prices, scores, news: always looked up, never recited from memory. A pure
             # lookup's plan is known, so it starts straight away without a planning call.
             goal = next((g for g in (proposed, offered) if g and digital_scope(g)), f"{LOOKUP_PREFIX}{said}")
-            self._start_or_queue(goal, user_turn["id"], Grant.read_only(said), plan=_lookup_plan(said))
+            route = self._routes.get(user_turn["id"])
+            query = route.query if self.settings.intent_router == "on" and route and route.live else said
+            self._start_or_queue(goal, user_turn["id"], Grant.read_only(said), plan=_lookup_plan(query))
             return
         needs = intent.needs_tools
         if needs:
@@ -572,6 +595,112 @@ class ChatSession:
             return _clip(f"{LOOKUP_PREFIX}{said} (following up on: {topic})", 600), f"{topic} {said}"
         return f"{LOOKUP_PREFIX}{said}", said
 
+    # ── intent router ───────────────────────────────────────────────────────
+    async def _route(self, user_turn: dict, intent: Intent, earlier: list[dict]) -> Route | None:
+        """How the router reads this message, in order (replies run one at a time), with the last
+        information request as context. Shadow mode only records it; nothing here acts."""
+        mode = self.settings.intent_router
+        if mode == "off":
+            return None
+        if self.router is None:
+            self.router = default_router()
+        said, turn = user_turn["text"], self._routed
+        started = time.perf_counter()
+        try:
+            if self.router.embedding is not None:  # an embedding is a few ms of CPU: off the event loop
+                route = await asyncio.to_thread(self.router.route, said, self._frame, turn)
+            else:
+                route = self.router.route(said, self._frame, turn)
+        except Exception:
+            _log.exception("Intent router failed; the usual path decides")
+            return None
+        seconds = time.perf_counter() - started
+        self._routed += 1
+        if route.correction and self._frame_route is not None:
+            self._record_correction(user_turn, route)
+        frame = frame_of(route, said, turn)
+        if frame:
+            self._frame, self._frame_route = frame, route
+        self._routes[user_turn["id"]] = route
+        router_fast = self._router_fast(user_turn, intent, route)
+        usual_fast = self._direct_lookup(user_turn, intent, earlier) is not None
+        _log.info("intent_router mode=%s intent=%s conf=%.2f live=%.2f source=%s fast=%s usual_fast=%s "
+                  "clarify=%s query=%r ms=%.1f", mode, route.intent, route.confidence, route.live_confidence,
+                  route.source, router_fast, usual_fast, bool(route.clarify), route.query, seconds * 1000)
+        if self.store:
+            try:
+                self.store.log_intent_shadow(said, {**route.public(), "backend": self.router.backend,
+                                                    "ms": round(seconds * 1000, 2)}, router_fast, usual_fast)
+            except Exception:
+                _log.exception("Could not record the router's shadow decision")
+        return route
+
+    def _router_fast(self, user_turn: dict, intent: Intent, route: Route) -> bool:
+        """The router's fast path, behind every check the usual path makes first."""
+        if self._closed or self._turn_epochs.get(user_turn["id"], self._work_epoch) != self._work_epoch:
+            return False
+        seen = self._offer_seen.get(user_turn["id"])
+        if seen is not None and self._offer_valid() and self.offer.id == seen:
+            return False  # an answer to Kip's offer is never a fresh lookup
+        allowed = self.settings.digital_tools_enabled and not self.manager.restrictions.forbids_tool("web_search")
+        return fast_path(route, intent, web_allowed=allowed,
+                         involves_house=self._involves_the_house(user_turn["text"]))
+
+    def _routed_lookup(self, user_turn: dict, intent: Intent, route: Route) -> tuple[str, str] | None:
+        """(goal, search query) when the router sends this straight to the lookup. The goal keeps
+        their words and adds what they meant; the search uses the meaning, not the wording."""
+        if not self._router_fast(user_turn, intent, route):
+            return None
+        said = user_turn["text"]
+        if route.correction:
+            goal = f"{LOOKUP_PREFIX}{route.earlier} (they corrected: {said}; they mean: {route.meaning})"
+        elif route.followup:
+            goal = f"{LOOKUP_PREFIX}{said} (following up on: {route.earlier}; they mean: {route.meaning})"
+        else:
+            goal = f"{LOOKUP_PREFIX}{said} (they mean: {route.meaning})"
+        goal = _clip(goal, 600)
+        correction = getattr(route, "correction_id", None)
+        if correction:
+            self._correction_goals[task_identity(goal)] = correction
+        return goal, route.query
+
+    def _router_clarifies(self, user_turn: dict, intent: Intent, route: Route) -> str | None:
+        """A short question back when a live question points at nobody ("how did he do?")."""
+        if not route.clarify or route.intent not in LIVE or route.live_confidence < ROUTER_THRESHOLD:
+            return None
+        if intent.cancel or intent.changes_state_only or intent.needs_tools or self._closed:
+            return None
+        seen = self._offer_seen.get(user_turn["id"])
+        if seen is not None and self._offer_valid() and self.offer.id == seen:
+            return None
+        return route.clarify
+
+    def _is_live(self, turn_id: str, intent: Intent) -> bool:
+        """Live information? When it is on, the router decides for messages that ask something;
+        a statement ("I wonder what the air is like") keeps the live-fact words, so the router
+        never turns remarks into lookups nobody asked for."""
+        route = self._routes.get(turn_id)
+        asks = route is not None and (intent.question or intent.request or route.followup or route.correction
+                                      or route.lookup_phrase)
+        if self.settings.intent_router == "on" and asks:
+            return route.live
+        return intent.live_fact
+
+    def _record_correction(self, user_turn: dict, route: Route) -> None:
+        """"I meant what position": the earlier reading was wrong. Kept, unreviewed, for offline
+        review; never fed back into the router on its own."""
+        if not self.store or self._frame is None:
+            return
+        previous = self._frame_route
+        try:
+            if previous is not None and getattr(previous, "correction_id", None):
+                self.store.set_intent_outcome(previous.correction_id, "corrected again")
+            route.correction_id = self.store.add_intent_correction(
+                self._frame.said, {"frame": vars(self._frame)}, previous.public() if previous else {},
+                route.public(), user_turn["text"])
+        except Exception:
+            _log.exception("Could not record an intent correction")
+
     def _lookup_followed_up(self, said: str, earlier: list[dict]) -> str | None:
         """The question Kip's last web lookup answered, if its answer came within the last three
         exchanges and this message shares its topic; otherwise None."""
@@ -636,11 +765,11 @@ class ChatSession:
                 self._add_turn("kip", f"Stopped: {goal}", source="narration")
             self._spawn(stop(self.manager.active_id))
 
-    def _check_claims(self, reply: str, intent: Intent | None = None) -> None:
+    def _check_claims(self, reply: str, intent: Intent | None = None, live: bool = False) -> None:
         """Kip must not claim actions, runs or sightings his tool evidence does not support."""
         world = self.engine.snapshot()
         found, notes = unsupported_claims(reply, evidence_ledger(self.manager), world), []
-        if intent is not None and intent.live_fact and _FIGURE.search(reply.casefold()):
+        if intent is not None and (intent.live_fact or live) and _FIGURE.search(reply.casefold()):
             # A live figure before any lookup came back is a guess wearing a number.
             notes.append("that figure was a guess; I'm looking up the real one now")
         if found:
@@ -799,6 +928,9 @@ class ChatSession:
                 self._add_turn("kip", f"Start now: {goal}", source="narration")
         elif kind in {"task_completed", "task_failed"}:
             outcome = kind.removeprefix("task_")
+            correction = self._correction_goals.pop(task_identity(task.get("goal", "")), None)
+            if correction and self.store:
+                self.store.set_intent_outcome(correction, "answered" if outcome == "completed" else "failed")
             answer = task.get("answer") or {}
             if answer.get("answer"):
                 # The answer is already written in Kip's voice; no stock opener.

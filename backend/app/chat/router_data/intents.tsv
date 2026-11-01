@@ -1,0 +1,393 @@
+# Training utterances for the intent router: label<TAB>text. Lowercase, as people type.
+# Corrections people make in conversation are added from the database only once reviewed
+# (python -m app.chat.router_train review); never edit this file from a running Kip.
+information.sports	where did lando qualify
+information.sports	where did verstappen finish in brazil
+information.sports	who got pole in monaco
+information.sports	what position did hamilton start from
+information.sports	who won the last grand prix
+information.sports	how did leclerc do in qualifying
+information.sports	did piastri get a podium
+information.sports	f1 standings right now
+information.sports	who's leading the drivers championship
+information.sports	when is the next race
+information.sports	what time is qualifying tomorrow
+information.sports	how many points does norris have
+information.sports	did ferrari win
+information.sports	where did russell end up
+information.sports	who won the sprint
+information.sports	what lap did max pit
+information.sports	who was fastest in practice
+information.sports	did alonso finish the race
+information.sports	how did mercedes do today
+information.sports	where did he finish
+information.sports	how did he do in qualifying
+information.sports	what was the india score
+information.sports	did india win the test
+information.sports	how many runs did kohli make
+information.sports	who won the ipl final
+information.sports	rcb vs csk who won
+information.sports	what's the cricket score
+information.sports	is the match still on
+information.sports	how many wickets did bumrah take
+information.sports	when is india's next odi
+information.sports	did australia win the toss
+information.sports	did arsenal win last night
+information.sports	liverpool score
+information.sports	who scored for city
+information.sports	premier league table
+information.sports	when do united play next
+information.sports	did real madrid win the clasico
+information.sports	who won wimbledon
+information.sports	did sinner win his match
+information.sports	lakers result
+information.sports	who won the super bowl
+information.sports	did the warriors win
+information.sports	result of the champions league final
+information.sports	motogp winner this weekend
+information.sports	who's top of the table
+information.sports	did pakistan beat england
+information.sports	semi final result
+information.sports	what place did gasly come
+information.sports	who's on pole
+information.sports	how far behind was piastri
+information.weather	what's the weather like
+information.weather	is it going to rain today
+information.weather	how hot is it outside
+information.weather	weather tomorrow in mumbai
+information.weather	do i need an umbrella
+information.weather	will it rain this evening
+information.weather	temperature in bangalore
+information.weather	how cold is it tonight
+information.weather	what's the forecast for the weekend
+information.weather	is it sunny in goa
+information.weather	humidity right now
+information.weather	air quality today
+information.weather	will it be windy tomorrow
+information.weather	should i take a jacket
+information.weather	what was the weather yesterday
+information.weather	is there a storm coming
+information.weather	how's the weather in london
+information.weather	chance of rain later
+information.weather	is it snowing in manali
+information.weather	weather this week
+information.weather	what's it like outside
+information.weather	is it hot in chennai today
+information.weather	uv index today
+information.weather	will it clear up by noon
+information.weather	rain in pune tomorrow
+information.weather	is it cooler in the hills
+information.weather	monsoon update
+information.weather	how many degrees is it
+information.finance	what's apple trading at
+information.finance	tesla stock price
+information.finance	how's the market today
+information.finance	sensex today
+information.finance	nifty closing
+information.finance	bitcoin price
+information.finance	how much is ethereum right now
+information.finance	dollar to rupee rate
+information.finance	euro exchange rate
+information.finance	did nvidia go up
+information.finance	reliance share price
+information.finance	how is tcs doing on the market
+information.finance	gold price today
+information.finance	petrol price in bangalore
+information.finance	what's the dow at
+information.finance	nasdaq today
+information.finance	infosys stock
+information.finance	is the market up or down
+information.finance	price of silver
+information.finance	how much is one dollar in rupees
+information.finance	amazon shares
+information.finance	microsoft stock today
+information.finance	crypto prices
+information.finance	did the fed cut rates
+information.finance	hdfc bank share
+information.finance	what did sensex close at yesterday
+information.finance	zomato share price
+information.finance	usd inr
+information.finance	oil prices
+information.news	what's in the news
+information.news	any headlines today
+information.news	what happened in the world today
+information.news	latest news
+information.news	top stories
+information.news	anything big happen today
+information.news	news about the election
+information.news	what's going on in india today
+information.news	breaking news
+information.news	latest on the strike
+information.news	what's happening with the budget
+information.news	any news about chandrayaan
+information.news	tech news today
+information.news	what did the pm say today
+information.news	election results
+information.news	news headlines please
+information.news	what's trending
+information.news	latest update on the floods
+information.news	any news on the cyclone
+information.news	what happened at the summit
+information.general	who wrote dune
+information.general	how far is the moon
+information.general	what's the capital of australia
+information.general	how does a microwave work
+information.general	who invented the telephone
+information.general	what is photosynthesis
+information.general	how many bones in the human body
+information.general	why is the sky blue
+information.general	what does dna stand for
+information.general	how tall is mount everest
+information.general	who painted the mona lisa
+information.general	what's the boiling point of water
+information.general	how do airplanes fly
+information.general	what language do they speak in brazil
+information.general	how long do cats live
+information.general	what's a black hole
+information.general	who was gandhi
+information.general	when did world war two end
+information.general	how many planets are there
+information.general	what is the speed of light
+information.general	how do vaccines work
+information.general	what's the biggest ocean
+information.general	who discovered penicillin
+information.general	difference between a virus and bacteria
+information.general	how many legs does a spider have
+information.general	how does wifi work
+information.general	what's pi
+information.general	who is the author of harry potter
+information.general	what rhymes with orange
+information.general	how many times has hamilton won the title
+memory.recall	what's my sister's name
+memory.recall	do you remember my birthday
+memory.recall	what did i tell you about my job
+memory.recall	when is my dentist appointment
+memory.recall	what's my favourite food
+memory.recall	where did i say i left my keys
+memory.recall	what did we talk about yesterday
+memory.recall	remember what i said about paul
+memory.recall	who is moira to me
+memory.recall	did i tell you about my trip
+memory.recall	what do i like to drink
+memory.recall	what's my wife's name
+memory.recall	remind me what my doctor said
+memory.recall	what did i say my plans were
+memory.recall	do you remember my dog's name
+memory.recall	what was that book i mentioned
+memory.recall	what did i ask you earlier
+memory.recall	when's neave's exam
+memory.recall	what's my mom's birthday
+memory.recall	do you know my allergy
+memory.recall	what time do i usually wake up
+memory.recall	what car do i drive
+memory.recall	who did i say was visiting
+memory.recall	what was my last question
+memory.recall	what do you know about me
+memory.update	my sister's name is anna
+memory.update	remember that i'm allergic to peanuts
+memory.update	my birthday is on june 5th
+memory.update	i work at accenture
+memory.update	i moved to pune last month
+memory.update	note that paul likes his tea black
+memory.update	my favourite colour is green
+memory.update	i don't eat meat
+memory.update	remember my dentist appointment is on friday
+memory.update	call me neave
+memory.update	i'm learning guitar
+memory.update	my dog is called bruno
+memory.update	that's wrong, my birthday is in july
+memory.update	forget what i said about my job
+memory.update	i prefer coffee in the morning
+memory.update	i have a meeting every monday at 9
+memory.update	my wife's name is priya
+memory.update	just so you know, i hate mushrooms
+memory.update	moira is my grandmother
+memory.update	my flight is on the 12th
+memory.update	i'm vegetarian now
+memory.update	keep in mind i'm a night owl
+memory.update	i switched to tea
+memory.update	my car is a red swift
+memory.update	lando is my favourite driver
+action.request	find my keys
+action.request	bring me a glass of water
+action.request	tell paul dinner is ready
+action.request	go check the kitchen
+action.request	can you get my phone from the bedroom
+action.request	turn off the lights in the hall
+action.request	tell everyone the meeting is cancelled
+action.request	take this book to moira
+action.request	go see if anyone's in the study
+action.request	pick up the remote
+action.request	put the cup in the kitchen
+action.request	can you find my glasses
+action.request	ask neave if she wants tea
+action.request	check whether the stove is off
+action.request	bring the charger here
+action.request	go to the bedroom
+action.request	deliver the letter to paul
+action.request	let moira know i'm home
+action.request	look around the house for my wallet
+action.request	fetch my umbrella
+action.request	open the window
+action.request	remind paul to call his mom
+action.request	see who's at the door
+action.request	water the plants
+action.request	clean up the hall
+action.request	set a timer for ten minutes
+action.request	could you go find my headphones
+action.request	take the keys to neave
+action.request	where is paul right now
+action.request	is anyone in the kitchen
+conversation.casual	hi kip
+conversation.casual	hello
+conversation.casual	good morning
+conversation.casual	how are you
+conversation.casual	what's up
+conversation.casual	thanks
+conversation.casual	thank you so much
+conversation.casual	you're funny
+conversation.casual	lol
+conversation.casual	ok
+conversation.casual	cool
+conversation.casual	nice
+conversation.casual	good night
+conversation.casual	see you later
+conversation.casual	what are you up to
+conversation.casual	do you like music
+conversation.casual	i love formula 1
+conversation.casual	cricket is so boring
+conversation.casual	moira's watching the cricket
+conversation.casual	i watched the race yesterday
+conversation.casual	tell me a joke
+conversation.casual	what's your favourite colour
+conversation.casual	are you a robot
+conversation.casual	do you sleep
+conversation.casual	haha that's great
+conversation.casual	you're the best
+conversation.casual	i'm back
+conversation.casual	nothing much
+conversation.casual	just chilling
+conversation.casual	i like rainy days
+conversation.casual	it's so hot today
+conversation.casual	what do you think about cats
+conversation.casual	do you have a brother
+conversation.casual	who made you
+conversation.casual	sing me a song
+conversation.casual	that's interesting
+conversation.casual	fist my bump
+conversation.casual	amaze
+conversation.casual	i'm going to watch the match
+conversation.casual	do you like ferrari
+conversation.casual	what do you think of lando
+conversation.casual	the race was amazing
+conversation.emotional	i'm tired
+conversation.emotional	i'm so stressed
+conversation.emotional	i had a bad day
+conversation.emotional	i feel lonely
+conversation.emotional	i'm sad
+conversation.emotional	my dog died
+conversation.emotional	i failed my exam
+conversation.emotional	i'm nervous about tomorrow
+conversation.emotional	i can't sleep
+conversation.emotional	i'm anxious
+conversation.emotional	everything is going wrong
+conversation.emotional	i miss my family
+conversation.emotional	i got dumped
+conversation.emotional	i'm exhausted
+conversation.emotional	work is killing me
+conversation.emotional	i feel like nobody cares
+conversation.emotional	i'm worried about my mom
+conversation.emotional	i'm angry at my boss
+conversation.emotional	i passed my exam
+conversation.emotional	i got the job!
+conversation.emotional	i'm so happy today
+conversation.emotional	i feel sick
+conversation.emotional	my head hurts
+conversation.emotional	i'm overwhelmed
+conversation.emotional	i'm bored and sad
+conversation.emotional	i don't want to talk
+conversation.emotional	leave me alone
+conversation.emotional	i'm scared
+conversation.emotional	i cried today
+conversation.emotional	grandma is in hospital
+reasoning.complex	help me plan meals for the week
+reasoning.complex	can you write a python function to sort a list
+reasoning.complex	explain how to budget my salary
+reasoning.complex	compare electric and petrol cars for me
+reasoning.complex	what should i do about my career
+reasoning.complex	help me write an email to my landlord
+reasoning.complex	plan a trip to kerala for 5 days
+reasoning.complex	how should i prepare for an interview
+reasoning.complex	calculate 15 percent of 2340
+reasoning.complex	solve 3x + 5 = 20
+reasoning.complex	what's the best way to learn coding
+reasoning.complex	give me a workout plan
+reasoning.complex	make a study schedule for my exams
+reasoning.complex	summarise the pros and cons of remote work
+reasoning.complex	how do i fix a leaking tap
+reasoning.complex	write a poem about rain
+reasoning.complex	should i buy or rent a house
+reasoning.complex	help me debug this code
+reasoning.complex	convert 50 miles to km
+reasoning.complex	explain quantum computing simply
+reasoning.complex	draft a birthday message for my sister
+reasoning.complex	what's 17 times 23
+reasoning.complex	plan my day
+reasoning.complex	brainstorm names for my startup
+reasoning.complex	how can i save more money
+information.sports	how is the title fight looking
+information.sports	what's the constructors championship like
+information.sports	how are india doing in the test
+information.sports	who's batting now
+information.sports	when does the odi begin
+information.sports	what time does the match start
+information.sports	how is the series going
+information.sports	who's winning the game
+information.sports	how's the race going
+information.sports	is kohli still batting
+information.weather	do i need a coat today
+information.weather	how bad is the pollution today
+information.weather	what's the air like today
+information.weather	is it going to be hot this afternoon
+information.weather	should i bring sunscreen
+information.finance	how's the stock market looking
+information.finance	dollar vs rupee
+information.finance	how are the markets
+information.finance	what's the rupee at
+information.finance	how much is gold now
+information.news	tell me the news
+information.news	what are today's headlines
+information.news	catch me up on the news
+information.news	what's happening in the world
+information.general	how does qualifying work in f1
+information.general	what does drs mean
+information.general	how many laps is a grand prix
+information.general	how do they score in cricket
+information.general	what is an lbw
+information.general	how big is a football pitch
+conversation.casual	how's your day going
+conversation.casual	how's everything
+conversation.casual	all good?
+conversation.casual	the weather is so nice
+conversation.casual	it's lovely outside
+conversation.casual	it's freezing in here
+conversation.casual	max is a great driver
+conversation.casual	i think mclaren will win the title
+conversation.casual	verstappen is so good
+conversation.casual	hamilton is the best
+conversation.casual	kohli is my hero
+conversation.casual	i hope india wins
+conversation.casual	ferrari always mess up
+conversation.casual	what a race that was
+conversation.casual	i bet it rains later
+conversation.casual	i'm watching the cricket
+conversation.casual	paul is watching football in the hall
+conversation.emotional	it's been a rough week
+conversation.emotional	today was terrible
+conversation.emotional	my grandma is sick
+conversation.emotional	my dog isn't well
+memory.update	my exam is on friday
+memory.update	i live in pune
+memory.update	my interview is next week
+reasoning.complex	what's 12 percent of 300
+reasoning.complex	work out 18% of 950

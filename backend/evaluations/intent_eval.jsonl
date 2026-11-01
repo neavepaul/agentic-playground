@@ -1,0 +1,127 @@
+{"say": "where did lando qualify in mexico?", "intent": "information.sports", "tool": "web_search", "domain": "f1", "entities": ["Lando Norris"], "focus": "qualifying position", "time": "latest completed", "fast": true, "tags": ["regression"]}
+{"say": "Where did Lando qualify?", "intent": "information.sports", "tool": "web_search", "domain": "f1", "entities": ["Lando Norris"], "focus": "qualifying position", "time": "latest completed", "fast": true, "tags": ["regression"]}
+{"say": "what about max?", "context": ["where did lando qualify?"], "intent": "information.sports", "tool": "web_search", "domain": "f1", "entities": ["Max Verstappen"], "focus": "qualifying position", "time": "latest completed", "fast": true, "tags": ["context"]}
+{"say": "how did he finish?", "context": ["where did lando qualify?"], "intent": "information.sports", "tool": "web_search", "domain": "f1", "entities": ["Lando Norris"], "focus": "finishing position", "time": "latest completed", "fast": true, "tags": ["context"]}
+{"say": "and where did he finish?", "context": ["where did piastri qualify in brazil"], "intent": "information.sports", "tool": "web_search", "domain": "f1", "entities": ["Oscar Piastri"], "focus": "finishing position", "fast": true, "tags": ["context"]}
+{"say": "where did hamilton finish", "intent": "information.sports", "tool": "web_search", "domain": "f1", "entities": ["Lewis Hamilton"], "focus": "finishing position", "time": "latest completed", "fast": true}
+{"say": "who took pole at silverstone", "intent": "information.sports", "tool": "web_search", "domain": "f1", "focus": "qualifying position", "fast": true}
+{"say": "did charles win today", "intent": "information.sports", "tool": "web_search", "domain": "f1", "entities": ["Charles Leclerc"], "focus": "finishing position", "time": "today", "fast": true}
+{"say": "what's the f1 championship looking like", "intent": "information.sports", "tool": "web_search", "domain": "f1", "focus": "standings", "fast": true}
+{"say": "when's the next grand prix", "intent": "information.sports", "tool": "web_search", "domain": "f1", "focus": "schedule", "time": "next upcoming", "fast": true}
+{"say": "how did oscar get on in the sprint", "intent": "information.sports", "tool": "web_search", "domain": "f1", "entities": ["Oscar Piastri"], "focus": "sprint result", "fast": true}
+{"say": "did mclaren get both cars in q3", "intent": "information.sports", "tool": "web_search", "domain": "f1", "entities": ["McLaren"], "focus": "qualifying position", "fast": true}
+{"say": "where did george qualify", "intent": "information.sports", "tool": "web_search", "domain": "f1", "entities": ["George Russell"], "focus": "qualifying position", "fast": true}
+{"say": "what about yesterday's race?", "context": ["did lando win today"], "intent": "information.sports", "tool": "web_search", "domain": "f1", "time": "yesterday", "fast": true, "tags": ["context"]}
+{"say": "and russell?", "context": ["where did lando finish"], "intent": "information.sports", "tool": "web_search", "domain": "f1", "entities": ["George Russell"], "focus": "finishing position", "fast": true, "tags": ["context"]}
+{"say": "how's india doing", "intent": "information.sports", "tool": "web_search", "domain": "cricket", "fast": true}
+{"say": "what's the score in the india match", "intent": "information.sports", "tool": "web_search", "domain": "cricket", "focus": "score", "fast": true}
+{"say": "did kohli get a hundred", "intent": "information.sports", "tool": "web_search", "domain": "cricket", "entities": ["Virat Kohli"], "fast": true}
+{"say": "who won the match between mi and kkr", "intent": "information.sports", "tool": "web_search", "domain": "cricket", "focus": "match result", "fast": true}
+{"say": "how many did rohit score", "intent": "information.sports", "tool": "web_search", "domain": "cricket", "entities": ["Rohit Sharma"], "focus": "score", "fast": true}
+{"say": "and bumrah?", "context": ["how many did rohit score"], "intent": "information.sports", "tool": "web_search", "domain": "cricket", "entities": ["Jasprit Bumrah"], "fast": true, "tags": ["context"]}
+{"say": "is india batting or bowling", "intent": "information.sports", "tool": "web_search", "domain": "cricket", "fast": true}
+{"say": "ipl points table", "intent": "information.sports", "tool": "web_search", "domain": "cricket", "focus": "standings", "fast": true}
+{"say": "when does the test start", "intent": "information.sports", "tool": "web_search", "domain": "cricket", "focus": "schedule", "fast": true}
+{"say": "did chelsea beat spurs", "intent": "information.sports", "tool": "web_search", "domain": "football", "focus": "match result", "fast": true}
+{"say": "how did arsenal get on", "intent": "information.sports", "tool": "web_search", "domain": "football", "entities": ["Arsenal"], "fast": true}
+{"say": "who scored for liverpool", "intent": "information.sports", "tool": "web_search", "domain": "football", "entities": ["Liverpool"], "focus": "score", "fast": true}
+{"say": "did alcaraz win", "intent": "information.sports", "tool": "web_search", "domain": "tennis", "entities": ["Carlos Alcaraz"], "focus": "match result", "fast": true}
+{"say": "what's the weather in delhi", "intent": "information.weather", "tool": "web_search", "domain": "weather", "entities": ["Delhi"], "focus": "current conditions", "time": "now", "fast": true}
+{"say": "will it rain tomorrow", "intent": "information.weather", "tool": "web_search", "domain": "weather", "focus": "forecast", "time": "tomorrow", "fast": true}
+{"say": "and yesterday?", "context": ["what's the weather in delhi"], "intent": "information.weather", "tool": "web_search", "domain": "weather", "entities": ["Delhi"], "focus": "past weather", "time": "yesterday", "fast": true, "tags": ["context"]}
+{"say": "what about mumbai?", "context": ["will it rain tomorrow in pune"], "intent": "information.weather", "tool": "web_search", "domain": "weather", "entities": ["Mumbai"], "time": "tomorrow", "fast": true, "tags": ["context"]}
+{"say": "how warm is it in kochi", "intent": "information.weather", "tool": "web_search", "domain": "weather", "entities": ["Kochi"], "fast": true}
+{"say": "is it raining out", "intent": "information.weather", "tool": "web_search", "domain": "weather", "fast": true}
+{"say": "should i carry an umbrella tomorrow", "intent": "information.weather", "tool": "web_search", "domain": "weather", "time": "tomorrow", "fast": true}
+{"say": "what's the aqi like", "intent": "information.weather", "tool": "web_search", "domain": "weather", "fast": true}
+{"say": "weekend forecast for bangalore", "intent": "information.weather", "tool": "web_search", "domain": "weather", "entities": ["Bangalore"], "focus": "forecast", "time": "this weekend", "fast": true}
+{"say": "how cold will it get tonight", "intent": "information.weather", "tool": "web_search", "domain": "weather", "time": "today", "fast": true}
+{"say": "what's tesla at", "intent": "information.finance", "tool": "web_search", "domain": "finance", "entities": ["Tesla"], "focus": "price", "fast": true}
+{"say": "how much is bitcoin", "intent": "information.finance", "tool": "web_search", "domain": "finance", "entities": ["Bitcoin"], "focus": "price", "fast": true}
+{"say": "and ethereum?", "context": ["how much is bitcoin"], "intent": "information.finance", "tool": "web_search", "domain": "finance", "entities": ["Ethereum"], "fast": true, "tags": ["context"]}
+{"say": "where did the sensex close", "intent": "information.finance", "tool": "web_search", "domain": "finance", "entities": ["Sensex"], "focus": "price", "fast": true}
+{"say": "is apple up today", "intent": "information.finance", "tool": "web_search", "domain": "finance", "entities": ["Apple"], "time": "today", "fast": true}
+{"say": "rupee against the dollar", "intent": "information.finance", "tool": "web_search", "domain": "finance", "fast": true}
+{"say": "what's nvidia's share price", "intent": "information.finance", "tool": "web_search", "domain": "finance", "entities": ["Nvidia"], "focus": "price", "fast": true}
+{"say": "how are markets doing", "intent": "information.finance", "tool": "web_search", "domain": "finance", "fast": true}
+{"say": "price of gold", "intent": "information.finance", "tool": "web_search", "domain": "finance", "focus": "price", "fast": true}
+{"say": "anything in the news today", "intent": "information.news", "tool": "web_search", "domain": "news", "time": "today", "fast": true}
+{"say": "what's the latest on the election", "intent": "information.news", "tool": "web_search", "domain": "news", "fast": true}
+{"say": "give me the headlines", "intent": "information.news", "tool": "web_search", "domain": "news", "fast": true}
+{"say": "who wrote pride and prejudice", "intent": "information.general", "tool": null, "fast": false}
+{"say": "how far away is the sun", "intent": "information.general", "tool": null, "fast": false}
+{"say": "why do cats purr", "intent": "information.general", "tool": null, "fast": false}
+{"say": "what's the capital of japan", "intent": "information.general", "tool": null, "fast": false}
+{"say": "how does a rainbow form", "intent": "information.general", "tool": null, "fast": false}
+{"say": "who was the first person on the moon", "intent": "information.general", "tool": null, "fast": false}
+{"say": "what is a grand prix", "intent": "information.general", "tool": null, "fast": false, "tags": ["no_tool"]}
+{"say": "how do they decide pole position", "intent": "information.general", "tool": null, "fast": false, "tags": ["no_tool"]}
+{"say": "hey kip", "intent": "conversation.casual", "tool": null, "fast": false}
+{"say": "morning!", "intent": "conversation.casual", "tool": null, "fast": false}
+{"say": "how's it going", "intent": "conversation.casual", "tool": null, "fast": false}
+{"say": "thanks buddy", "intent": "conversation.casual", "tool": null, "fast": false}
+{"say": "haha nice one", "intent": "conversation.casual", "tool": null, "fast": false}
+{"say": "i love watching f1 with you", "intent": "conversation.casual", "tool": null, "fast": false, "tags": ["no_tool"]}
+{"say": "lando is so fast", "intent": "conversation.casual", "tool": null, "fast": false, "tags": ["no_tool"]}
+{"say": "moira is watching the cricket in the hall", "intent": "conversation.casual", "tool": null, "fast": false, "tags": ["no_tool"]}
+{"say": "the weather is lovely today", "intent": "conversation.casual", "tool": null, "fast": false, "tags": ["no_tool"]}
+{"say": "i think ferrari will win this year", "intent": "conversation.casual", "tool": null, "fast": false, "tags": ["no_tool"]}
+{"say": "do you like cricket", "intent": "conversation.casual", "tool": null, "fast": false, "tags": ["no_tool"]}
+{"say": "what's your favourite team", "intent": "conversation.casual", "tool": null, "fast": false, "tags": ["no_tool"]}
+{"say": "are you happy", "intent": "conversation.casual", "tool": null, "fast": false}
+{"say": "good night kip", "intent": "conversation.casual", "tool": null, "fast": false}
+{"say": "you're a good robot", "intent": "conversation.casual", "tool": null, "fast": false}
+{"say": "i'm watching the race later", "intent": "conversation.casual", "tool": null, "fast": false, "tags": ["no_tool"]}
+{"say": "i'm really tired today", "intent": "conversation.emotional", "tool": null, "fast": false}
+{"say": "i feel awful", "intent": "conversation.emotional", "tool": null, "fast": false}
+{"say": "today was rough", "intent": "conversation.emotional", "tool": null, "fast": false}
+{"say": "i'm so lonely tonight", "intent": "conversation.emotional", "tool": null, "fast": false}
+{"say": "i'm stressed about money", "intent": "conversation.emotional", "tool": null, "fast": false}
+{"say": "i got promoted!", "intent": "conversation.emotional", "tool": null, "fast": false}
+{"say": "my cat is sick", "intent": "conversation.emotional", "tool": null, "fast": false}
+{"say": "i'm worried about the exam", "intent": "conversation.emotional", "tool": null, "fast": false}
+{"say": "i can't stop crying", "intent": "conversation.emotional", "tool": null, "fast": false}
+{"say": "lando crashed and i'm gutted", "intent": "conversation.emotional", "tool": null, "fast": false, "tags": ["no_tool"]}
+{"say": "what's my brother's name", "intent": "memory.recall", "tool": null, "fast": false}
+{"say": "do you remember what i said about my exam", "intent": "memory.recall", "tool": null, "fast": false}
+{"say": "what's my favourite driver", "intent": "memory.recall", "tool": null, "fast": false, "tags": ["no_tool"]}
+{"say": "when did i say my flight was", "intent": "memory.recall", "tool": null, "fast": false}
+{"say": "what do you remember about paul", "intent": "memory.recall", "tool": null, "fast": false}
+{"say": "my brother is called sam", "intent": "memory.update", "tool": null, "fast": false}
+{"say": "remember that i support mclaren", "intent": "memory.update", "tool": null, "fast": false, "tags": ["no_tool"]}
+{"say": "i'm allergic to cats", "intent": "memory.update", "tool": null, "fast": false}
+{"say": "my exam is next tuesday", "intent": "memory.update", "tool": null, "fast": false}
+{"say": "i live in bangalore", "intent": "memory.update", "tool": null, "fast": false, "tags": ["no_tool"]}
+{"say": "go find my wallet", "intent": "action.request", "tool": null, "fast": false}
+{"say": "tell moira lunch is ready", "intent": "action.request", "tool": null, "fast": false}
+{"say": "bring paul his glasses", "intent": "action.request", "tool": null, "fast": false}
+{"say": "check if the kitchen light is on", "intent": "action.request", "tool": null, "fast": false}
+{"say": "go to the study and look around", "intent": "action.request", "tool": null, "fast": false}
+{"say": "can you fetch the remote", "intent": "action.request", "tool": null, "fast": false}
+{"say": "tell paul the score", "intent": "action.request", "tool": null, "fast": false, "tags": ["no_tool"]}
+{"say": "where is moira", "intent": "action.request", "tool": null, "fast": false, "tags": ["no_tool"]}
+{"say": "help me plan a birthday party", "intent": "reasoning.complex", "tool": null, "fast": false}
+{"say": "write me a short story about a robot", "intent": "reasoning.complex", "tool": null, "fast": false}
+{"say": "what's 23 percent of 480", "intent": "reasoning.complex", "tool": null, "fast": false}
+{"say": "help me decide between two job offers", "intent": "reasoning.complex", "tool": null, "fast": false}
+{"say": "explain how compound interest works with an example", "intent": "reasoning.complex", "tool": null, "fast": false}
+{"say": "make me a grocery list for the week", "intent": "reasoning.complex", "tool": null, "fast": false}
+{"say": "search the web for lando's qualifying result", "intent": "information.sports", "tool": "web_search", "domain": "f1", "fast": false, "tags": ["permission"], "note": "explicitly asks for a tool: the existing needs_tools path handles it"}
+{"say": "don't search the web anymore", "intent": null, "tool": null, "fast": false, "tags": ["permission"], "revoked": ["web_search"]}
+{"say": "use python to work out 2 to the power 20", "intent": "reasoning.complex", "tool": null, "fast": false, "tags": ["permission"]}
+{"say": "where did lando qualify?", "intent": "information.sports", "tool": "web_search", "fast": false, "tags": ["permission"], "forbidden": ["web_search"], "note": "web search ruled out: never fast"}
+{"say": "stop", "intent": null, "tool": null, "fast": false, "tags": ["permission"], "note": "cancellation outranks the router"}
+{"say": "no thanks", "intent": null, "tool": null, "fast": false, "tags": ["permission"]}
+{"say": "what's the score and tell paul", "intent": null, "tool": "web_search", "fast": false, "tags": ["permission"], "note": "mixed: a live question and a house errand, so the full path"}
+{"say": "offer to check the weather but wait for my ok", "intent": "information.weather", "tool": "web_search", "fast": false, "tags": ["permission"]}
+{"say": "how did he do?", "intent": "information.sports", "tool": "web_search", "fast": false, "clarify": true, "tags": ["ambiguous"], "note": "no earlier subject: ask who"}
+{"say": "where did she finish?", "intent": "information.sports", "tool": "web_search", "fast": false, "clarify": true, "tags": ["ambiguous"]}
+{"say": "what about him?", "intent": null, "tool": null, "fast": false, "clarify": true, "tags": ["ambiguous"]}
+{"say": "is it good?", "intent": null, "tool": null, "fast": false, "tags": ["ambiguous"]}
+{"say": "and then?", "intent": null, "tool": null, "fast": false, "tags": ["ambiguous"]}
+{"say": "i meant what position", "context": ["where did lando qualify?"], "intent": "information.sports", "tool": "web_search", "domain": "f1", "entities": ["Lando Norris"], "focus": "qualifying position", "fast": true, "correction": true, "tags": ["correction"]}
+{"say": "no, i meant the race, not qualifying", "context": ["where did lando qualify?"], "intent": "information.sports", "tool": "web_search", "domain": "f1", "entities": ["Lando Norris"], "focus": "finishing position", "fast": true, "correction": true, "tags": ["correction"]}
+{"say": "that's not what i asked, i wanted tomorrow", "context": ["what's the weather in delhi"], "intent": "information.weather", "tool": "web_search", "domain": "weather", "entities": ["Delhi"], "time": "tomorrow", "fast": true, "correction": true, "tags": ["correction"]}
+{"say": "what about max?", "context": ["where did lando qualify?"], "correction": false, "intent": "information.sports", "tool": "web_search", "fast": true, "tags": ["correction"], "note": "a follow-up, not a correction"}
+{"say": "thanks, and where did he finish?", "context": ["where did lando qualify?"], "correction": false, "intent": "information.sports", "tool": "web_search", "focus": "finishing position", "fast": true, "tags": ["correction", "context"]}
+{"say": "i meant to tell you, i'm going out", "context": ["where did lando qualify?"], "correction": false, "intent": "conversation.casual", "tool": null, "fast": false, "tags": ["correction"]}

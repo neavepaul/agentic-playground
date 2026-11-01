@@ -117,6 +117,47 @@ CHAT_MODEL=qwen3:4b
 The backend log reports `first_token_seconds` and `total_seconds` for every reply, and
 hovering over a reply in the UI shows the same timing.
 
+### Understanding a message before any model sees it
+
+`backend/app/chat/router.py` reads each message locally, in about 0.1 ms (or 5–8 ms once the
+embedding model is loaded), and says what it is about: an intent such as
+`information.sports`, `conversation.emotional` or `action.request`, plus the domain, the
+people or teams named, what is being asked (a qualifying position, a forecast, a price)
+and when. In sport, "where did he finish" asks for a position, not a place. A short
+follow-up leans on the last information question ("What about Max?", "And yesterday?"), a
+pronoun with nobody to point at gets "Who you mean, question?", and "I meant what position"
+is recognised as a correction.
+
+The classifier is TF-IDF plus logistic regression, trained in numpy from
+`backend/app/chat/router_data/intents.tsv` at startup. Once fastembed's bge-small model is
+loaded (memory recall already loads it), its embeddings are averaged in, which held up
+better on wording the examples never used.
+
+`INTENT_ROUTER` sets how much it does:
+
+- `shadow` (default): the router reads every message and records what it would have done
+  next to what the usual path did, and changes nothing.
+- `on`: a confident live-information question (sport, weather, markets, news) goes
+  straight to the one-call web lookup with a search built from what it means. Everything
+  else (chat, feelings, memory, house errands, complex requests, anything uncertain) takes
+  the usual path. Stop, permissions, offers, requested tools and the house checks always
+  come first.
+- `off`: no router.
+
+Offline, from `backend`:
+
+```powershell
+..\.venv\Scripts\python.exe -m app.chat.router_train eval              # accuracy against evaluations/intent_eval.jsonl
+..\.venv\Scripts\python.exe -m app.chat.router_train eval --embeddings --compare
+..\.venv\Scripts\python.exe -m app.chat.router_train shadow            # router vs usual path, from kip.db
+..\.venv\Scripts\python.exe -m app.chat.router_train review            # corrections people made
+..\.venv\Scripts\python.exe -m app.chat.router_train accept 3          # use correction 3 as a training example
+```
+
+Corrections are stored in `kip.db` as unreviewed, deduplicated, with what was predicted,
+what was meant and whether the corrected lookup was answered. Only accepted ones join the
+training data, the next time Kip starts. Nothing is retrained during a conversation.
+
 ### Kip's memory: one SQLite file
 
 `backend/memory/kip.db` holds everything Kip keeps between runs. Its `memories` table has
@@ -308,6 +349,7 @@ Copy `backend/.env.example` to `backend/.env`. Environment variables override it
 | `CHAT_MAX_TOKENS` | `300` | Upper bound on one chat reply |
 | `CHAT_TEMPERATURE` | `0.6` | Conversational variety (tasks keep `TEMPERATURE`) |
 | `CHAT_QUIET_SECONDS` | `90` | Idle mind waits this long after chat activity |
+| `INTENT_ROUTER` | `shadow` | Local intent router: `shadow` records only, `on` lets it send live questions straight to the lookup, `off` |
 | `MEMORY_DB_FILE` | `backend/memory/kip.db` | Kip's durable store: memories and structured state |
 | `MEMORY_FILE` / `GRAPH_FILE` | `backend/memory/persistent.json` / `beliefs.json` | Legacy JSON stores, read once to import |
 | `EMBEDDINGS_ENABLED` | `true` | Meaning search with fastembed; false means keyword-only |
