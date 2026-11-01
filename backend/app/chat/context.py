@@ -8,10 +8,12 @@ This is an estimate, not reported provider usage or a Qwen benchmark.
 import json
 import re
 from collections.abc import Callable
+from datetime import datetime, timezone
 
 from app.llm.base import ModelError
 
 TokenCounter = Callable[[str], int]
+STALE_MINUTES = 15   # an errand report older than this is labelled with its age
 
 
 class ContextBudgetError(ModelError):
@@ -31,6 +33,20 @@ _IMPORTANT = re.compile(r"\b(actually|correction|instead|remember|promise|promis
 _WORD = re.compile(r"\w{3,}")
 
 
+def _age_label(turn: dict, now: datetime | None = None) -> str:
+    """'[update] ' for something just reported; '[earlier update, 54 min ago, may be out of date] '
+    once it has aged: an old lookup answer is history, not the answer to a new question."""
+    try:
+        at = datetime.fromisoformat(turn["at"])
+    except (KeyError, TypeError, ValueError):
+        return "[update] "
+    minutes = int(((now or datetime.now(timezone.utc)) - at).total_seconds() // 60)
+    if minutes < STALE_MINUTES:
+        return "[update] "
+    age = f"{minutes} min" if minutes < 120 else f"{minutes // 60} h" if minutes < 2880 else f"{minutes // 1440} days"
+    return f"[earlier update, {age} ago, may be out of date] "
+
+
 def select_history(turns: list[dict], query: str, budget: int,
                    counter: TokenCounter = estimate_tokens) -> list[dict]:
     """Recent complete turns first; then exact older excerpts by relevance/recency.
@@ -42,7 +58,7 @@ def select_history(turns: list[dict], query: str, budget: int,
     if budget <= 0:
         return []
     def content(turn):
-        prefix = "[update] " if turn.get("source") == "narration" else ""
+        prefix = _age_label(turn) if turn.get("source") == "narration" else ""
         return prefix + turn.get("content", turn["text"])
 
     messages = [{"role": "user" if t["role"] == "user" else "assistant",

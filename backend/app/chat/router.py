@@ -406,6 +406,7 @@ class Route:
     asked: str = ""                  # a follow-up's own question, when it asks something new
     clarify: str | None = None       # a short question back, when a pronoun has nobody to point at
     known: str = ""                  # an answer the conversation already holds ("India and New Zealand.")
+    asks: bool = False               # the clause read asks something ("ok leave f1. when is ...")
     scores: dict = field(default_factory=dict)
     evidence: bool = False           # a domain word, name or place in the message itself
     lookup_phrase: bool = False      # "ipl points table", "price of gold": a lookup with no verb
@@ -514,6 +515,9 @@ class IntentRouter:
             if slots.pronoun and not route.entities and (
                     (route.intent in LIVE and route.live_confidence >= THRESHOLD) or (confidence < THRESHOLD and short)):
                 route.clarify = "Who you mean, question?"
+        # The whole-message question detector misses "ok leave f1. when is the game starting'":
+        # the clause that was read decides whether something is being asked.
+        route.asks = bool(_QUESTION.search(lowered))
         route.capability = _capability(route)
         if route.intent in LIVE:
             route.query, route.meaning = _query(route, text, today)
@@ -718,7 +722,8 @@ def fast_path(route: Route, intent, *, web_allowed: bool, involves_house: bool) 
         return False
     if not web_allowed or involves_house or intent.about_past:
         return False
-    if not (intent.question or intent.request or route.followup or route.correction or route.lookup_phrase):
+    if not (intent.question or intent.request or route.followup or route.correction or route.lookup_phrase
+            or route.asks):
         return False
     return route.live
 

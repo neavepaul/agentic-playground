@@ -104,7 +104,14 @@ still available under **Run a task directly**.
 The idle mind stays quiet while you are chatting and for `CHAT_QUIET_SECONDS` (default
 90) afterwards, so it doesn't compete with the conversation for the model.
 
-**Reply speed.** Chat uses the main model unless you configure a separate one. While an
+**Reply speed.** With `GROQ_API_KEY` set, conversation runs on Groq while it has quota
+(`GROQ_CHAT_MODELS`, Qwen first so chat leaves the gpt-oss search quota alone), streamed, with
+the first words in about a second. When every chat model is rate-limited, or Groq fails before
+the first word, the reply comes from the local chat model and the log says so. Set
+`CHAT_HOSTED=false` to keep conversation local. The `chat_reply` log line names the provider and
+model, and how the prompt's size splits between system, history and the latest message.
+
+Without Groq, chat uses the main model unless you configure a separate one. While an
 errand is running on the same Colibri model, chat replies wait behind its planning
 calls. If replies are slow, point chat at a small, fast model; errands keep using
 Colibri:
@@ -327,6 +334,7 @@ Copy `backend/.env.example` to `backend/.env`. Environment variables override it
 | `GROQ_API_KEY` | unset | Optional hosted Groq for goal planning and web-research tasks; unset keeps everything on Colibri |
 | `GROQ_MODELS` | `openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b` | Preference order. Free-tier limits are per model, so a model whose quota is spent is skipped until its reset |
 | `GROQ_PLAN_CALLS` / `GROQ_RESEARCH_CALLS` | `2` / `4` | Hard caps on Groq calls per goal plan and per web-research task; past a cap, or on any Groq failure, Colibri continues |
+| `CHAT_HOSTED` / `GROQ_CHAT_MODELS` | `true` / `qwen/qwen3.8-27b,openai/gpt-oss-20b` | Conversation on Groq while it has quota, streamed, falling back to the local chat model |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Optional Ollama endpoint |
 | `OLLAMA_MODEL` | `qwen3:4b` | Used only when LLM_PROVIDER=ollama |
 | `WORLD_FILE` | `backend/worlds/house.json` | Optional absolute path to a scenario JSON |

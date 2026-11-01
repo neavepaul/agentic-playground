@@ -91,6 +91,7 @@ class ChatSession:
         self._frame: Frame | None = None               # the last information request, for follow-ups
         self._frame_route: Route | None = None
         self._frame_answer = ""                        # what Kip's lookup said about that request
+        self._lookup_queries: dict[tuple[str, ...], str] = {}  # running or queued lookup -> what it searches
         self._routed = 0
         self._routes: dict[str, Route] = {}            # user turn id -> how the router read it
         self._correction_goals: dict[tuple[str, ...], int] = {}  # corrected lookup -> correction record
@@ -344,6 +345,13 @@ class ChatSession:
                     # A live fact needs no chat reply first: the lookup starts now, and its
                     # answer, written in Kip's voice, is the reply. One model step, not two.
                     goal, query = lookup
+                    if self._lookup_pending(query):
+                        # "when is it starting today?" again, while that lookup still runs.
+                        finished = self._finish_turn(user_turn, reply_id, "Still checking that. Soon.", None,
+                                                     {"chat_model_calls": 0, "intent_router": "same lookup"})
+                        self._intents.pop(user_turn["id"], None)
+                        return
+                    self._lookup_queries[task_identity(goal)] = query
                     self._start_or_queue(goal, user_turn["id"], Grant.read_only(said), plan=_lookup_plan(query))
                     self._intents.pop(user_turn["id"], None)
                     finished = True
@@ -398,6 +406,10 @@ class ChatSession:
                 metrics["token_estimator"] = "utf8_bytes_div3_estimate"
                 metrics["queue_seconds"] = round(queue_seconds, 3)
                 metrics["chat_model_calls"] = 1
+                # Where the prompt's size goes: a long prompt is what makes a local model slow to start.
+                metrics["prompt_chars"] = {"system": len(messages[0]["content"]),
+                                           "history": sum(len(m["content"]) for m in messages[1:-1]),
+                                           "latest": len(messages[-1]["content"])}
                 action, action_error = parsed.action, parsed.error
                 text = parsed.visible
                 if metrics.get("truncated"):
@@ -406,10 +418,11 @@ class ChatSession:
                     action, action_error = None, "The reply was cut off before its action line finished."
                 if action_error:
                     _log.warning("Chat action not executed: %s", action_error)
-                _log.info("chat_reply first_token_seconds=%s total_seconds=%s memories=%d task=%s recall_seconds=%.3f "
-                          "input_chars=%d truncated=%s", metrics.get("first_token_seconds"),
+                _log.info("chat_reply provider=%s model=%s first_token_seconds=%s total_seconds=%s memories=%d task=%s "
+                          "recall_seconds=%.3f input_chars=%d prompt_chars=%s truncated=%s",
+                          metrics.get("provider", "local"), metrics.get("model", "-"), metrics.get("first_token_seconds"),
                           metrics.get("total_seconds"), len(memories), bool(action and action.task), recall_seconds,
-                          metrics["input_chars"], bool(metrics.get("truncated")))
+                          metrics["input_chars"], metrics["prompt_chars"], bool(metrics.get("truncated")))
                 text = text or "Lost my words. Say again, question?"
                 reply_turn = self._finish_turn(user_turn, reply_id, text, action, metrics, action_error=action_error)
                 finished = True
@@ -693,6 +706,13 @@ class ChatSession:
             return None
         return route.clarify
 
+    def _lookup_pending(self, query: str) -> bool:
+        """A lookup searching for the same thing is already running or queued."""
+        active = self.manager.active()
+        if active and self._lookup_queries.get(task_identity(active["goal"])) == query:
+            return True
+        return any(self._lookup_queries.get(task_identity(goal)) == query for goal in self.pending_goals)
+
     def _learn_from_answer(self, text: str) -> None:
         """A lookup's answer joins the conversation topic: "New Zealand vs India, 12:30" names the
         opponent, so "who is playing?" next needs no search."""
@@ -718,7 +738,7 @@ class ChatSession:
         never turns remarks into lookups nobody asked for."""
         route = self._routes.get(turn_id)
         asks = route is not None and (intent.question or intent.request or route.followup or route.correction
-                                      or route.lookup_phrase)
+                                      or route.lookup_phrase or route.asks)
         if self.settings.intent_router == "on" and asks:
             return route.live
         return intent.live_fact
@@ -937,7 +957,11 @@ class ChatSession:
             self._queued_grants[task_identity(goal)] = grant
             if plan is not None:
                 self._queued_plans[task_identity(goal)] = plan
-            self._add_turn("kip", f"First I finish current errand. Right after, I do: {goal}", source="narration")
+            _log.info("Queued behind task %s: %s (queue now %d)", self.manager.active_id, goal, len(self.pending_goals))
+            if goal.startswith(LOOKUP_PREFIX):
+                self._add_turn("kip", "One errand first. Then I check this.", source="narration")
+            else:
+                self._add_turn("kip", f"First I finish current errand. Right after, I do: {goal}", source="narration")
 
     async def _start_next_when_free(self, generation: int) -> None:
         while self.manager.active_id is not None and not self._closed:
@@ -965,6 +989,7 @@ class ChatSession:
                 self._add_turn("kip", f"Start now: {goal}", source="narration")
         elif kind in {"task_completed", "task_failed"}:
             outcome = kind.removeprefix("task_")
+            self._lookup_queries.pop(task_identity(task.get("goal", "")), None)
             correction = self._correction_goals.pop(task_identity(task.get("goal", "")), None)
             if correction and self.store:
                 self.store.set_intent_outcome(correction, "answered" if outcome == "completed" else "failed")

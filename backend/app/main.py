@@ -58,12 +58,18 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
         persona = Persona(persistent.persona, config.persona_name, now=clock.simulated_seconds,
                           helpfulness_baseline=config.drive_helpfulness)
         persona.attach(bus)
-    chat_llm = create_chat_client(config, llm) if live else llm
-    shared = chat_llm is llm
+    local_chat = create_chat_client(config, llm) if live else llm
+    shared = local_chat is llm
     # One local model for both: a person waiting for a reply goes before the next errand call.
     task_llm = ConversationFirst(llm) if shared else llm
     # Optional Groq for goal planning and web research; injected test clients never get it.
     hosted = create_hosted_client(config) if live else None
+    chat_llm = local_chat
+    if hosted is not None and config.chat_hosted:
+        # Conversation on Groq while it has quota (about a second to the first word, against
+        # minutes for a long prompt on a local CPU model); the local chat model otherwise.
+        from app.llm.groq import HostedChat
+        chat_llm = HostedChat(hosted, local_chat, [m.strip() for m in config.groq_chat_models.split(",") if m.strip()])
     manager = TaskManager(task_llm, WorldTools(engine, bus), bus, config, persistent, persona=persona,
                           memory_store=store, hosted=hosted)
     chat = ChatSession(chat_llm, bus, manager, engine, config, store=store, persona=persona,
@@ -107,8 +113,8 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
                 logging.getLogger("agentic_friend").exception("Could not save persona state at shutdown")
         if client is None:
             await llm.close()
-            if chat_llm is not llm:
-                await chat_llm.close()
+            if local_chat is not llm:
+                await local_chat.close()  # the hosted chat wrapper owns nothing of its own
         if hosted is not None:
             await hosted.close()
         store.close()

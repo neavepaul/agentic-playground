@@ -10,6 +10,7 @@ with no JSON mode, tools or reasoning parameters. Callers validate any JSON loca
 The one exception is search(): Groq's built-in browser_search, on the gpt-oss models
 that support it, which looks something up on the web and writes the answer in one call.
 """
+import json
 import logging
 import re
 import time
@@ -31,6 +32,8 @@ _CITATION = re.compile(r"\s*【[^】]*】")
 # The models browser_search runs on, and the room its search results take in the prompt.
 SEARCH_MODELS = ("openai/gpt-oss",)
 SEARCH_TOKENS = 6000
+# A 400 that is one bad generation, not a refused request: the same model gets one more try.
+_BAD_GENERATION = {"output_parse_failed", "tool_use_failed"}
 
 
 def reset_seconds(value: str | None) -> float | None:
@@ -141,8 +144,10 @@ class GroqClient:
     async def _complete(self, need: int, body, searching: bool = False) -> dict:
         """The reply message from the first model in preference order that can answer."""
         self.last_metrics = {}
-        tried = []
-        for model in self.candidates(need, searching):
+        tried, retried = [], set()
+        queue = self.candidates(need, searching)
+        while queue:
+            model = queue.pop(0)
             tried.append(model)
             started = time.monotonic()
             try:
@@ -162,7 +167,12 @@ class GroqClient:
                 _log.info("groq model=%s rate-limited for %.0fs; trying the next model", model, wait or 60)
                 continue
             code = _error_code(response) if status == 400 else ""
-            if status == 400 and code != "tool_use_failed" and not searching:  # a made-up tool call is one bad generation
+            if status == 400 and code in _BAD_GENERATION and model not in retried:
+                retried.add(model)
+                queue.insert(0, model)
+                _log.info("groq model=%s produced output it could not parse (%s); trying it once more", model, code)
+                continue
+            if status == 400 and code not in _BAD_GENERATION and not searching:  # a made-up tool call is one bad generation
                 # A request this model refuses (e.g. an unknown model) will keep failing,
                 # so it sits out for an hour instead of costing a call each time. A refused
                 # search says nothing about plain calls, so it never benches the model.
@@ -197,6 +207,76 @@ class GroqClient:
             return {**choice["message"], "content": content}
         reason = "every model failed" if tried else "no model has quota left"
         raise ModelError(f"Groq could not answer: {reason}.")
+
+    def chat_candidates(self, models: list[str], messages: list[dict], max_tokens: int) -> list[str]:
+        now, need = self.now(), estimate_tokens(messages) + max_tokens
+        return [m for m in models if self.quota.setdefault(m, ModelQuota()).available(need, now)]
+
+    async def stream_chat(self, messages: list[dict], models: list[str], max_tokens: int,
+                          temperature: float | None = None):
+        """The reply's text as Groq streams it, from the first of `models` that can answer.
+
+        A model that fails before any text arrives (no quota, an error) hands over to the
+        next; once text has been spoken, a failure is raised, never papered over."""
+        self.last_metrics = {}
+        for model in self.chat_candidates(models, messages, max_tokens):
+            body = {"model": model, "messages": messages, "stream": True, "max_completion_tokens": max_tokens,
+                    "temperature": self.settings.chat_temperature if temperature is None else temperature}
+            # Conversation needs no visible reasoning: it only delays the first word.
+            body |= ({"reasoning_effort": "none"} if model.startswith("qwen/") else
+                     {"reasoning_effort": "low", "include_reasoning": False} if model.startswith("openai/gpt-oss")
+                     else {})
+            started, first, raw, sent, finish = time.monotonic(), None, "", 0, None
+            try:
+                async with self.http.stream("POST", "chat/completions", json=body) as response:
+                    now = self.now()
+                    self.quota[model].observe(response.headers, now)
+                    if response.status_code == 429:
+                        wait = reset_seconds(response.headers.get("retry-after")) or 60
+                        self.quota[model].blocked_until = now + wait
+                        _log.info("groq chat model=%s rate-limited for %.0fs; trying the next model", model, wait)
+                        continue
+                    if response.status_code in (401, 403):
+                        raise ModelError("Groq rejected the API key. Check GROQ_API_KEY.")
+                    if response.status_code >= 400:
+                        await response.aread()
+                        _log.info("groq chat model=%s returned HTTP %d (%s); trying the next model", model,
+                                  response.status_code, _error_detail(response))
+                        continue
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data: ") or line.strip() == "data: [DONE]":
+                            continue
+                        try:
+                            choice = json.loads(line[6:])["choices"][0]
+                        except (ValueError, KeyError, IndexError, TypeError):
+                            continue
+                        finish = choice.get("finish_reason") or finish
+                        raw += (choice.get("delta") or {}).get("content") or ""
+                        # Inline reasoning some models still write is never spoken.
+                        visible = _THINK.sub("", raw)
+                        if "<think>" in visible:
+                            visible = visible[:visible.index("<think>")]
+                        if len(visible) > sent:
+                            first = first or time.monotonic() - started
+                            yield visible[sent:]
+                            sent = len(visible)
+            except httpx.TimeoutException:
+                if sent:
+                    raise ModelError("Groq timed out mid-reply.") from None
+                _log.info("groq chat model=%s timed out; trying the next model", model)
+                continue
+            except httpx.RequestError:
+                if sent:
+                    raise ModelError("Lost Groq mid-reply.") from None
+                raise ModelError("Cannot reach Groq.") from None
+            if not sent:
+                _log.info("groq chat model=%s returned no text; trying the next model", model)
+                continue
+            self.last_metrics = {"provider": "groq", "model": model, "first_token_seconds": round(first or 0, 3),
+                                 "total_seconds": round(time.monotonic() - started, 3),
+                                 **({"truncated": True} if finish == "length" else {})}
+            return
+        raise ModelError("Groq could not hold the conversation: no chat model has quota left.")
 
     async def close(self) -> None:
         await self.http.aclose()
@@ -268,6 +348,37 @@ def _error_code(response: httpx.Response) -> str:
         return str(response.json()["error"].get("code") or "")
     except (ValueError, KeyError, TypeError, AttributeError):
         return ""
+
+
+class HostedChat:
+    """Conversation on Groq while it has quota (first words in about a second), streamed; the
+    local chat model otherwise. Everything else the session asks of it goes to the local model."""
+
+    def __init__(self, hosted: GroqClient, local, models: list[str]) -> None:
+        self.hosted, self.local, self.models = hosted, local, models
+        self.last_metrics: dict = {}
+
+    async def stream_text(self, messages: list[dict], max_tokens: int = 300, temperature: float | None = None):
+        spoke = False
+        if self.hosted.chat_candidates(self.models, messages, max_tokens):
+            try:
+                async for chunk in self.hosted.stream_chat(messages, self.models, max_tokens, temperature):
+                    spoke = True
+                    yield chunk
+                self.last_metrics = dict(self.hosted.last_metrics)
+                return
+            except ModelError as exc:
+                if spoke:
+                    raise
+                _log.warning("Groq unavailable for conversation (%s); using the local model, which is slower.", exc)
+        else:
+            _log.warning("Groq has no quota left for conversation; using the local model, which is slower.")
+        async for chunk in self.local.stream_text(messages, max_tokens=max_tokens, temperature=temperature):
+            yield chunk
+        self.last_metrics = {"provider": "local", **dict(getattr(self.local, "last_metrics", None) or {})}
+
+    def __getattr__(self, name):
+        return getattr(self.local, name)
 
 
 class HostedFirst:

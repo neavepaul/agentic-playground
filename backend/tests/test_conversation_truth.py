@@ -492,7 +492,7 @@ async def test_live_facts_go_straight_to_the_lookup_and_its_answer_is_the_reply(
     assert model.prompts == []
     task = next(iter(manager.tasks.values()))
     assert task.grant.source == "question" and task.status == "completed"
-    assert ran[:3] == ["get_status", "get_map", "web_search"]
+    assert ran[:1] == ["web_search"] and "get_status" not in ran  # a web lookup never reads the house
     assert "GoalPlan" not in model.titles  # the plan was known: no planning call
     lines = [t for t in session.history() if t["role"] == "kip"]
     assert [t["text"] for t in lines] == ["31°C and muggy, says the forecast. Umbrella optional."]
@@ -567,7 +567,7 @@ async def test_a_sports_question_after_small_talk_about_someone_is_still_looked_
     await manager.runner
     task = next(iter(manager.tasks.values()))
     assert task.grant.source == "question" and task.status == "completed"
-    assert ran[:3] == ["get_status", "get_map", "web_search"]
+    assert ran[:1] == ["web_search"] and "get_status" not in ran  # a web lookup never reads the house
     await done(session, manager)
 
 

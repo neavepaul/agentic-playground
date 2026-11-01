@@ -132,8 +132,8 @@ async def test_refused_request_benches_the_model_but_a_bad_generation_does_not()
             await client.generate([{"role": "user", "content": "JSON"}], {})
         with pytest.raises(ModelError):
             await client.generate([{"role": "user", "content": "JSON"}], {})
-        # A made-up tool call is one bad generation: that model is tried again next time.
-        assert seen == ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "qwen/qwen3.8-27b"]
+        # A made-up tool call is one bad generation: that model gets one more try, now and next time.
+        assert seen == ["openai/gpt-oss-120b"] + ["qwen/qwen3.8-27b"] * 4
     finally:
         await client.close()
 
@@ -389,10 +389,11 @@ async def test_an_answer_with_nothing_searched_falls_back_to_the_usual_lookup(mo
         return searched(tools=[]) if "tools" in json.loads(request.content) else ok(finish)
 
     task, local, _ = await _lookup(respond, monkeypatch)
-    # Groq's unsearched answer is a failed search; only then does the usual loop read the house,
-    # and its search and research step take over.
+    # Groq's unsearched answer is a failed search; the usual search and research step take over,
+    # still without reading the house.
     tools_run = [(a["tool"], a["success"]) for a in task.action_history]
-    assert tools_run[:4] == [("web_search", False), ("get_status", True), ("get_map", True), ("web_search", True)]
+    assert tools_run[:2] == [("web_search", False), ("web_search", True)]
+    assert not {"get_status", "get_map"} & {tool for tool, _ in tools_run}
     assert task.status == "completed" and task.answer["answer"] == "Sixth."
 
 

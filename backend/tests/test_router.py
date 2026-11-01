@@ -218,9 +218,9 @@ async def test_on_the_router_sends_a_live_question_straight_to_a_lookup_of_what_
     assert model.prompts == []                            # no chat-model call for either
     first, second = list(manager.tasks.values())
     assert "they mean: Formula 1: George Russell — finishing position" in first.goal
-    assert first.action_history[2]["arguments"]["query"].startswith("George Russell finishing position")
+    assert first.action_history[0]["arguments"]["query"].startswith("George Russell finishing position")
     assert "following up on: where did russell end up?" in second.goal
-    assert second.action_history[2]["arguments"]["query"].startswith("Max Verstappen finishing position")
+    assert second.action_history[0]["arguments"]["query"].startswith("Max Verstappen finishing position")
     assert kip_lines(session, "narration") == ["P6. Not his best day.", "Max P2."]
     await done(session, manager)
 
@@ -320,7 +320,7 @@ async def test_the_router_is_on_by_default_and_answers_the_match_and_its_follow_
     await manager.runner
     assert model.prompts == []  # no chat-model reply, so nothing to ask permission or guess
     first, second = list(manager.tasks.values())
-    assert first.action_history[2]["arguments"]["query"].startswith("India vs New Zealand start time cricket")
+    assert first.action_history[0]["arguments"]["query"].startswith("India vs New Zealand start time cricket")
     assert "following up on: when is the india new zealand game starting" in second.goal
     assert kip_lines(session, "narration") == ["Twelve thirty today. Hamilton.", "Twelve thirty."]
     await done(session, manager)
@@ -400,5 +400,5 @@ async def test_a_follow_up_lookup_carries_kips_last_answer(ran):
     await manager.runner
     second = list(manager.tasks.values())[-1]
     assert "Kip answered: Today. New Zealand vs India." in second.goal
-    assert second.action_history[2]["arguments"]["query"].startswith("India vs New Zealand live TV channel")
+    assert second.action_history[0]["arguments"]["query"].startswith("India vs New Zealand live TV channel")
     await done(session, manager)

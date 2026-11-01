@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     # whenever Groq cannot serve a call, Colibri carries on.
     groq_plan_calls: int = Field(default=2, ge=0, le=4)
     groq_research_calls: int = Field(default=4, ge=0, le=10)
+    # Conversation on Groq while it has quota, streamed, falling back to the local chat model.
+    # Qwen first: web search runs only on the gpt-oss models, so chat leaves their quota alone.
+    chat_hosted: bool = True
+    groq_chat_models: str = "qwen/qwen3.8-27b,openai/gpt-oss-20b"
     world_file: Path | None = None
     # Legacy JSON stores: imported into memory_db_file once, then never read or written.
     memory_file: Path = _BACKEND_DIR / "memory" / "persistent.json"

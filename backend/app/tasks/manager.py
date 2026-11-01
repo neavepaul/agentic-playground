@@ -498,15 +498,15 @@ class TaskManager:
         return current != signature
 
     async def _loop(self, context: TaskContext, plan=None) -> None:
-        # A plain web lookup known in advance never needs the house: the robot's status and map
-        # are read only if it has to fall back to the usual loop.
+        # A web lookup known in advance never needs the house, not even when it falls back to
+        # the usual loop: its Explorer sees only the web and Python, never the robot.
         known_lookup = plan is not None and all(c.kind == "answer" for c in plan.conditions)
         booted = False
 
         def bootstrap() -> None:
             # Through a permitted tool; no agent gets an omniscient snapshot.
             nonlocal booted
-            if not booted:
+            if not booted and not known_lookup:
                 booted = True
                 self.call_tool(context, "get_status", {})
                 self.call_tool(context, "get_map", {})

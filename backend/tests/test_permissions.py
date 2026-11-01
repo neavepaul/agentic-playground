@@ -154,7 +154,7 @@ async def test_a_webpage_prohibition_holds_inside_an_allowed_search(dispatched):
     await manager.runner
     task = next(iter(manager.tasks.values()))
     assert task.status == "completed", task.summary
-    assert dispatched == ["get_status", "get_map", "web_search"]
+    assert dispatched == ["web_search"]
     assert task.conditions[0].required_tools == ["web_search"]  # the forbidden tool left the plan
     # The Explorer was never even offered a page read as a choice (dispatch would refuse it anyway).
     choices = [schema["properties"]["action"]["discriminator"]["mapping"] for _, schema in model.calls]
@@ -173,7 +173,7 @@ async def test_tell_me_in_a_lookup_is_a_reply_not_a_message_to_someone(dispatche
     await manager.runner
     task = next(iter(manager.tasks.values()))
     assert task.status == "completed" and task.grant.source == "question"
-    assert dispatched == ["get_status", "get_map", "web_search"] and session.pending_offer is None
+    assert dispatched == ["web_search"] and session.pending_offer is None
     await finish(session, manager)
 
 
