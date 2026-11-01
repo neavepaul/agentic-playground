@@ -30,7 +30,9 @@ _LIVE_FACT = re.compile(r"\b(weather|forecast|temperature|raining|humidity|aqi|a
                         r"next (?:race|match|game)|who'?s leading|headlines|the news|news today)\b")
 _GREETING = re.compile(r"^\W*(?:hi|hello|hey|hiya|morning|evening|howdy|good (?:morning|afternoon|evening))\b"
                        r"|\bhow are you\b|\bhow'?s it going\b|\bhow'?s your (?:day|morning|evening)\b")
-_INTRODUCES = re.compile(r"\b(?:it'?s|this is|i'?m|i am|me,)\s+([a-z][a-z'-]+)\b")
+_INTRODUCES = re.compile(r"\b(?:it'?s|this is|i'?m|i am|me,|my name is|my name'?s|call me)\s+([a-z][a-z'-]+)\b")
+# "My name is Neave", "call me Sam": a name given outright, whether or not they live in the house.
+_GIVES_NAME = re.compile(r"\b(?:my name is|my name'?s|call me)\s+([a-z][a-z'-]{1,30})\b")
 
 
 @dataclass
@@ -78,6 +80,11 @@ def read_intent(text: str, granted: list[str] = (), revoked: list[str] = ()) -> 
                   cancel=cancel, wants_offer=wants_offer, about_past=bool(_ABOUT_PAST.search(lowered)),
                   needs_tools=needs, greeting=bool(_GREETING.search(lowered)),
                   live_fact=bool(_LIVE_FACT.search(lowered)) and not cancel)
+
+
+def given_name(text: str) -> str | None:
+    match = _GIVES_NAME.search(text.casefold().replace("’", "'"))
+    return match.group(1).title() if match else None
 
 
 def introduced_as(text: str, people: dict) -> str | None:

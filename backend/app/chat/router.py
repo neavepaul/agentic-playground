@@ -158,7 +158,7 @@ _SPORT_FOCUS = tuple((name, re.compile(r"\b(?:" + pattern + r")")) for name, pat
 _MATCH_ASPECTS = {"teams", "venue", "broadcast", "match status"}
 # What a search for each aspect looks for: "who is playing" searches the fixture, not "teams".
 _SEARCH_WORDS = {"teams": "match today opponent", "venue": "match venue ground", "broadcast": "live TV channel streaming",
-                 "match status": "live score", "start time": "start time"}
+                 "match status": "live score", "start time": "start time", "score": "live score"}
 _RESULT_WORDS = re.compile(r"\b(?:finish\w*|won|wins?|beat|podium|results?|race|lost|lose|end(?:ed)? up|came)\b")
 _TIMES = (
     ("now", r"right now|now|currently|at the moment"),
@@ -179,7 +179,8 @@ _FOLLOW = re.compile(r"^(?:(?:ok(?:ay)?|thanks|thank you|cool|nice|right|hmm)[,!
                      r"(?:and|what about|how about|what of|same for|also)\b")
 _CORRECTION = re.compile(r"^\W*(?:no|nope|nah|not that|wrong)?[,.!]?\s*(?:i meant(?! to\b)|i mean(?! to\b)|"
                          r"i was asking|i asked (?:about|for)|that'?s not what i (?:asked|meant|wanted)|"
-                         r"not what i asked|i wanted)\b|^\W*(?:no|nope|nah)[,.!]?\s+(?:the|his|her|what|which)\b")
+                         r"not what i asked|i wanted)\b|^\W*(?:no|nope|nah)[,.!]?\s+(?:the|his|her|what|which)\b|"
+                         r"^\W*(?:no|nope|nah)?[,.!]?\s*not (?:this|that)(?: one)?\b")  # "no not this, india new zealand"
 # A statement or an opinion has a verb; a typed lookup like "price of gold" often has none.
 _VERB = re.compile(r"\b(?:is|are|was|were|am|be|i|i'm|i'd|i'll|you|we|think|love|like|hate|hope|bet|want|"
                    r"watch\w*|feel\w*|got|get|go|going|went|need|tell|let|make|do|does|did|have|has|had)\b")
@@ -193,7 +194,8 @@ _ASPECT = re.compile(r"\b(?:where|who won|winning|score|result|price|how much|ho
 # A subject of its own: "what time is it?", "how are you?", "do you like it?".
 _OWN_SUBJECT = re.compile(r"\b(?:is|are|was|were|am|do|does|did|will|can|have|has) (?:it|you|i|we|that|this|there)\b|"
                           r"\b(?:you|your|i|i'm|me|my|it's)\b")
-_QUESTION = re.compile(r"\?\s*$|^(?:who|what|where|when|why|how|which|is|are|did|does|do|will|can|should)\b")
+_QUESTION = re.compile(r"\?\s*$|^(?:(?:who|what|where|when|why|how)(?:'?s|'?re)?|which|is|are|did|does|do|will|can|"
+                       r"should)\b")  # "whats" and "whos" as typed
 _NEGATED = re.compile(r"\bnot (?:the |his |her |in )?[a-z0-9]+")
 _PLACE_AFTER = re.compile(r"\b(?:in|at|for)\s+([a-z][a-z'-]+(?:\s+city)?)")
 _NOT_PLACES = {"the", "a", "an", "qualifying", "quali", "practice", "q1", "q2", "q3", "sprint", "race", "match",
@@ -207,7 +209,7 @@ def normalize(text: str) -> str:
 
 _ADDRESS = re.compile(r"[,\s]*\b(?:kip|bud|buddy|mate|man|bro|dude|pal)\b(?=[\s?!.,]*$)")
 _FILLER = re.compile(r"^\W*(?:(?:ah+|oh+|aw|shit|damn|dang|wow|hmm+|ok(?:ay)?|so|wait|well|right|yeah|haha|"
-                     r"hey|kip)\b[\s,!.]*)+")
+                     r"hey|kip|btw|by the way|anyway|also)\b[\s,!.]*)+")
 
 
 def bare(text: str) -> str:

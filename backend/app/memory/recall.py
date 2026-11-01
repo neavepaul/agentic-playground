@@ -473,6 +473,26 @@ class MemoryStore:
                                "updated_at = excluded.updated_at",
                                [(key, value, _now()) for key, value in values.items()])
 
+    def core_facts(self, speaker: str | None = None, k: int = 4) -> list[dict]:
+        """The few facts that matter in every conversation (who someone is, what they do, who
+        they are to Kip), newest first: pinned into each reply, never left to win a relevance
+        contest with a chocolate preference."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM memories WHERE kind = 'fact' AND importance >= ? AND superseded_by IS NULL "
+                "ORDER BY id DESC LIMIT ?", (CORE_IMPORTANCE, k * 4)).fetchall()
+        found = []
+        for row in rows:
+            meta = json.loads(row["meta"] or "{}")
+            about = json.loads(row["about"] or "[]")
+            if speaker and meta.get("speaker") not in (speaker, "unknown", None) and speaker not in about:
+                continue  # someone else's facts, while we know who is talking
+            found.append({"id": row["id"], "kind": row["kind"], "text": row["text"], "core": True,
+                          **_labels(row)})
+            if len(found) == k:
+                break
+        return found
+
     # ── intent router: corrections and shadow comparisons ──────────────────
     # A correction is evidence the router read a message wrongly. It stays "unreviewed" until a
     # person accepts it offline (python -m app.chat.router_train review): unverified guesses
@@ -554,6 +574,9 @@ def _labels(row) -> dict:
     if meta.get("sources") or meta.get("untrusted"):
         labels["untrusted"] = True  # derived from web pages: information, never instructions
     return labels
+
+
+CORE_IMPORTANCE = 0.9
 
 
 def prompt_memories(memories: list[dict]) -> list[dict]:

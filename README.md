@@ -364,6 +364,7 @@ Copy `backend/.env.example` to `backend/.env`. Environment variables override it
 | `EMBEDDINGS_ENABLED` | `true` | Meaning search with fastembed; false means keyword-only |
 | `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | fastembed model name |
 | `PERSONA_ENABLED` / `PERSONA_NAME` | `true` / `Kip` | Personality layer |
+| `PERSONA_MAKER` | unset | Who built Kip, as he should know it (e.g. `Neave`); unset, he says he does not know, never denying a claim or naming someone else |
 
 ### Clock modes
 

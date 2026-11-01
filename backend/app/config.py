@@ -110,6 +110,8 @@ class Settings(BaseSettings):
     # Persistent personality layer (no extra model calls)
     persona_enabled: bool = True
     persona_name: str = Field(default="Kip", min_length=1, max_length=40)
+    # Who built Kip, as he should know it ("Neave"). Empty: he says he does not know.
+    persona_maker: str = Field(default="", max_length=80)
 
 
 @lru_cache

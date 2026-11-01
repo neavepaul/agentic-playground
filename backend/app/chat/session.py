@@ -21,7 +21,7 @@ from app.tasks.permissions import READ_ONLY, TOOL_PLAIN, Grant, digital_scope, p
 from .consent import Offer, classify_reply, is_question, is_request, task_identity  # noqa: F401 (re-exported)
 from .evidence import (capabilities, contradicted_presence, denied_capabilities, last_seen, room_scans,
                        task_record, unsupported_execution)
-from .intent import Intent, introduced_as, is_live_fact, read_intent
+from .intent import Intent, given_name, introduced_as, is_live_fact, read_intent
 from .router import (THRESHOLD as ROUTER_THRESHOLD, LIVE, SPORTS, Frame, Route, clock_question, default_router,
                      fast_path, frame_of, read_slots)
 from app.world.clock import spoken_time
@@ -44,8 +44,14 @@ _TOPIC_STOP = {"about", "again", "could", "does", "from", "have", "just", "know"
                "now", "okay", "please", "really", "right", "should", "still", "tell", "than", "that", "their",
                "them", "then", "there", "they", "this", "what", "when", "where", "which", "while", "will",
                "with", "would", "your", "today", "tonight", "tomorrow", "yesterday", "think", "going"}
+# Phrases Kip reaches for when he has nothing to add; fine once in a while, never as a habit.
+_HABITS = ("good good", "amaze", "fist my bump", "i here", "hall quiet", "i like that", "you good", "i watch")
 _HALF_YES = re.compile(r"^\W*(yes|yeah|yep|sure|ok|okay)\b")  # "Yes? What do you mean?" is not a yes
 FIRST_PERSON = re.compile(r"\b(i|i'm|i've|me|my|mine|myself|the user)\b")
+# Facts that matter in every conversation: who someone is, what they do, who they are to Kip.
+_CORE_FACT = re.compile(r"\b(name|named|called|works?|job|engineer|developer|student|lives?|birthday|born|age|"
+                        r"married|wife|husband|partner|girlfriend|boyfriend|son|daughter|mother|father|mom|dad|"
+                        r"brother|sister|best friend|built|made|maker|creator|programmed|allergic|allergy)\b", re.I)
 
 
 class ChatSession:
@@ -84,6 +90,7 @@ class ChatSession:
         self._offered: dict[tuple[str, ...], int] = {}  # offer identity -> user turn it was made on
         self._last_unasked_offer: tuple[int, Offer | None] = (-99, None)
         self._introduced: str | None = None            # who said "it's Neave" when the picker was unset
+        self._given_name: str | None = None            # a name given outright by someone not in the house
         self.gate = None                               # shared-model priority (conversation first)
         # Intent router (router.py), per settings.intent_router. The app hands in one trained with
         # reviewed corrections and the embedding model; without one, the shipped TF-IDF router.
@@ -132,6 +139,9 @@ class ChatSession:
             # The picker says "someone": a known person introducing themselves is good evidence.
             self._introduced = introduced_as(text, world.get("people", {})) or self._introduced
             speaker_id = self._introduced
+        if speaker_id is None:
+            # "My name is Neave" from someone not in the house: Kip still knows who he is talking to.
+            self._given_name = given_name(text) or self._given_name
         earlier = list(self.turns)
         turn = self._add_turn("user", text, speaker=speaker_id)
         self._user_turns += 1
@@ -216,6 +226,8 @@ class ChatSession:
     def _status(self, speaker_id: str | None = None) -> dict:
         status = self.engine.get_status()
         status["talking_with"] = self._speaker_name(speaker_id)
+        if speaker_id is None and self._given_name:
+            status["talking_with"] = f"{self._given_name} (the name they gave you)"
         # Live senses: the room Kip is standing in, as he sees and hears it now (nothing beyond it),
         # and who came, went or changed what they were doing since he got here.
         around = self.engine.surroundings()
@@ -258,6 +270,24 @@ class ChatSession:
             status["asked_not_to"] = self.manager.restrictions.describe()
         return status
 
+    def _freshness(self) -> str:
+        """What Kip has leaned on in his last few replies, so this one says something new: a
+        catchphrase is seasoning only while it is rare."""
+        replies = [t["text"].casefold() for t in self.turns if t["role"] == "kip" and not t.get("source")][-3:]
+        if not replies:
+            return ""
+        notes = []
+        if sum(r.rstrip(" .!").endswith("question?") or r.rstrip().endswith("?") for r in replies) >= 2:
+            notes.append("do not end with a question")
+        used = [phrase for phrase in _HABITS if any(re.search(rf"\b{re.escape(phrase)}\b", r) for r in replies)]
+        if used:
+            notes.append("do not say " + ", ".join(f"'{p}'" for p in used))
+        openers = [" ".join(r.split()[:2]) for r in replies]
+        if len(openers) >= 2 and len(set(openers)) < len(openers):
+            notes.append(f"do not open with '{max(set(openers), key=openers.count)}'")
+        return ("Your last replies leaned on the same habits: this time " + "; ".join(notes)
+                + ". Say something new instead.") if notes else ""
+
     def _guidance(self, intent: Intent, live: bool | None = None) -> str:
         """How this particular message must be handled, decided by code from its words."""
         restrictions, parts = self.manager.restrictions, []
@@ -295,15 +325,19 @@ class ChatSession:
             parts.append("Small talk: no suggestions to do things around the house.")
         return " ".join(parts)
 
-    async def _recall(self, text: str) -> list[dict]:
+    async def _recall(self, text: str, speaker: str | None = None) -> list[dict]:
         if not self.store:
             return []
         try:
-            # Durable knowledge first; past chat snippets would otherwise crowd it
-            # out, since they often repeat the very facts they mention.
-            memories = await self.store.recall(text, kinds=["fact", "preference", "episode", "skill"], k=4)
+            # Core facts about the person first, whatever was said; then durable knowledge
+            # relevant to this message. Past chat snippets would otherwise crowd it out,
+            # since they often repeat the very facts they mention.
+            core = await asyncio.to_thread(self.store.core_facts, speaker, 4)
+            pinned = {m["id"] for m in core}
+            memories = [m for m in await self.store.recall(text, kinds=["fact", "preference", "episode", "skill"], k=4)
+                        if m["id"] not in pinned]
             chats = await self.store.recall(text, kinds=["conversation"], k=2)
-            return memories + [{**m, "text": _OWN_OLD_LINE.sub("", m["text"])} for m in chats]
+            return core + memories + [{**m, "text": _OWN_OLD_LINE.sub("", m["text"])} for m in chats]
         except Exception:
             _log.exception("Memory recall failed; continuing conversation without recalled memories")
             return []
@@ -361,7 +395,7 @@ class ChatSession:
                 self.bus.emit("chat_thinking", self.name, skip_history=True, reply_id=reply_id,
                               waiting_on_errand=waiting)
                 recall_started = time.monotonic()
-                memories = await self._recall(user_turn["text"])
+                memories = await self._recall(user_turn["text"], user_turn.get("speaker"))
                 recall_seconds = time.monotonic() - recall_started
                 voice = (self.persona.voice_view(speaker=user_turn.get("speaker"), message=user_turn["text"])
                          if self.persona else None)
@@ -373,6 +407,9 @@ class ChatSession:
                 earlier.sort(key=lambda t: (anchors.get(t.get("in_reply_to"), anchors[t["id"]]),
                                            bool(t.get("in_reply_to")), anchors[t["id"]]))
                 guidance = self._guidance(intent, live=self._is_live(user_turn["id"], intent))
+                fresh = self._freshness()
+                if fresh:
+                    guidance = (guidance + " " + fresh).strip()
                 messages = build_messages(self.name, voice, prompt_memories(memories),
                                           self._status(user_turn.get("speaker")), earlier, user_turn["text"],
                                           guidance=guidance, context_tokens=min(
@@ -870,7 +907,9 @@ class ChatSession:
             try:
                 added.append(await self.store.add("preference" if re.search(r"\b(prefer|like|love|favou?rite|"
                                                                             r"enjoy|hate|dislike)", text, re.I)
-                                                  else "fact", text, about=tags or about, importance=0.7,
+                                                  else "fact", text, about=tags or about,
+                                                  # Who they are outranks what they had for lunch.
+                                                  importance=0.9 if _CORE_FACT.search(text) else 0.7,
                                                   source="conversation", meta=meta))
                 self._remembered.append(text if context == "actual" else f"{text} ({context})")
             except Exception:

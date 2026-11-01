@@ -14,7 +14,7 @@ from app.agents import prompts
 from app.chat.prompt import CHAT_SYSTEM, build_messages
 from app.persona import Persona
 from app.persona.cues import read_cues
-from app.persona.profile import BASELINE, DRIFT, IDENTITY, PREVIOUS_BASELINES, TONES, VOICE
+from app.persona.profile import BASELINE, DRIFT, IDENTITY, PREVIOUS_BASELINES, TONES, VOICE, identity
 from app.persona.state import CHARACTER_VERSION, PersonaState
 from tests.fakes import ScriptedLLM, complete, tool
 from tests.test_character import said
@@ -45,7 +45,7 @@ def test_every_spoken_view_carries_the_same_character_even_when_trimmed():
     chat = persona.voice_view(speaker="person_0", message="I only slept four hours. I passed my exam! "
                                                           "Thanks. Going to bed.")
     for view in (speech, chat, persona.voice_view()):
-        assert view["identity"] == IDENTITY and view["voice"] == VOICE
+        assert view["identity"] == identity() and view["voice"] == VOICE
     system = build_messages("Kip", chat, [], {"room": "hall"}, [], "hi")[0]["content"]
     assert IDENTITY in system and VOICE in system and "never an impersonal help desk" in system
 

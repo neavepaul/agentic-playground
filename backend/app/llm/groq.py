@@ -210,7 +210,9 @@ class GroqClient:
         raise ModelError(f"Groq could not answer: {reason}.")
 
     def chat_candidates(self, models: list[str], messages: list[dict], max_tokens: int) -> list[str]:
-        now, need = self.now(), estimate_tokens(messages) + max_tokens
+        # A spoken reply is a few dozen tokens: reserve for that, not the 1,200-token ceiling, or a
+        # model's per-minute quota looks spent after two replies.
+        now, need = self.now(), estimate_tokens(messages) - 1024 + min(max_tokens, 300)
         return [m for m in models if self.quota.setdefault(m, ModelQuota()).available(need, now)]
 
     async def stream_chat(self, messages: list[dict], models: list[str], max_tokens: int,

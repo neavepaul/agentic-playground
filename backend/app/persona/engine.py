@@ -4,7 +4,7 @@ from typing import Callable
 
 from .appraisal import appraise
 from .cues import read_cues
-from .profile import BASELINE, DRIFT, IDENTITY, TONES, VOICE
+from .profile import BASELINE, DRIFT, TONES, VOICE, identity
 from .state import Episode, Followup, ObjectNote, PersonaState, Relationship, SkillRecord
 
 MOOD_HALF_LIFE = 1800.0          # simulated seconds
@@ -15,7 +15,7 @@ FOLLOWUP_LIFETIME = 24 * 3600.0
 QUIET_SECONDS = 8 * 3600.0       # how long "leave me alone" is honoured
 TOOL_FAILURE_DIPS_PER_TASK = 5
 VIEW_LIMIT = 1600                # characters of JSON in any prompt view
-VOICE_VIEW_LIMIT = 3000          # the voice view also carries the fixed identity and voice
+VOICE_VIEW_LIMIT = 4200          # the voice view also carries the fixed identity and voice
 CONCERNED, WELL_KNOWN, STRANGER = 0.35, 0.3, 0.1
 INITIATIVE_TRAITS = ("initiative", "curiosity", "caution", "empathy", "loyalty")
 # Kip's own words that actually ask after someone.
@@ -42,9 +42,10 @@ class Persona:
     """
 
     def __init__(self, state: PersonaState | None = None, name: str = "Kip",
-                 now: Callable[[], float] | None = None, helpfulness_baseline: float = 0.8) -> None:
+                 now: Callable[[], float] | None = None, helpfulness_baseline: float = 0.8, maker: str = "") -> None:
         self.state = state if state is not None else PersonaState()
         self.name = name
+        self.identity = identity(maker)  # who built him: known only when configured
         self._now = now
         self._last_now: float | None = None
         self._helpfulness_baseline = helpfulness_baseline
@@ -355,7 +356,7 @@ class Persona:
         how to pitch this reply to the person speaking."""
         self._advance()
         label = self.mood_label()
-        view = {"name": self.name, "identity": IDENTITY, "voice": VOICE, "mood": label, "tone": TONES[label]}
+        view = {"name": self.name, "identity": self.identity, "voice": VOICE, "mood": label, "tone": TONES[label]}
         if message is not None:
             view["stance"] = self.stance(speaker, message)
             record = self.track_record()

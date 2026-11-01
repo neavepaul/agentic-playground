@@ -55,7 +55,7 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
                                  backups_dir=config.memory_file.parent / "backups")
     persona = None
     if config.persona_enabled:
-        persona = Persona(persistent.persona, config.persona_name, now=clock.simulated_seconds,
+        persona = Persona(persistent.persona, config.persona_name, now=clock.simulated_seconds, maker=config.persona_maker,
                           helpfulness_baseline=config.drive_helpfulness)
         persona.attach(bus)
     local_chat = create_chat_client(config, llm) if live else llm
