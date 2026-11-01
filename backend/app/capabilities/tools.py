@@ -40,7 +40,8 @@ class CapabilityTools:
     def can_answer_from_web(self) -> bool:
         return self.enabled and self.hosted is not None and self.hosted.can_search()
 
-    async def web_answer(self, query: str, messages: list[dict], context) -> tuple[dict, str]:
+    async def web_answer(self, query: str, messages: list[dict], context,
+                         about_today: bool = False) -> tuple[dict, str]:
         """(web_search result, answer): the search run by Groq's browser search, which also
         writes the answer. Its pages are the evidence, recorded like any web_search.
 
@@ -49,7 +50,7 @@ class CapabilityTools:
         search counts as failed and the usual lookup, which reads the pages itself, takes over."""
         from datetime import datetime
         from app.llm.base import ModelError
-        from .grounding import unsupported
+        from .grounding import unbacked_results, unsupported, wrong_day
         answer = ""
         try:
             found = await self.hosted.search(messages)
@@ -60,6 +61,11 @@ class CapabilityTools:
             problems = unsupported(answer, found.quote, found.evidence,
                                    int(now.utcoffset().total_seconds() // 60),
                                    today=now.date())
+            # "7 runs" when the page says 7 wickets; "series 4-1" when it says 3-1.
+            problems += unbacked_results(answer, f"{found.quote}\n{found.evidence}")
+            stale = wrong_day([s["title"] for s in found.sources] + [found.quote], now.date()) if about_today else None
+            if stale:
+                problems.append(stale)  # a March final is not today's match
             if problems:
                 raise ValueError("Groq's answer is not backed by what it read: " + "; ".join(problems)
                                  + f". It said: {answer[:200]!r}")
@@ -123,7 +129,9 @@ class CapabilityTools:
             pages.append(str(obs.get("text") or ""))
             pages += [f"{r.get('title', '')} {r.get('snippet', '')}" for r in obs.get("results", [])]
         offset = int(datetime.now().astimezone().utcoffset().total_seconds() // 60)
-        return wrong_event(answer, [p for p in pages if p.strip()], teams, offset)
+        from .grounding import unbacked_results
+        pages = [p for p in pages if p.strip()]
+        return wrong_event(answer, pages, teams, offset) + unbacked_results(answer, "\n".join(pages))
 
     @staticmethod
     def finish_answer(args, context) -> dict:
@@ -145,9 +153,10 @@ class CapabilityTools:
                              + ". Run any unfinished tools and cite their successful evidence IDs.")
         wrong = CapabilityTools._wrong_event(args.answer, evidence + attached, context.goal)
         if wrong:
-            # "8:05 a.m." from a fixture list where 8:05 is another match's start: try again.
-            raise ValueError("Answer gives a time the pages list for a different match: " + "; ".join(wrong)
-                             + ". Use the time listed with the match that was asked about.")
+            # "8:05 a.m." from a fixture list where 8:05 is another match's start, or "won by 7
+            # runs" from a page that says 7 wickets: try again.
+            raise ValueError("Answer does not match the cited pages: " + "; ".join(wrong)
+                             + ". Use the time and result the pages give for the match that was asked about.")
         sources = []
         for item in evidence + [a for a in attached if a["tool"] == "read_webpage"]:
             obs = item["observation"]

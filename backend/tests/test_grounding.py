@@ -73,3 +73,42 @@ def test_a_quote_naming_two_zones_lends_neither_to_a_bare_time():
     assert quote_zone(LIVE_QUOTE, date(2026, 11, 1)) == "Pacific/Auckland"
     assert quote_zone("8:00 pm NZDT, which is 12:30 pm IST", date(2026, 11, 1)) is None
     assert quote_zone("Kick-off at 3 pm", date(2026, 11, 1)) is None
+
+
+# ── the live run: a March final for today's score, 7 runs for 7 wickets, 4-1 for 3-2 ──
+def test_a_question_about_today_rejects_a_source_dated_another_day():
+    from datetime import date
+    from app.capabilities.grounding import wrong_day
+    today = date(2026, 11, 1)
+    assert wrong_day(["IND vs NZ Cricket Scorecard, Final at Ahmedabad, March 08, 2026"], today) == \
+        "the source is about 08 March 2026, not today (01 November 2026)"
+    assert wrong_day(["NZ vs IND 5th T20I Match Report, November 01, 2026"], today) is None
+    assert wrong_day(["Match report, 31 Oct 2026"], today) is None   # a day either side: time zones
+    assert wrong_day(["no date anywhere"], today) is None
+
+
+@pytest.mark.parametrize("answer,ok", [
+    ("New Zealand beat India by 7 wickets.", True),
+    ("New Zealand beat India by 7 runs.", False),              # the source says wickets
+    ("India take the series 3-2.", True),
+    ("Series now 4-1 New Zealand.", False),                    # no source said 4-1
+    ("Starts 12:30, on 2026-11-01.", True),                    # times and dates are not scores
+])
+def test_result_figures_must_be_what_the_source_says(answer, ok):
+    from app.capabilities.grounding import unbacked_results
+    source = "New Zealand 195 for 3 beat India 191 for 8 by seven wickets (7 wkts). India take series 3-2."
+    assert (unbacked_results(answer, source) == []) is ok
+
+
+def test_the_page_reading_answer_cannot_turn_wickets_into_runs():
+    context = TaskContext(goal="Look up online: india lost? (they mean: cricket: India vs New Zealand — match result)",
+                          conditions=[GoalCondition(kind="answer", required_tools=["web_search"])])
+    context.record("web_search", {"query": "India match result"}, {"success": True, "evidence_id": "s1", "observation": {
+        "query": "India match result", "results": [{"title": "5th T20I Live Score", "url": "https://x.example/5",
+                                                     "snippet": "New Zealand beat India by 7 wkts. India lead 3-1."}]}})
+    with pytest.raises(ValueError, match="'7 runs' is not what the source says"):
+        CapabilityTools.finish_answer(AnswerAction(tool="finish_answer", answer="New Zealand beat India by 7 runs.",
+                                                   evidence_ids=["s1"]), context)
+    done = CapabilityTools.finish_answer(AnswerAction(tool="finish_answer", answer="Yes. New Zealand won by 7 wickets.",
+                                                      evidence_ids=["s1"]), context)
+    assert done["answer"] == "Yes. New Zealand won by 7 wickets."

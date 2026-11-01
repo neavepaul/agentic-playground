@@ -310,19 +310,19 @@ def test_kip_never_asks_permission_for_a_web_lookup():
 @pytest.mark.asyncio
 async def test_the_router_is_on_by_default_and_answers_the_match_and_its_follow_up(ran):
     assert Settings().intent_router == "on"
-    model = PlanningModel([], task=[answering("Twelve thirty today. Hamilton."), answering("Twelve thirty.")])
+    model = PlanningModel([said("Twelve thirty. Hamilton.")], task=[answering("Twelve thirty today. Hamilton.")])
     session, manager = session_with(model, settings=Settings(direct_initial_delegation=True))
     session.submit("when is the india new zealand game starting")
     await settle(session, manager)
     await manager.runner
-    session.submit("what time kip?")
-    await settle(session, manager)
-    await manager.runner
-    assert model.prompts == []  # no chat-model reply, so nothing to ask permission or guess
-    first, second = list(manager.tasks.values())
+    assert model.prompts == []  # the lookup is the reply: nothing to ask permission or guess
+    [first] = list(manager.tasks.values())
     assert first.action_history[0]["arguments"]["query"].startswith("India vs New Zealand start time cricket")
-    assert "following up on: when is the india new zealand game starting" in second.goal
-    assert kip_lines(session, "narration") == ["Twelve thirty today. Hamilton.", "Twelve thirty."]
+    session.submit("what time kip?")  # the start time the lookup just found: answered from it, no new search
+    await settle(session, manager)
+    assert len(manager.tasks) == 1 and len(model.prompts) == 1
+    assert "Your last lookup's source said" in model.prompts[0][-1]["content"]
+    assert session.history()[-1]["text"] == "Twelve thirty. Hamilton."
     await done(session, manager)
 
 
@@ -342,7 +342,7 @@ def test_other_time_questions_are_not_the_clock(text):
 @pytest.mark.asyncio
 async def test_the_clock_answers_the_time_but_what_time_after_a_match_question_means_the_match(ran):
     from app.world.clock import WorldClock
-    model = PlanningModel([], task=[answering("Twelve thirty today. Hamilton.")])
+    model = PlanningModel([said("Twelve thirty.")], task=[answering("Twelve thirty today. Hamilton.")])
     session, manager = session_with(model, settings=Settings(direct_initial_delegation=True))
     session.engine._clock = WorldClock(speed=0, start_hour=13.25)
     session.submit("what time is it?")
@@ -351,9 +351,9 @@ async def test_the_clock_answers_the_time_but_what_time_after_a_match_question_m
     session.submit("when is the india new zealand game starting")
     await settle(session, manager)
     await manager.runner
-    session.submit("what time kip?")  # about the match now, not the clock
+    session.submit("what time kip?")  # about the match now, not the clock: answered from the lookup
     await settle(session, manager)
-    assert len(manager.tasks) == 2 and "following up on" in list(manager.tasks.values())[-1].goal
+    assert session.history()[-1]["text"] == "Twelve thirty." and len(manager.tasks) == 1
     await done(session, manager)
 
 
@@ -401,4 +401,52 @@ async def test_a_follow_up_lookup_carries_kips_last_answer(ran):
     second = list(manager.tasks.values())[-1]
     assert "Kip answered: Today. New Zealand vs India." in second.goal
     assert second.action_history[0]["arguments"]["query"].startswith("India vs New Zealand live TV channel")
+    await done(session, manager)
+
+
+# ── after a lookup: follow-ups answered from its source, disputes checked against it ──
+async def _scored(model):
+    session, manager = session_with(model, settings=Settings(direct_initial_delegation=True))
+    session.submit("whats the score of the india vs new zealand game")
+    await settle(session, manager)
+    await manager.runner
+    return session, manager
+
+
+@pytest.mark.asyncio
+async def test_india_lost_is_answered_from_the_lookup_just_made(ran):
+    model = PlanningModel([said("Yes. New Zealand chase it. Seven wickets.")],
+                          task=[answering("New Zealand 195 for 3 beat India 191 for 8.")])
+    session, manager = await _scored(model)
+    session.submit("india lost?")
+    await settle(session, manager)
+    assert len(manager.tasks) == 1  # no second search for what was just found
+    prompt = model.prompts[-1][-1]["content"]
+    assert "answer from that, no new lookup" in prompt and "Your last lookup's source said" in prompt
+    assert "You told them: New Zealand 195 for 3 beat India 191 for 8." in prompt
+    await done(session, manager)
+
+
+@pytest.mark.asyncio
+async def test_asking_for_something_newer_still_searches(ran):
+    model = PlanningModel([], task=[answering("India 145 for 5."), answering("India 191 for 8.")])
+    session, manager = await _scored(model)
+    session.submit("whats the score now?")
+    await settle(session, manager)
+    await manager.runner
+    assert len(manager.tasks) == 2
+    await done(session, manager)
+
+
+@pytest.mark.asyncio
+async def test_a_disputed_figure_is_checked_against_the_source_not_defended(ran):
+    model = PlanningModel([said("You right. I mix match and series. My mistake.")],
+                          task=[answering("New Zealand won today.")])
+    session, manager = await _scored(model)
+    session.submit("series is 3-2 india")
+    await settle(session, manager)
+    prompt = model.prompts[-1][-1]["content"]
+    assert "They may be correcting you" in prompt and "Compare what they say with the source" in prompt
+    assert "Never just agree, never just defend yourself" in prompt
+    assert len(manager.tasks) == 1
     await done(session, manager)

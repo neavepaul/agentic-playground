@@ -634,6 +634,8 @@ def _sport_focus(focus: str | None, domain: str | None) -> str | None:
 def _sport_time(time: str | None, focus: str | None, past: bool) -> str | None:
     if focus == "match status":
         return time if time not in (None, "latest", "next upcoming") else "now"
+    if focus == "score":
+        return time if time not in (None, "latest", "next upcoming") else "today or latest"
     if focus in ("start time", "teams", "venue", "broadcast"):
         return time if time not in (None, "latest", "next upcoming") else "today or next"
     if focus == "schedule":
@@ -669,14 +671,15 @@ def _query(route: Route, said: str, today: date) -> tuple[str, str]:
     day = today.strftime("%d %B %Y").lstrip("0")
     when = {"latest completed": f"the latest completed one ({today.year})", "next upcoming": "the next one",
             "now": f"right now ({day})", "upcoming": "the coming hours",
-            "today or next": f"the match on today ({day}), or else the next one"}.get(route.time or "",
+            "today or next": f"the match on today ({day}), or else the next one",
+            "today or latest": f"the match on today ({day}), or else the most recent one"}.get(route.time or "",
                                                                                      route.time or "")
     if route.intent == "information.sports":
         event = f"{route.place} " if route.place else ""
         event += "Grand Prix" if route.domain == "f1" else ("race" if route.domain == "motogp" else "")
         # A new question about the same subject searches its own words, about that subject.
         aspect = route.focus or (f"“{route.asked}”" if route.asked else "result")
-        timed = route.focus in _SEARCH_WORDS or route.time in ("now", "today", "today or next")
+        timed = route.focus in _SEARCH_WORDS or route.time in ("now", "today", "today or next", "today or latest")
         searched = _SEARCH_WORDS.get(route.focus) or route.focus or route.asked or "result"
         query = " ".join(filter(None, [who, searched, event.strip(), domain,
                                        day if timed else str(today.year)

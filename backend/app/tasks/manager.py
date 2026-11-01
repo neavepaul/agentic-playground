@@ -355,8 +355,11 @@ class TaskManager:
         asked = f"{context.goal}\n(Asked on {today.strftime('%d %B %Y')} at {now.strftime('%H:%M')} {now.tzname()}.)"
         context.tool_count += 1
         self._before_dispatch(context, "web_search", arguments)
+        # A question about today must be answered from a source about today.
+        about_today = bool(re.search(r"\btoday\b|\bright now\b|\blive\b|\btonight\b", context.goal.casefold()))
         result, answer = await self.capabilities.web_answer(
-            arguments["query"], [{"role": "system", "content": system}, {"role": "user", "content": asked}], context)
+            arguments["query"], [{"role": "system", "content": system}, {"role": "user", "content": asked}], context,
+            about_today=about_today)
         reported = self.capabilities.hosted.last_metrics
         context.metrics.llm_calls += 1
         context.metrics.explorer_llm_calls += 1

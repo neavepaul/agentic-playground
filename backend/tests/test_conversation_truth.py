@@ -512,7 +512,7 @@ async def test_a_guessed_live_figure_in_ordinary_chat_is_retracted(ran):
 
 @pytest.mark.asyncio
 async def test_a_follow_up_on_a_lookup_is_looked_up_too_with_its_topic(ran):
-    answers = iter(["New Zealand beat India by 87 runs in the fourth T20I and lead the series 3-1.",
+    answers = iter(["New Zealand beat India in the fourth T20I.",
                     "Yes: the fifth T20I is on Sunday."])
 
     def answer(payload):

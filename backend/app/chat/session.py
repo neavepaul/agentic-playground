@@ -44,6 +44,12 @@ _TOPIC_STOP = {"about", "again", "could", "does", "from", "have", "just", "know"
                "now", "okay", "please", "really", "right", "should", "still", "tell", "than", "that", "their",
                "them", "then", "there", "they", "this", "what", "when", "where", "which", "while", "will",
                "with", "would", "your", "today", "tonight", "tomorrow", "yesterday", "think", "going"}
+_HOW_IT_WENT = {"match result", "finishing position", "score", "match status", "qualifying position", "standings"}
+# How long a lookup's evidence answers follow-ups without searching again.
+EVIDENCE_SECONDS = 600.0
+_NEWER = re.compile(r"\b(now|still|yet|latest|update|current(ly)?|live|so far|anymore)\b")
+_DISPUTE = re.compile(r"\b(you'?re wrong|you are wrong|that'?s wrong|thats wrong|not true|not right|incorrect|"
+                      r"you got (it|that) wrong|wrong|actually (it'?s|it was|they)|it'?s actually)\b")
 # Phrases Kip reaches for when he has nothing to add; fine once in a while, never as a habit.
 _HABITS = ("good good", "amaze", "fist my bump", "i here", "hall quiet", "i like that", "you good", "i watch")
 _HALF_YES = re.compile(r"^\W*(yes|yeah|yep|sure|ok|okay)\b")  # "Yes? What do you mean?" is not a yes
@@ -98,6 +104,8 @@ class ChatSession:
         self._frame: Frame | None = None               # the last information request, for follow-ups
         self._frame_route: Route | None = None
         self._frame_answer = ""                        # what Kip's lookup said about that request
+        self._frame_evidence = ""                      # what that lookup's source actually said
+        self._frame_evidence_at = 0.0
         self._lookup_queries: dict[tuple[str, ...], str] = {}  # running or queued lookup -> what it searches
         self._routed = 0
         self._routes: dict[str, Route] = {}            # user turn id -> how the router read it
@@ -372,7 +380,11 @@ class ChatSession:
                                                      {"chat_model_calls": 0, "intent_router": "clock"})
                         self._intents.pop(user_turn["id"], None)
                         return
-                    lookup = self._routed_lookup(user_turn, intent, route)
+                    if self._from_last_lookup(user_turn, route):
+                        route.from_evidence = True  # answered from what was just found: no new search
+                        lookup = None
+                    else:
+                        lookup = self._routed_lookup(user_turn, intent, route)
                 else:
                     lookup = self._direct_lookup(user_turn, intent, earlier)
                 if lookup:
@@ -410,6 +422,9 @@ class ChatSession:
                 fresh = self._freshness()
                 if fresh:
                     guidance = (guidance + " " + fresh).strip()
+                checked = self._evidence_guidance(user_turn)
+                if checked:
+                    guidance = (guidance + " " + checked).strip()
                 messages = build_messages(self.name, voice, prompt_memories(memories),
                                           self._status(user_turn.get("speaker")), earlier, user_turn["text"],
                                           guidance=guidance, context_tokens=min(
@@ -683,6 +698,9 @@ class ChatSession:
         self._routed += 1
         if route.correction and self._frame_route is not None:
             self._record_correction(user_turn, route)
+        route.same_subject = bool(route.followup and self._frame is not None
+                                  and set(route.entities) <= set(self._frame.entities))
+        route.prior_focus = self._frame.focus if self._frame is not None else None
         frame = frame_of(route, said, turn)
         if frame:
             if not route.followup:
@@ -750,6 +768,64 @@ class ChatSession:
             return True
         return any(self._lookup_queries.get(task_identity(goal)) == query for goal in self.pending_goals)
 
+    def _lookup_evidence(self, task_id: str | None) -> str:
+        """What a finished lookup's source actually said: Groq's quote and the page it came from,
+        or the text of what the answer cited. Kept for follow-ups and disputes."""
+        context = self.manager.tasks.get(task_id) if task_id else None
+        if context is None:
+            return ""
+        searches = [a for a in context.action_history if a["tool"] == "web_search" and a["success"]]
+        for entry in reversed(searches):
+            obs = entry.get("observation") or {}
+            if obs.get("quote"):
+                titles = "; ".join(r.get("title", "") for r in obs.get("results", [])[:2])
+                return _clip(f'"{obs["quote"]}" ({titles})', 700)
+        cited = set((context.answer or {}).get("evidence_ids", []))
+        parts = []
+        for entry in context.action_history:
+            if entry.get("evidence_id") in cited and entry["success"]:
+                obs = entry.get("observation") or {}
+                parts.append(str(obs.get("text") or "")[:400])
+                parts += [f"{r.get('title', '')}: {r.get('snippet', '')}" for r in obs.get("results", [])[:4]]
+        return _clip(" | ".join(p for p in parts if p.strip()), 900)
+
+    def _evidence_fresh(self) -> bool:
+        return bool(self._frame_evidence) and time.monotonic() - self._frame_evidence_at < EVIDENCE_SECONDS
+
+    def _from_last_lookup(self, user_turn: dict, route: Route) -> bool:
+        """"India lost?" right after the lookup that found the result: answered from that
+        evidence, not searched again. Asking for something newer ("now", "latest") searches."""
+        said = user_turn["text"].casefold()
+        prior = getattr(route, "prior_focus", None)
+        # What the last lookup found: the same aspect, or how the same match went ("india lost?"
+        # after the score). "Which channel?" after the start time is something new: it searches.
+        same_aspect = route.focus == prior or (route.focus in _HOW_IT_WENT and prior in _HOW_IT_WENT)
+        return (self._evidence_fresh() and getattr(route, "same_subject", False) and not route.correction
+                and same_aspect and len(said.split()) <= 7 and not _NEWER.search(said))
+
+    def _disputes(self, route: Route | None, turn_id: str) -> bool:
+        turn = next((t for t in reversed(self.turns) if t["id"] == turn_id), None)
+        if turn is None or not self._evidence_fresh():
+            return False
+        said = turn["text"].casefold()
+        statement = not (route and route.asks) and not said.rstrip().endswith("?")
+        return bool(_DISPUTE.search(said) or (statement and re.search(r"\d", said)))
+
+    def _evidence_guidance(self, user_turn: dict) -> str:
+        """Kip's last lookup, side by side with what its source said, when the person asks
+        about it again or disputes it: what the page says outranks what he said it says."""
+        route = self._routes.get(user_turn["id"])
+        evidence = f"Your last lookup's source said: {self._frame_evidence}. You told them: {self._frame_answer}"
+        if self._disputes(route, user_turn["id"]):
+            return ("They may be correcting you. " + evidence + ". Compare what they say with the source, not with "
+                    "your own words: if the source does not back what you said, say plainly you got it wrong and "
+                    "give what it does say; if it backs you, say what it says, kindly; if it cannot settle it, say "
+                    "so and offer to look again. Never just agree, never just defend yourself.")
+        if route is not None and getattr(route, "from_evidence", False):
+            return ("They ask about what you just looked up: answer from that, no new lookup. " + evidence
+                    + ". If it does not say, say so plainly and offer to check.")
+        return ""
+
     def _learn_from_answer(self, text: str) -> None:
         """A lookup's answer joins the conversation topic: "New Zealand vs India, 12:30" names the
         opponent, so "who is playing?" next needs no search."""
@@ -776,6 +852,8 @@ class ChatSession:
         route = self._routes.get(turn_id)
         asks = route is not None and (intent.question or intent.request or route.followup or route.correction
                                       or route.lookup_phrase or route.asks)
+        if route is not None and (getattr(route, "from_evidence", False) or self._disputes(route, turn_id)):
+            return False  # answered from the last lookup's evidence, never a fresh search
         if self.settings.intent_router == "on" and asks:
             return route.live
         return intent.live_fact
@@ -1035,6 +1113,7 @@ class ChatSession:
             answer = task.get("answer") or {}
             if answer.get("answer") and str(task.get("goal", "")).startswith(LOOKUP_PREFIX):
                 self._learn_from_answer(answer["answer"])
+                self._frame_evidence, self._frame_evidence_at = self._lookup_evidence(task.get("id")), time.monotonic()
             if answer.get("answer"):
                 # The answer is already written in Kip's voice; no stock opener.
                 text = answer["answer"]

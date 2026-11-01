@@ -206,3 +206,60 @@ def wrong_event(answer: str, pages: list[str], teams: list[str], local_offset: i
         else:
             problems.append(f"{label} is the time of {others[0]}, not of {' vs '.join(teams)}")
     return problems
+
+
+# ── the source is about the day asked, and results are what it says ─────────────
+_MONTH_NAMES = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+                "november", "december")
+_MONTHS = {**{m: i for i, m in enumerate(_MONTH_NAMES, 1)}, **{m[:3]: i for i, m in enumerate(_MONTH_NAMES, 1)},
+           "sept": 9}
+_MONTH = r"(" + "|".join(sorted(_MONTHS, key=len, reverse=True)) + r")\.?"
+_DATES = re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+{_MONTH},?\s+(\d{{4}})\b|\b{_MONTH}\s+(\d{{1,2}})(?:st|nd|rd|th)?,?\s+"
+                    rf"(\d{{4}})\b|\b(\d{{4}})-(\d{{2}})-(\d{{2}})\b", re.I)
+
+
+def dates_in(text: str) -> set[date]:
+    found = set()
+    for m in _DATES.finditer(text):
+        try:
+            if m.group(1):
+                found.add(date(int(m.group(3)), _MONTHS[m.group(2).casefold()], int(m.group(1))))
+            elif m.group(4):
+                found.add(date(int(m.group(6)), _MONTHS[m.group(4).casefold()], int(m.group(5))))
+            else:
+                found.add(date(int(m.group(7)), int(m.group(8)), int(m.group(9))))
+        except (ValueError, KeyError):
+            continue
+    return found
+
+
+def wrong_day(texts: list[str], today: date) -> str | None:
+    """For a question about today: the source names dates, and none of them is today (a day
+    either side allowed for time zones). "India vs New Zealand, Final, March 08, 2026" is not
+    today's match."""
+    found = set().union(*(dates_in(t) for t in texts)) if texts else set()
+    if not found or any(abs((d - today).days) <= 1 for d in found):
+        return None
+    nearest = min(found, key=lambda d: abs((d - today).days))
+    return f"the source is about {nearest.strftime('%d %B %Y')}, not today ({today.strftime('%d %B %Y')})"
+
+
+_MARGIN = re.compile(r"\b(\d+)[\s-]*(runs?|wickets?|wkts?|goals?|points?|strokes?|sets?)\b", re.I)
+# A score like 3-2; not part of a time, a date, a decimal or a fraction. A full stop after it ends the sentence.
+_TALLY = re.compile(r"(?<![\d:/.-])(\d{1,2})\s*[-–—]\s*(\d{1,2})(?![\d:/-]|\.\d)")
+
+
+def unbacked_results(answer: str, evidence: str) -> list[str]:
+    """Result figures the evidence does not state as written: "won by 7 runs" when it says 7
+    wickets, "series 4-1" when it says 3-1. A margin keeps its unit; a tally its exact score."""
+    text = re.sub(r"[–—]", "-", evidence.casefold())
+    problems = []
+    for number, unit in _MARGIN.findall(answer):
+        root = unit.casefold()[:3]
+        roots = {"wic": "(?:wic|wkt)", "wkt": "(?:wic|wkt)"}.get(root, root)
+        if not re.search(rf"\b{number}[\s-]*{roots}", text):
+            problems.append(f"'{number} {unit}' is not what the source says")
+    for first, second in _TALLY.findall(answer):
+        if not re.search(rf"(?<![\d:/.-]){first}\s*-\s*{second}(?![\d:/-]|\.\d)", text):
+            problems.append(f"'{first}-{second}' is not in the source")
+    return problems
