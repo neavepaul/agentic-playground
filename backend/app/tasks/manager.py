@@ -155,9 +155,11 @@ class TaskManager:
         if context.status != "running":
             raise LimitReached("A terminal task cannot execute more tools.")
 
-    def start(self, goal: str, grant: Grant | None = None, plan=None) -> TaskContext:
+    def start(self, goal: str, grant: Grant | None = None, plan=None, session_id: str | None = None,
+              speaker: str | None = None, portfolio: bool = True) -> TaskContext:
         """Start a task. Without a grant it is a direct instruction (API): the goal
-        text is the person's own words and authorizes every kind of action."""
+        text is the person's own words and authorizes every kind of action. session_id is the
+        conversation that asked; speaker and portfolio say who that is and what they may see."""
         if self.active_id:
             raise TaskBusy("One task is already running. Cancel it or wait for completion.")
         if grant is None:
@@ -166,7 +168,8 @@ class TaskManager:
             if self.restrictions.update(goal):
                 self.save_restrictions()
         grant = grant or Grant.full("api", goal)
-        context = TaskContext(goal=goal, grant=grant, requested_tools=explicitly_requested_tools(grant.authorized_text))
+        context = TaskContext(goal=goal, grant=grant, requested_tools=explicitly_requested_tools(grant.authorized_text),
+                              session_id=session_id, speaker=speaker, portfolio=portfolio)
         context.metrics.llm_call_limit = self.settings.max_task_llm_calls
         self._sync_permissions(context)
         if self.persistent:
@@ -337,7 +340,7 @@ class TaskManager:
         self._ensure_running(context)
         if self._refused(context, "web_search", arguments) or context.tool_count >= self.settings.max_tool_calls:
             return False
-        source = self.capabilities.feed_source(question)
+        source = self.capabilities.feed_source(question, portfolio=context.portfolio)
         if source:  # "Let me check Groww for that."
             self.bus.emit("feed_checking", "explorer", task_id=context.id, source=source)
         self._before_dispatch(context, "web_search", arguments)
@@ -653,6 +656,9 @@ class TaskManager:
         feeling = self.persona.mood_label() if self.persona else None
         try:
             for memory in task_memories(context, feeling):
+                if context.speaker:
+                    # Filed under whoever asked: other people never see what they looked up.
+                    memory = {**memory, "meta": {**(memory.get("meta") or {}), "speaker": context.speaker}}
                 await self.memory_store.add(source="task", **memory)
         except Exception:
             logging.getLogger("agentic_friend.tasks").exception("Failed to store task memories")

@@ -11,8 +11,49 @@
   </head>
   <body>
     <a class="skip-link" href="#chat-input">Skip to message box</a>
-    <div class="app">
+
+    <section id="signin" class="signin" aria-labelledby="signin-title" hidden>
+      <div class="signin-card">
+        <div class="empty-monogram" aria-hidden="true"><span>K</span></div>
+        <div id="signin-pick">
+          <h1 id="signin-title">Who’s chatting?</h1>
+          <p class="signin-lede">Pick your name, or make a profile.</p>
+          <div id="profile-list" class="profile-list"></div>
+          <button id="profile-new" class="ghost-button" type="button">New profile</button>
+        </div>
+        <form id="pin-form" class="signin-form" hidden>
+          <h1 id="pin-name"></h1>
+          <label for="pin-input">Your 4-digit PIN</label>
+          <input id="pin-input" class="pin-input" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="current-password" required />
+          <p id="pin-error" class="signin-error" role="alert" hidden></p>
+          <div class="signin-actions">
+            <button type="button" class="ghost-button" data-back>Back</button>
+            <button type="submit" class="primary-button">Sign in</button>
+          </div>
+        </form>
+        <form id="new-form" class="signin-form" hidden>
+          <h1>New profile</h1>
+          <label for="new-name">Your name</label>
+          <input id="new-name" type="text" maxlength="30" autocomplete="given-name" required />
+          <label for="new-pin">Choose a 4-digit PIN</label>
+          <input id="new-pin" class="pin-input" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="new-password" required />
+          <label for="new-pin-again">Type it again</label>
+          <input id="new-pin-again" class="pin-input" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="new-password" required />
+          <p class="signin-note" id="new-owner-note" hidden>You’re the first, so this is the owner’s profile: only you, and people you allow, can ask about the Groww portfolio.</p>
+          <p id="new-error" class="signin-error" role="alert" hidden></p>
+          <div class="signin-actions">
+            <button type="button" class="ghost-button" data-back>Back</button>
+            <button type="submit" class="primary-button">Create</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <div class="app" id="app" hidden>
       <header class="topbar">
+        <button id="chats-toggle" class="icon-button chats-toggle" type="button" aria-controls="chats" aria-expanded="false" aria-label="Chats" title="Chats">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+        </button>
         <div class="identity">
           <div class="monogram" aria-hidden="true"><span id="kip-monogram">K</span></div>
           <div class="identity-text">
@@ -34,11 +75,36 @@
       </header>
 
       <div class="shell">
+        <nav id="chats" class="chats" aria-label="Chats">
+          <div class="chats-head">
+            <button id="new-chat" class="new-chat" type="button">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+              New chat
+            </button>
+          </div>
+          <p class="chats-label">Recent</p>
+          <ul id="chat-list" class="chat-list"></ul>
+          <p id="chat-list-empty" class="chats-empty">Your chats will show here.</p>
+          <div class="chats-foot">
+            <div class="me">
+              <span class="me-avatar" id="me-avatar" aria-hidden="true"></span>
+              <span class="me-name" id="me-name"></span>
+            </div>
+            <button id="settings-open" class="icon-button" type="button" title="Settings" aria-label="Settings" hidden>
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4 18 18M6 18l1.6-1.6M16.4 7.6 18 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            </button>
+            <button id="sign-out" class="icon-button" type="button" title="Sign out" aria-label="Sign out">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 16l-4-4 4-4M6 12h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+          </div>
+        </nav>
+        <div id="chats-scrim" class="scrim" hidden></div>
+
         <main class="conversation" aria-label="Conversation with Kip">
           <div id="chat-scroll" class="chat-scroll">
             <section id="chat-empty" class="empty-state" aria-labelledby="empty-title">
               <div class="empty-monogram" aria-hidden="true"><span>K</span></div>
-              <h2 id="empty-title">Hi, I’m <span class="kip-name">Kip</span>.</h2>
+              <h2 id="empty-title">Hi<span id="greet-name"></span>, I’m <span class="kip-name">Kip</span>.</h2>
               <p>I remember what you tell me, and I can look things up on the web or work something out in Python.</p>
               <div class="suggestions" aria-label="Suggestions">
                 <button type="button" class="suggestion" data-say="Hi Kip, how are you?">Hi Kip, how are you?</button>
@@ -83,6 +149,29 @@
         <div id="scrim" class="scrim" hidden></div>
       </div>
     </div>
+    <dialog id="settings" class="sharing" aria-labelledby="settings-title">
+      <h2 id="settings-title">Settings</h2>
+      <section id="settings-people" class="settings-section" aria-labelledby="settings-people-title" hidden>
+        <h3 id="settings-people-title">People</h3>
+        <p class="signin-lede">What each person may do. You can always do both.</p>
+        <ul id="sharing-list" class="sharing-list"></ul>
+        <p id="sharing-empty" class="chats-empty" hidden>Nobody else has a profile yet.</p>
+      </section>
+      <section id="settings-pin" class="settings-section" aria-labelledby="settings-pin-title" hidden>
+        <h3 id="settings-pin-title">Your PIN</h3>
+        <form id="change-pin-form" class="signin-form">
+          <label for="pin-current">Current PIN</label>
+          <input id="pin-current" class="pin-input" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="current-password" required />
+          <label for="pin-new">New PIN</label>
+          <input id="pin-new" class="pin-input" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="new-password" required />
+          <label for="pin-new-again">Type it again</label>
+          <input id="pin-new-again" class="pin-input" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="new-password" required />
+          <p id="change-pin-note" class="signin-error" role="status" hidden></p>
+          <div class="signin-actions"><button type="submit" class="ghost-button">Change PIN</button></div>
+        </form>
+      </section>
+      <form method="dialog" class="signin-actions"><button class="primary-button" value="close">Done</button></form>
+    </dialog>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

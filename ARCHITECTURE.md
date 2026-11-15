@@ -7,7 +7,7 @@ call and import relationships.
 ```text
 Browser (frontend/src) ──HTTP /api, WS /ws──► FastAPI (app/main.py)
                                                  │
-                         ChatSession (chat/session.py) ── one conversation, persisted in kip.db
+                         ChatSession (chat/session.py) ── one per open chat (chat/hub.py), persisted in kip.db
                            │  router.py reads each message locally (no model)
                            ├─► chat reply: Groq, else Ollama (one streamed call)
                            └─► errand ──► TaskManager (tasks/manager.py)
@@ -175,13 +175,33 @@ missing `kip.db` starts a fresh Kip.
 
 ## Access
 
-There is no login, so the boundary is the machine and the browser. Uvicorn binds to loopback.
-`TrustedHostMiddleware` refuses any Host not in `ALLOWED_HOSTS`, for HTTP and the WebSocket,
-which stops DNS rebinding (another site pointing its own name at this machine). The WebSocket
-refuses an Origin not in `ALLOWED_ORIGINS` before accepting. So does any request other than GET,
-HEAD or OPTIONS, so a page on another site can neither read the event stream nor post messages or
-tasks. Clients that aren't browsers send no Origin, and are allowed: they are already on the
-machine. Network exposure needs authentication first.
+Kip listens on the home network, and everyone signs in (`people.py`). A profile has a name and a
+4-digit PIN, kept as a salted scrypt hash; five wrong PINs lock it for 30 seconds, doubling with
+each further miss up to an hour. Signing in sets an HttpOnly, SameSite=Strict cookie holding a
+random token, of which kip.db keeps only the hash. The first profile is the owner's: it inherits the
+chat from before profiles, may start errands through the task API, and decides who else may see the
+Groww portfolio and who may change their own PIN (the current PIN first; it signs out their other
+devices). A profile can be made without a PIN (`python -m app.people add NAME`): its person chooses
+one on first sign-in, once. A program on the Pi itself acts as the owner with `X-Kip-Local: 1`, honoured only
+from loopback and without an Origin.
+
+`access.py` answers only to this machine's own name (`kip-pi`, `kip-pi.local`), private and
+loopback addresses, and `ALLOWED_HOSTS`, for HTTP and the WebSocket. DNS rebinding needs the
+attacker's own domain in the Host header, so it is refused. Changes (anything but GET, HEAD and
+OPTIONS) and the WebSocket need an Origin that is Kip's own page (the same host) or in
+`ALLOWED_ORIGINS`, so a page on another site can neither read the event stream nor post.
+
+**Each person's own.** Conversations belong to a profile (`conversations` table); each open one is
+a ChatSession in `chat/hub.py`. A conversation sees the task manager through `OwnTasks`: only the
+errands it started (`TaskContext.session_id`), so its narration, status line and "what did you do"
+answers never carry another person's lookups; the one errand slot is still shared, and a waiting
+errand queues as before. Memories are filed under who said or asked them (`meta.speaker`), and
+recall, the "About you" list and core facts show a person only their own, plus, for the owner,
+memories from before profiles. The WebSocket sends each person only events of their own
+conversations and errands. Kip's mood and traits are everyone's, but the Kip panel and its live
+updates (`Persona.public(viewer)`) show a person only Kip's relationship with them and their own
+moments and check-ins, never how he feels about anyone else. A person the owner hasn't allowed who asks
+about "my portfolio" is told it isn't shared; Groww is never asked.
 
 ## Realtime
 

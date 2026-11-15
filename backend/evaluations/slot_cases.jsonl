@@ -1,0 +1,58 @@
+{"say": "who is the f1 drivers champion", "domain": "f1", "expect": {"ask": "standings", "table": "drivers", "name": null}, "tags": ["screenshot"]}
+{"say": "who is the f1 champion", "domain": "f1", "expect": {"ask": "standings", "table": "drivers", "name": null}}
+{"say": "who is the constructors champion", "domain": "f1", "expect": {"ask": "standings", "table": "constructors", "name": null}}
+{"say": "how many points does mclaren have in the championship", "domain": "f1", "expect": {"ask": "standings", "table": "constructors", "name": "McLaren"}, "tags": ["screenshot"]}
+{"say": "how many points does mclaren driver lando norris have in the champoinship", "domain": "f1", "expect": {"ask": "standings", "table": "drivers", "name": "Lando Norris"}, "tags": ["screenshot"]}
+{"say": "where are red bull in the standings", "domain": "f1", "expect": {"ask": "standings", "table": "constructors", "name": "Red Bull"}}
+{"say": "how many points is ferrari on", "domain": "f1", "expect": {"ask": "standings", "table": "constructors", "name": "Ferrari"}}
+{"say": "who won the 2025 f1 championship", "domain": "f1", "expect": {"ask": "standings", "table": "drivers", "name": null, "season": 2025}}
+{"say": "who's leading the title race", "domain": "f1", "expect": {"ask": "standings", "table": "drivers", "name": null}}
+{"say": "how far behind is piastri in the championship", "domain": "f1", "expect": {"ask": "standings", "table": "drivers", "name": "Piastri"}}
+{"say": "who won the last race", "domain": "f1", "expect": {"ask": "race result", "name": null}}
+{"say": "where did lando qualify in mexico", "domain": "f1", "expect": {"ask": "qualifying", "name": "Lando Norris", "race": "Mexico"}}
+{"say": "how did max do in brazil", "domain": "f1", "expect": {"ask": "race result", "name": "Max Verstappen", "race": "Brazil"}}
+{"say": "did ferrari get a podium last weekend", "domain": "f1", "expect": {"ask": "race result", "name": "Ferrari"}}
+{"say": "who won the sprint", "domain": "f1", "expect": {"ask": "sprint", "name": null}}
+{"say": "where did hamilton start on the grid", "domain": "f1", "expect": {"ask": "starting grid", "name": "Hamilton"}}
+{"say": "when is the next race", "domain": "f1", "expect": {"ask": "next race"}}
+{"say": "what time does the abu dhabi gp start", "domain": "f1", "expect": {"ask": "next race", "race": "Abu Dhabi"}}
+{"say": "how much hdfc bank do i own?", "domain": "finance", "expect": {"kind": "my holding", "name": "HDFC Bank"}, "tags": ["screenshot"]}
+{"say": "how much do i own in my portfolio", "domain": "finance", "expect": {"kind": "my portfolio", "name": null}, "tags": ["screenshot"]}
+{"say": "how much hdfc in my portfolio", "domain": "finance", "expect": {"kind": "my holding", "name": "HDFC"}, "tags": ["screenshot"]}
+{"say": "what is the best performer in my portfolio", "domain": "finance", "expect": {"kind": "my portfolio", "name": null}, "tags": ["screenshot"]}
+{"say": "what is my top holding", "domain": "finance", "expect": {"kind": "my portfolio", "name": null}}
+{"say": "how is my portfolio doing", "domain": "finance", "expect": {"kind": "my portfolio", "name": null}}
+{"say": "is my portfolio up or down today", "domain": "finance", "expect": {"kind": "my portfolio", "name": null}}
+{"say": "how many tcs shares do i have", "domain": "finance", "expect": {"kind": "my holding", "name": "TCS"}}
+{"say": "am i up on reliance", "domain": "finance", "expect": {"kind": "my holding", "name": "Reliance"}}
+{"say": "hdfc bank share price", "domain": "finance", "expect": {"kind": "share price", "name": "HDFC Bank", "when": "now"}}
+{"say": "what's reliance trading at", "domain": "finance", "expect": {"kind": "share price", "name": "Reliance", "when": "now"}}
+{"say": "where is the nifty", "domain": "finance", "expect": {"kind": "index", "name": "Nifty"}}
+{"say": "how's the sensex today", "domain": "finance", "expect": {"kind": "index", "name": "Sensex"}}
+{"say": "bitcoin price", "domain": "finance", "expect": {"kind": "crypto", "name": "Bitcoin"}}
+{"say": "dollar to rupee rate", "domain": "finance", "expect": {"kind": "exchange rate"}}
+{"say": "what was infosys trading at last year", "domain": "finance", "expect": {"kind": "share price", "name": "Infosys", "when": "past"}}
+{"say": "who's the f1 champ", "domain": "f1", "expect": {"ask": "standings", "table": "drivers", "name": null}, "tags": ["fresh"]}
+{"say": "who's top of the constructors", "domain": "f1", "expect": {"ask": "standings", "table": "constructors", "name": null}, "tags": ["fresh"]}
+{"say": "is verstappen still in the title fight", "domain": "f1", "expect": {"ask": "standings", "table": "drivers", "name": "Verstappen"}, "tags": ["fresh"]}
+{"say": "who took pole", "domain": "f1", "expect": {"ask": "qualifying", "name": null}, "tags": ["fresh"]}
+{"say": "how is mercedes doing in the points", "domain": "f1", "expect": {"ask": "standings", "table": "constructors", "name": "Mercedes"}, "tags": ["fresh"]}
+{"say": "did leclerc finish on the podium in vegas", "domain": "f1", "expect": {"ask": "race result", "name": "Leclerc", "race": "Vegas"}, "tags": ["fresh"]}
+{"say": "what's my portfolio looking like", "domain": "finance", "expect": {"kind": "my portfolio", "name": null}, "tags": ["fresh"]}
+{"say": "how much money have i made on infosys", "domain": "finance", "expect": {"kind": "my holding", "name": "Infosys"}, "tags": ["fresh"]}
+{"say": "which of my shares lost the most today", "domain": "finance", "expect": {"kind": "my portfolio", "name": null}, "tags": ["fresh"]}
+{"say": "do i have any tata motors", "domain": "finance", "expect": {"kind": "my holding", "name": "Tata Motors"}, "tags": ["fresh"]}
+{"say": "what's my biggest loser", "domain": "finance", "expect": {"kind": "my portfolio", "name": null}, "tags": ["fresh"]}
+{"say": "how much is one euro in rupees", "domain": "finance", "expect": {"kind": "exchange rate"}, "tags": ["fresh"]}
+{"say": "how's ethereum doing", "domain": "finance", "expect": {"kind": "crypto", "name": "Ethereum"}, "tags": ["fresh"]}
+{"say": "is itc up today", "domain": "finance", "expect": {"kind": "share price", "name": "ITC", "when": "now"}, "tags": ["fresh"]}
+{"say": "are geore russel and max verstappen beefing?", "domain": "f1", "expect": {"ask": "other"}, "tags": ["off-topic", "screenshot"]}
+{"say": "is verstappen leaving red bull", "domain": "f1", "expect": {"ask": "other"}, "tags": ["off-topic"]}
+{"say": "did norris and piastri crash", "domain": "f1", "expect": {"ask": "other"}, "tags": ["off-topic"]}
+{"say": "is there drama between hamilton and russell", "domain": "f1", "expect": {"ask": "other"}, "tags": ["off-topic"]}
+{"say": "what did toto wolff say about the penalty", "domain": "f1", "expect": {"ask": "other"}, "tags": ["off-topic"]}
+{"say": "is hamilton retiring", "domain": "f1", "expect": {"ask": "other"}, "tags": ["off-topic"]}
+{"say": "should i sell my tcs shares", "domain": "finance", "expect": {"kind": "other"}, "tags": ["off-topic"]}
+{"say": "is it a good time to invest in the market", "domain": "finance", "expect": {"kind": "other"}, "tags": ["off-topic"]}
+{"say": "why is my portfolio down so much", "domain": "finance", "expect": {"kind": "my portfolio"}, "tags": ["fresh"]}
+{"say": "who won in baku", "domain": "f1", "expect": {"ask": "race result", "race": "Baku"}, "tags": ["fresh"]}

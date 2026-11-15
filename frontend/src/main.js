@@ -1,11 +1,13 @@
 import './style.css';
 import { api } from './api.js';
 import { connectEvents } from './websocket.js';
-import { handleChatEvent, initChat, isChatEvent, reloadChat, showNote } from './chat.js';
+import { handleChatEvent, initChat, isChatEvent, onMissing, onStarted, reloadChat, setConversation, showNote } from './chat.js';
+import { initConversations, load as loadConversations, select, started } from './conversations.js';
 import { initLookups, update as updateLookup } from './lookups.js';
 import { addEvent, clearActivity, initActivity } from './activity.js';
 import { initMemories, loadMemories } from './memories.js';
 import { renderPersona } from './persona.js';
+import { signIn } from './signin.js';
 import { initPanel, initTabs, setConnection, setModel, setMood } from './ui.js';
 
 const memoriesPanel = document.getElementById('memories-panel');
@@ -16,17 +18,7 @@ let sequence = -1;
 let replaying = false;
 let persona = null;
 let memoriesTimer;
-
-initChat();
-initLookups();
-initPanel();
-initMemories(memoriesPanel);
-const tabs = initTabs(['memories', 'persona', 'activity'], (name) => {
-  if (name === 'memories') loadMemories(memoriesPanel);
-  if (name === 'persona') loadPersona();
-});
-initActivity(activityPanel, () => { if (!replaying) tabs.flag('activity'); });
-loadMemories(memoriesPanel);
+let tabs;
 
 async function loadPersona() {
   try { showPersona(await api('/persona')); }
@@ -67,10 +59,11 @@ function onEvent(event) {
     sequence = event.sequence;
   }
   const d = event.data || {};
-  if (handleChatEvent(event)) {
-    if (event.type === 'chat_message') refreshMemoriesSoon();
-    return;
+  if (event.type === 'chat_message') {
+    refreshMemoriesSoon();
+    loadConversations(); // the chat moves to the top of the list
   }
+  if (handleChatEvent(event)) return;
   if (event.type === 'persona_updated') {
     const moodChanged = d.persona?.mood !== persona?.mood;
     if (d.persona) showPersona(d.persona);
@@ -81,21 +74,52 @@ function onEvent(event) {
   addEvent(event);
 }
 
-connectEvents({
-  snapshot,
-  event: onEvent,
-  connection: setConnection,
-  error(message) {
-    if (message) showNote(message, 'sticky');
-    else if (document.getElementById('error').dataset.tone === 'sticky') showNote('');
-  },
-});
-
 async function checkModel() {
   // The conversation model is the one people feel: Groq when chat is hosted.
   try { const health = await api('/health'); setModel(health.chat || health.llm); }
   catch { setModel(null); }
 }
-checkModel();
-setInterval(checkModel, 30000);
-loadPersona();
+
+async function start() {
+  let me;
+  try { me = await signIn(); }
+  catch {
+    document.getElementById('signin').hidden = false;
+    document.getElementById('signin-title').textContent = 'Can’t reach Kip right now';
+    document.querySelector('.signin-lede').textContent = 'Check that the Pi is on, then reload this page.';
+    return;
+  }
+  // Signed out elsewhere (or the sign-in expired): back to "Who's chatting?".
+  window.addEventListener('kip:signed-out', () => location.reload());
+  document.getElementById('app').hidden = false;
+  document.getElementById('greet-name').textContent = me.name ? ` ${me.name}` : '';
+
+  initChat();
+  initLookups();
+  initPanel();
+  initMemories(memoriesPanel);
+  tabs = initTabs(['memories', 'persona', 'activity'], (name) => {
+    if (name === 'memories') loadMemories(memoriesPanel);
+    if (name === 'persona') loadPersona();
+  });
+  initActivity(activityPanel, () => { if (!replaying) tabs.flag('activity'); });
+  onStarted(started);
+  onMissing(() => select(null));
+  initConversations(me, (id) => { setConversation(id); });
+  loadMemories(memoriesPanel);
+
+  connectEvents({
+    snapshot,
+    event: onEvent,
+    connection: setConnection,
+    error(message) {
+      if (message) showNote(message, 'sticky');
+      else if (document.getElementById('error').dataset.tone === 'sticky') showNote('');
+    },
+  });
+  checkModel();
+  setInterval(checkModel, 30000);
+  loadPersona();
+}
+
+start();

@@ -53,6 +53,12 @@ class TaskContext(BaseModel):
     # Answered from their own accounts (Groww holdings): shown to them and kept on the device, but
     # never put in a later model prompt, a memory or the status line, so it never reaches Groq.
     private: bool = False
+    # The conversation that asked for this errand (None: the task API). Its events, narration and
+    # answer reach only that conversation's person.
+    session_id: str | None = None
+    speaker: str | None = None
+    # Whether the person who asked may see the owner's Groww portfolio.
+    portfolio: bool = True
     # Written before dispatch and cleared only after result evidence is journaled.
     # A restart with this set has an uncertain outcome, never an automatic retry.
     pending_action: dict | None = None

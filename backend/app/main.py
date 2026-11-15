@@ -3,19 +3,22 @@ import logging
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.access import OwnHostsOnly, origin_allowed, own_names
 from app.config import Settings, get_settings
 from app.events.bus import EventBus
 from app.chat import ChatSession
+from app.chat.hub import ConversationHub
+from app.chat.session import HISTORY
 from app.llm.factory import create_client, create_hosted_client
 from app.llm.priority import ConversationFirst
 from app.memory.recall import Embedder, MemoryStore
 from app.memory.store import PersistentMemory
+from app.people import COOKIE, SESSION_SECONDS, People, Profile, SignInError
 from app.persona import Persona
 from app.tasks.manager import TaskBusy, TaskManager
 
@@ -25,8 +28,38 @@ _log = logging.getLogger("agentic_friend")
 class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     message: str = Field(min_length=1, max_length=1000)
-    # Who is talking (a name), so "I"/"my" facts are filed under them.
-    speaker: str | None = Field(default=None, max_length=40)
+    # The conversation to continue. A new id (the page makes one per new chat) or none starts one.
+    conversation_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
+
+
+class NewProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=30)
+    pin: str = Field(min_length=4, max_length=4)
+
+
+class SignIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    profile_id: str = Field(min_length=1, max_length=64)
+    pin: str = Field(min_length=1, max_length=8)
+
+
+class FirstPin(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    pin: str = Field(min_length=4, max_length=4)
+
+
+class Access(BaseModel):
+    """What the owner allows someone; an omitted field is left as it is."""
+    model_config = ConfigDict(extra="forbid")
+    portfolio: bool | None = None
+    pin_change: bool | None = None
+
+
+class NewPin(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    current: str = Field(min_length=1, max_length=8)
+    pin: str = Field(min_length=4, max_length=4)
 
 
 class GoalRequest(BaseModel):
@@ -66,14 +99,27 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
         from app.llm.groq import HostedChat
         chat_llm = HostedChat(hosted, llm, [m.strip() for m in config.groq_chat_models.split(",") if m.strip()])
     manager = TaskManager(task_llm, bus, config, persistent, persona=persona, memory_store=store, hosted=hosted)
-    chat = ChatSession(chat_llm, bus, manager, config, store=store, persona=persona,
-                       session_id=config.chat_session_id)
-    chat.gate = task_llm
-    chat.attach()
+    # Profiles, signed-in devices and each person's conversations. The chat from before profiles
+    # (config.chat_session_id) becomes the first profile's, the owner's.
+    people = People(store, legacy_session=config.chat_session_id)
+    router = None
     if config.intent_router != "off":
         # Reviewed corrections join the shipped examples; the embedding model joins once loaded.
         from app.chat.router import IntentRouter
-        chat.router = IntentRouter(store.accepted_intent_examples(), embedder=embedder)
+        router = IntentRouter(store.accepted_intent_examples(), embedder=embedder)
+    kip_name = persona.name if persona else config.persona_name
+
+    def open_conversation(conversation_id: str, profile: Profile) -> ChatSession:
+        session = ChatSession(chat_llm, bus, manager, config, store=store, persona=persona,
+                              session_id=conversation_id, speaker=profile.name, owner=profile.owner,
+                              portfolio=profile.portfolio)
+        session.gate = task_llm
+        session.router = router
+        session.attach()
+        return session
+
+    hub = ConversationHub(open_conversation, bus)
+    owners: dict[str, str | None] = {}  # conversation id -> profile id (never changes once made)
     mutation_lock = asyncio.Lock()
 
     def save_persona() -> None:
@@ -98,11 +144,14 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
             # then index any memories saved while meaning search was unavailable.
             async def prepare_memory():
                 await asyncio.to_thread(embedder.embed_sync, ["warm up"])
-                if chat.router is not None:
+                if router is not None:
                     # A second or two in a worker thread; until then the router uses TF-IDF alone.
-                    await asyncio.to_thread(chat.router.add_embeddings)
+                    await asyncio.to_thread(router.add_embeddings)
                 await store.backfill()
             app.state.memory_ready = asyncio.create_task(prepare_memory())
+        # The feed readers train now (half a second on the Pi), not on the first F1 or markets question.
+        from app.capabilities.feeds import warm_readers
+        app.state.readers_ready = asyncio.create_task(asyncio.to_thread(warm_readers))
         saver = asyncio.create_task(keep_persona_saved(), name="persona-saver")
         yield
         saver.cancel()
@@ -111,7 +160,7 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
         if memory_ready and not memory_ready.done():
             memory_ready.cancel()  # never let a backfill touch the store after shutdown
             await asyncio.gather(memory_ready, return_exceptions=True)
-        await chat.close()
+        await hub.close()
         await manager.close()
         save_persona()  # including what changed since the last save
         if client is None:
@@ -121,50 +170,213 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
         store.close()
 
     app = FastAPI(title="agentic_friend", lifespan=lifespan)
-    app.state.manager, app.state.bus = manager, bus
-    # No login: Kip trusts whoever reaches him, so only his own pages and host names get in. The
-    # Host check (HTTP and WebSocket) stops another site pointing its own name at this machine.
+    app.state.manager, app.state.bus, app.state.people, app.state.hub = manager, bus, people, hub
+    app.state.persona = persona
+    # Everyone signs in to a profile (a 4-digit PIN). Only Kip's own pages and host names get in: the
+    # Host check (HTTP and WebSocket) stops another site pointing its own name at this machine, and
+    # a page may act only when Kip served it (access.py).
     origins = {o.strip().rstrip("/") for o in config.allowed_origins.split(",") if o.strip()}
-    app.add_middleware(TrustedHostMiddleware,
-                       allowed_hosts=[h.strip() for h in config.allowed_hosts.split(",") if h.strip()])
+    app.add_middleware(OwnHostsOnly, names=own_names(config.allowed_hosts))
 
-    def trusted_origin(origin: str | None) -> bool:
-        return origin is None or origin.rstrip("/") in origins
+    def trusted_origin(origin: str | None, host: str | None) -> bool:
+        return origin_allowed(origin, host, origins)
 
     @app.middleware("http")
     async def same_site_changes(request: Request, call_next):
         # A page on another site can make the browser send a POST here (a chat message, a new task,
         # a cancel). Browsers name that page in Origin, so a foreign one is refused.
-        if request.method not in ("GET", "HEAD", "OPTIONS") and not trusted_origin(request.headers.get("origin")):
+        changes = request.method not in ("GET", "HEAD", "OPTIONS")
+        if changes and not trusted_origin(request.headers.get("origin"), request.headers.get("host")):
             return JSONResponse({"detail": "Requests from other sites are not accepted."}, status_code=403)
         return await call_next(request)
 
-    def snapshot() -> dict:
-        latest = next(reversed(manager.tasks.values()), None) if manager.tasks else None
-        return {"sequence": bus.sequence, "task": manager.active() or (latest.public() if latest else None)}
+    # ── who is asking ───────────────────────────────────────────────────────
+    def local_tool(client, headers) -> bool:
+        """A program on the Pi itself (the benchmark), which acts as the owner. A browser page can
+        never qualify: it always sends Origin, and cannot add this header to another site's request."""
+        return (client is not None and client.host in ("127.0.0.1", "::1")
+                and headers.get("x-kip-local") == "1" and "origin" not in headers)
+
+    def signed_in(cookies, client, headers) -> Profile | None:
+        profile = people.signed_in(cookies.get(COOKIE))
+        if profile is None and local_tool(client, headers):
+            profile = people.owner()
+        return profile
+
+    def who(request: Request) -> Profile:
+        profile = signed_in(request.cookies, request.client, request.headers)
+        if profile is None:
+            raise HTTPException(401, "Sign in first.")
+        return profile
+
+    def owner_of(conversation_id: str | None) -> str | None:
+        if conversation_id not in owners:
+            owners[conversation_id] = people.conversation_owner(conversation_id)
+        return owners[conversation_id]
+
+    def task_owner(task_id: str | None, task: dict | None = None) -> tuple[bool, str | None]:
+        """(is a task event, the profile id it belongs to). API tasks belong to the owner (None)."""
+        context = manager.tasks.get(task_id) if task_id else None
+        if context is None and not task:
+            return False, None
+        session_id = context.session_id if context is not None else (task or {}).get("session_id")
+        return True, owner_of(session_id) if session_id else None
+
+    def visible(event: dict, profile: Profile) -> bool:
+        """Each person sees their own conversations and errands; Kip's mood is everyone's."""
+        data = event.get("data") or {}
+        session_id = data.get("session_id") or (data.get("turn") or {}).get("session_id")
+        if session_id:
+            return owner_of(session_id) == profile.id
+        task = data.get("task") or {}
+        is_task, belongs = task_owner(task.get("id") or data.get("task_id"), task)
+        if is_task:
+            return belongs == profile.id if belongs else profile.owner
+        return True
+
+    def task_visible(context, profile: Profile) -> bool:
+        return owner_of(context.session_id) == profile.id if context.session_id else profile.owner
+
+    def snapshot(profile: Profile) -> dict:
+        mine = [task for task in manager.tasks.values() if task_visible(task, profile)]
+        active = manager.tasks.get(manager.active_id) if manager.active_id else None
+        if active is not None and not task_visible(active, profile):
+            active = None
+        latest = active or (mine[-1] if mine else None)
+        return {"sequence": bus.sequence, "task": latest.public() if latest else None}
+
+    def signed_in_response(response: Response, request: Request, profile: Profile) -> dict:
+        token = people.sign_in(profile)
+        response.set_cookie(COOKIE, token, max_age=SESSION_SECONDS, httponly=True, samesite="strict",
+                            secure=request.url.scheme == "https", path="/")
+        return profile.public()
+
+    # ── profiles and signing in ─────────────────────────────────────────────
+    @app.get("/api/profiles")
+    async def profiles(request: Request):
+        me = signed_in(request.cookies, request.client, request.headers)
+        return {"profiles": [{"id": p.id, "name": p.name, "needs_pin": p.needs_pin} for p in people.profiles()],
+                "me": me.public() if me else None, "name": kip_name}
+
+    @app.post("/api/profiles", status_code=201)
+    async def create_profile(body: NewProfile, request: Request, response: Response):
+        try:
+            profile = await asyncio.to_thread(people.create, body.name, body.pin)
+        except SignInError as exc:
+            raise HTTPException(409, str(exc)) from None
+        return signed_in_response(response, request, profile)
+
+    @app.post("/api/signin")
+    async def sign_in(body: SignIn, request: Request, response: Response):
+        try:
+            profile = await asyncio.to_thread(people.verify, body.profile_id, body.pin)
+        except SignInError as exc:
+            raise HTTPException(403, str(exc)) from None
+        return signed_in_response(response, request, profile)
+
+    @app.post("/api/profiles/{profile_id}/pin")
+    async def choose_pin(profile_id: str, body: FirstPin, request: Request, response: Response):
+        """A profile made without a PIN: its person chooses one, and is signed in."""
+        try:
+            profile = await asyncio.to_thread(people.choose_pin, profile_id, body.pin)
+        except SignInError as exc:
+            raise HTTPException(409, str(exc)) from None
+        return signed_in_response(response, request, profile)
+
+    @app.post("/api/signout", status_code=204)
+    async def sign_out(request: Request, response: Response):
+        people.sign_out(request.cookies.get(COOKIE))
+        response.delete_cookie(COOKIE, path="/")
+
+    @app.get("/api/me")
+    async def me(profile: Profile = Depends(who)):
+        result = profile.public()
+        if profile.owner:
+            result["people"] = [p.public() for p in people.profiles() if not p.owner]
+        return result
+
+    @app.post("/api/me/pin")
+    async def change_pin(body: NewPin, request: Request, response: Response, profile: Profile = Depends(who)):
+        """Change your own PIN (when the owner allows it). Other devices are signed out; this one stays."""
+        if not profile.pin_change:
+            raise HTTPException(403, "The owner hasn't allowed this profile to change its PIN.")
+        try:
+            changed = await asyncio.to_thread(people.change_pin, profile.id, body.current, body.pin)
+        except SignInError as exc:
+            raise HTTPException(403, str(exc)) from None
+        return signed_in_response(response, request, changed)
+
+    @app.post("/api/profiles/{profile_id}/access")
+    async def set_access(profile_id: str, body: Access, profile: Profile = Depends(who)):
+        if not profile.owner:
+            raise HTTPException(403, "Only the owner can change what people may do.")
+        try:
+            changed = people.set_access(profile_id, portfolio=body.portfolio, pin_change=body.pin_change)
+        except SignInError as exc:
+            raise HTTPException(404, str(exc)) from None
+        for conversation in people.conversations(changed):
+            session = hub.peek(conversation["id"])
+            if session is not None:
+                session.portfolio = session.manager.portfolio = changed.portfolio
+        return changed.public()
+
+    # ── conversations ───────────────────────────────────────────────────────
+    def own_conversation(conversation_id: str, profile: Profile) -> str:
+        if owner_of(conversation_id) != profile.id:
+            raise HTTPException(404, "Conversation not found.")
+        return conversation_id
+
+    @app.get("/api/conversations")
+    async def conversations(profile: Profile = Depends(who)):
+        return {"conversations": people.conversations(profile)}
+
+    @app.delete("/api/conversations/{conversation_id}", status_code=204)
+    async def delete_conversation(conversation_id: str, profile: Profile = Depends(who)):
+        own_conversation(conversation_id, profile)
+        await hub.drop(conversation_id)
+        people.delete_conversation(conversation_id)
+        owners.pop(conversation_id, None)
 
     @app.post("/api/chat", status_code=202)
-    async def send_chat(request: ChatRequest):
+    async def send_chat(request: ChatRequest, profile: Profile = Depends(who)):
+        conversation_id = request.conversation_id
+        if conversation_id and owner_of(conversation_id) is not None:
+            own_conversation(conversation_id, profile)  # someone else's id is "not found", never theirs
+        else:
+            conversation_id = people.new_conversation(profile, request.message, conversation_id)
+            owners[conversation_id] = profile.id
+        session = hub.get(conversation_id, profile)
         try:
-            return chat.submit(request.message, request.speaker)
+            turn = session.submit(request.message)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from None
+        people.touch(conversation_id)
+        await hub.trim()
+        return turn
 
     @app.get("/api/chat")
-    async def chat_history():
-        return {"turns": chat.history(), "busy": chat.busy, "name": chat.name, **chat.state()}
+    async def chat_history(conversation_id: str = "", profile: Profile = Depends(who)):
+        if not conversation_id:
+            return {"turns": [], "busy": False, "name": kip_name, "session_id": None}
+        own_conversation(conversation_id, profile)
+        session = hub.peek(conversation_id)
+        if session is not None:
+            return {"turns": session.history(), "busy": session.busy, "name": kip_name, **session.state()}
+        turns = await asyncio.to_thread(store.conversation_turns, conversation_id, HISTORY)
+        return {"turns": turns, "busy": False, "name": kip_name, "session_id": conversation_id}
 
     @app.get("/api/memories")
-    async def memories(q: str = "", kind: str = "", limit: int = 20):
+    async def memories(q: str = "", kind: str = "", limit: int = 20, profile: Profile = Depends(who)):
         limit = max(1, min(limit, 100))
         kinds = [kind] if kind else None
+        whose = {"viewer": profile.speaker, "legacy": profile.owner}
         if q.strip():
-            return await store.recall(q, kinds=kinds, k=limit, touch=False)
-        return await asyncio.to_thread(store.recent, limit, kind or None)
+            return await store.recall(q, kinds=kinds, k=limit, touch=False, **whose)
+        return await asyncio.to_thread(lambda: store.recent(limit, kind or None, **whose))
 
     @app.get("/api/persona")
-    async def get_persona():
-        return persona.public() if persona else {"enabled": False}
+    async def get_persona(profile: Profile = Depends(who)):
+        return persona.public(profile.speaker, legacy=profile.owner) if persona else {"enabled": False}
 
     @app.get("/api/health")
     async def health():
@@ -179,11 +391,13 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
         return result
 
     @app.get("/api/state")
-    async def state():
-        return snapshot()
+    async def state(profile: Profile = Depends(who)):
+        return snapshot(profile)
 
     @app.post("/api/tasks", status_code=202)
-    async def create_task(request: GoalRequest):
+    async def create_task(request: GoalRequest, profile: Profile = Depends(who)):
+        if not profile.owner:
+            raise HTTPException(403, "Only the owner can start errands directly.")
         async with mutation_lock:
             try:
                 return manager.start(request.goal).public()
@@ -191,16 +405,16 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
                 raise HTTPException(409, str(exc)) from None
 
     @app.get("/api/tasks/{task_id}")
-    async def task(task_id: str):
-        if task_id not in manager.tasks:
+    async def task(task_id: str, profile: Profile = Depends(who)):
+        if task_id not in manager.tasks or not task_visible(manager.tasks[task_id], profile):
             raise HTTPException(404, "Task not found (only the latest 50 tasks are retained).")
         # The public view: no audit trail (page text, tool output), and a private answer's words hidden.
         return manager.tasks[task_id].public()
 
     @app.post("/api/tasks/{task_id}/cancel")
-    async def cancel(task_id: str):
+    async def cancel(task_id: str, profile: Profile = Depends(who)):
         async with mutation_lock:
-            if task_id not in manager.tasks:
+            if task_id not in manager.tasks or not task_visible(manager.tasks[task_id], profile):
                 raise HTTPException(404, "Task not found.")
             return (await manager.cancel(task_id)).public()
 
@@ -208,20 +422,29 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
     async def websocket(socket: WebSocket):
         # A browser always says which page opened the socket: only Kip's own may read the stream.
         # Clients that are not browsers (the benchmark) send no Origin and are already on this machine.
-        if not trusted_origin(socket.headers.get("origin")):
+        profile = signed_in(socket.cookies, socket.client, socket.headers)
+        if not trusted_origin(socket.headers.get("origin"), socket.headers.get("host")) or profile is None:
             await socket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
         await socket.accept()
         queue = bus.subscribe()
-        # Subscribe before taking a snapshot: no startup race can lose an action.
-        await socket.send_json({"type": "snapshot", "data": snapshot(), "events": list(bus.history)})
+
+        def replay() -> dict:
+            # Subscribed before this snapshot is taken: no startup race can lose an action.
+            return {"type": "snapshot", "data": snapshot(profile),
+                    "events": [event for event in bus.history if visible(event, profile)]}
+        await socket.send_json(replay())
 
         async def send():
             while True:
                 event = await queue.get()
                 if event["type"] == "resync_required":
-                    await socket.send_json({"type": "snapshot", "data": snapshot(), "events": list(bus.history)})
-                else:
+                    await socket.send_json(replay())
+                elif event["type"] == "persona_updated" and persona is not None:
+                    # Kip's mood is everyone's; his relationship and moments with a person are theirs.
+                    mine = persona.public(profile.speaker, legacy=profile.owner)
+                    await socket.send_json({**event, "data": {**event["data"], "persona": mine}})
+                elif visible(event, profile):
                     await socket.send_json(event)
 
         # Receive in the handler itself: a disconnect then ends the handler in one step,

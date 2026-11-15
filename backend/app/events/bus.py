@@ -50,6 +50,10 @@ class EventBus:
         """Synchronous in-process observers (e.g. the persona). Must be cheap."""
         self.listeners.append(listener)
 
+    def remove_listener(self, listener) -> None:
+        if listener in self.listeners:
+            self.listeners.remove(listener)
+
     def emit(self, type: str, agent: str = "system", skip_history: bool = False, **data) -> dict:
         self.sequence += 1
         event = {"id": str(uuid4()), "sequence": self.sequence,

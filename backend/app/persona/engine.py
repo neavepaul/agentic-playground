@@ -91,7 +91,9 @@ class Persona:
         self._apply(appraisal, now)
         self.dirty = True
         if self._bus is not None:
-            self._bus.emit("persona_updated", self.name, skip_history=True, persona=self.public())
+            # The event carries only what everyone may see (mood, traits); each page is sent its own
+            # person's relationship, moments and follow-ups by the server (main.py).
+            self._bus.emit("persona_updated", self.name, skip_history=True, persona=self.public(viewer=""))
 
     def _apply(self, appraisal, now: float) -> None:
         state, mood = self.state, self.state.mood
@@ -112,7 +114,7 @@ class Persona:
         if person:
             self._update_bond(person, appraisal, feeling, now)
         if appraisal.episode:
-            self._remember(appraisal.episode, feeling, person, now)
+            self._remember(appraisal.episode, feeling, person or appraisal.about, now)
         state.followups = [f for f in state.followups if f.expires_at > now][-6:]
 
     def _update_bond(self, person: str, appraisal, feeling: str, now: float) -> None:
@@ -314,9 +316,15 @@ class Persona:
             view["relationships"] = {p: self._bond(p, detail=True) for p in known[:3]}
         return self._bounded(view, ["relationships", "track_record", "identity"], VOICE_VIEW_LIMIT)
 
-    def public(self) -> dict:
+    def public(self, viewer: str | None = None, legacy: bool = False) -> dict:
+        """Kip as the panel shows him. With a viewer (a signed-in person), only what is theirs: Kip's
+        mood and traits, his relationship with them, and their own moments and follow-ups; never
+        how he feels about anyone else. legacy adds moments from before profiles (the owner's)."""
         label, mood = self.mood_label(), self.state.mood
-        bonds = sorted(self.state.relationships.items(), key=lambda item: -(item[1].warmth + item[1].familiarity))
+        mine = (lambda person: True) if viewer is None else (
+            lambda person: person == viewer or (legacy and person is None))
+        bonds = sorted(((p, b) for p, b in self.state.relationships.items() if viewer is None or p == viewer),
+                       key=lambda item: -(item[1].warmth + item[1].familiarity))
         return {"name": self.name, "mood": label, "tone": TONES[label],
                 "valence": round(mood.valence, 2), "energy": round(mood.energy, 2),
                 "affect": {key: round(getattr(mood, key), 2) for key in ("confidence", "frustration", "intrigue")},
@@ -326,5 +334,5 @@ class Persona:
                                       "concern": round(b.concern, 2)}
                                   for p, b in bonds[:8]},
                 "track_record": self.track_record(limit=10),
-                "moments": [e.model_dump() for e in self.state.episodes[-5:]],
-                "followups": [f.model_dump() for f in self.state.followups]}
+                "moments": [e.model_dump() for e in self.state.episodes if mine(e.person)][-5:],
+                "followups": [f.model_dump() for f in self.state.followups if mine(f.person)]}

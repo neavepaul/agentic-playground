@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from tests.conftest import sign_in
 from tests.fakes import WaitingLLM
 
 
@@ -8,6 +9,8 @@ def test_api_lifecycle_and_websocket():
     app = create_app(client=WaitingLLM())
     with TestClient(app) as client:
         assert client.get("/api/health").json()["status"] == "ok"
+        assert client.get("/api/state").status_code == 401  # everyone signs in first
+        sign_in(client)
         assert client.get("/api/state").json() == {"sequence": 0, "task": None}
         assert client.get("/api/world").status_code == 404
         assert client.post("/api/world/reset").status_code in (404, 405)
@@ -51,11 +54,12 @@ def test_event_queue_overflow_requests_resync():
 
 
 def test_only_kips_own_pages_and_host_names_get_in():
-    """No login, so the boundary is the browser's: another site's page may neither read the event
-    stream nor send changes, and another host name (DNS rebinding) is refused outright."""
+    """Besides signing in, the boundary is the browser's: another site's page may neither read the
+    event stream nor send changes, and another host name (DNS rebinding) is refused outright."""
     import pytest
     from starlette.websockets import WebSocketDisconnect
     with TestClient(create_app(client=WaitingLLM())) as client:
+        sign_in(client)
         with pytest.raises(WebSocketDisconnect) as refused:
             with client.websocket_connect("/ws", headers={"origin": "https://untrusted.example"}) as socket:
                 socket.receive_json()
@@ -86,6 +90,7 @@ def test_a_task_from_the_api_is_its_public_view():
     from app.tasks.models import TaskContext
     app = create_app(client=WaitingLLM())
     with TestClient(app) as client:
+        sign_in(client)  # the owner sees errands started through the task API
         task = TaskContext(goal="how is my portfolio doing?", status="completed", private=True,
                            answer={"answer": "Worth 46,905.", "sources": [{"title": "Groww holdings", "url": "https://groww.in/"}]},
                            action_history=[{"tool": "web_search", "success": True, "observation": {"quote": "Worth 46,905."}}])
@@ -126,6 +131,7 @@ def test_the_backend_serves_the_built_page_and_the_api_still_wins(tmp_path):
         assert "<title>Kip</title>" in client.get("/").text
         assert client.get("/assets/app.js").status_code == 200
         assert client.get("/api/health").json()["status"] == "ok"
+        sign_in(client)
         with client.websocket_connect("/ws") as socket:
             assert socket.receive_json()["type"] == "snapshot"
         assert client.post("/api/chat", json={"message": "hi"},

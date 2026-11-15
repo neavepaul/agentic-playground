@@ -472,12 +472,15 @@ async def test_a_session_sends_the_small_prompt_and_still_acts_on_the_action_lin
 
 def test_chat_and_memories_api():
     from app.main import create_app
+    from tests.conftest import sign_in
     with TestClient(create_app(client=StreamingModel([reply("Hello from Kip!")]))) as client:
+        sign_in(client)
         assert client.post("/api/chat", json={"message": "  "}).status_code == 422
         turn = client.post("/api/chat", json={"message": "Hi Kip"})
         assert turn.status_code == 202 and turn.json()["role"] == "user"
+        conversation = turn.json()["session_id"]
         for _ in range(100):
-            history = client.get("/api/chat").json()
+            history = client.get("/api/chat", params={"conversation_id": conversation}).json()
             if len(history["turns"]) >= 2:
                 break
             import time

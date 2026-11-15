@@ -39,6 +39,40 @@ def feed(pages: dict):
     return get, asked
 
 
+TEAM_STANDINGS = {"MRData": {"StandingsTable": {"StandingsLists": [{"season": "2026", "ConstructorStandings": [
+    {"position": "1", "points": "720", "Constructor": {"name": "McLaren"}},
+    {"position": "2", "points": "540", "Constructor": {"name": "Red Bull"}}]}]}}}
+DRIVERS_WITH_TEAMS = {"MRData": {"StandingsTable": {"StandingsLists": [{"season": "2026", "DriverStandings": [
+    {"position": "1", "points": "390", "Driver": {"givenName": "Lando", "familyName": "Norris"},
+     "Constructors": [{"name": "McLaren"}]},
+    {"position": "2", "points": "371", "Driver": {"givenName": "Max", "familyName": "Verstappen"},
+     "Constructors": [{"name": "Red Bull"}]}]}]}}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("question,expected", [
+    ({"entities": ["McLaren"], "said": "how many points does mclaren have in the championship"},
+     "McLaren are 1st in the 2026 constructors' championship with 720 points."),
+    ({"entities": ["Red Bull Racing"], "said": "where are red bull in the standings"},
+     "Red Bull are 2nd in the 2026 constructors' championship with 540 points."),
+    ({"entities": [], "said": "who leads the constructors championship"},
+     "McLaren are 1st in the 2026 constructors' championship with 720 points."),
+    ({"entities": ["Max Verstappen"], "said": "how many points does max have"},
+     "Max Verstappen is 2nd in the 2026 championship with 371 points."),
+    ({"entities": [], "said": "who leads the championship"},
+     "Lando Norris is 1st in the 2026 championship with 390 points."),
+    # A team and its driver both named: the driver is asked about.
+    ({"entities": ["McLaren", "Lando Norris"],
+      "said": "how many points does mclaren driver lando norris have in the champoinship"},
+     "Lando Norris is 1st in the 2026 championship with 390 points."),
+])
+async def test_a_team_gets_the_constructors_standings_not_its_best_driver(question, expected):
+    get, _ = feed({f"{feeds.F1}/current/driverStandings.json": DRIVERS_WITH_TEAMS,
+                   f"{feeds.F1}/current/constructorStandings.json": TEAM_STANDINGS})
+    found = await feeds.answer({"domain": "f1", "focus": "standings", **question}, NOW, get)
+    assert found.answer == expected
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("question,expected", [
     ({"focus": "finishing position", "time": "latest completed"},
@@ -556,6 +590,64 @@ async def test_kip_only_ever_calls_the_groww_token_and_holdings_endpoints(monkey
     assert groww_urls == {feeds.GROWW_TOKEN_URL, feeds.GROWW_HOLDINGS_URL}
 
 
+@pytest.mark.parametrize("said,entities", [
+    ("how much tcs do i own?", ["TCS"]),
+    ("how much tcs in my portfolio", ["TCS"]),
+    ("how many shares of Tata Consultancy Services do i have", ["Tata Consultancy Services"]),
+    ("how much tcs is in my groww portfolio", ["TCS", "Groww"]),
+])
+@pytest.mark.asyncio
+async def test_a_named_holding_is_answered_on_its_own(monkeypatch, said, entities):
+    get, calls = groww_feed(monkeypatch)
+    search = {"quotes": [{"symbol": "TCS.BO"}, {"symbol": "TCS.NS"}]}
+
+    async def get_with_search(url, headers=None):
+        return search if url.startswith(feeds.SEARCH) else await get(url, headers)
+    found = await feeds.answer({"domain": "finance", "entities": entities, "focus": "price", "time": "now",
+                                "said": said}, NOW, get_with_search, groww=GROWW)
+    # 10 x 2407.50 = 24,075 against 20,000 paid; 2407.5 against 2442.4 is down 1.43%.
+    assert found.answer == ("You hold 10 TCS shares, worth ₹24,075 at ₹2,407.50: up ₹4,075 (20.4%) "
+                            "on the ₹20,000 you paid, down 1.43% today.")
+    assert found.provider == "groww"
+    assert "INFY" not in "".join(url for _, url, _ in calls)  # only the asked-about holding is priced
+
+
+@pytest.mark.asyncio
+async def test_a_named_share_they_do_not_hold(monkeypatch):
+    get, _ = groww_feed(monkeypatch)
+
+    async def get_with_search(url, headers=None):
+        return {"quotes": [{"symbol": "HDFCBANK.NS"}]} if url.startswith(feeds.SEARCH) else await get(url, headers)
+    found = await feeds.answer({"domain": "finance", "entities": ["HDFC Bank"], "time": "now",
+                                "said": "how much hdfc bank do i own?"}, NOW, get_with_search, groww=GROWW)
+    assert found.answer == "You don't hold any HDFC Bank on Groww."
+
+
+@pytest.mark.asyncio
+async def test_a_holding_named_by_how_its_symbol_starts(monkeypatch):
+    get, _ = groww_feed(monkeypatch)
+    holdings = {"payload": {"holdings": [
+        {"trading_symbol": "HDFCBANK", "quantity": 5, "average_price": 700, "tradable_exchanges": ["NSE"]},
+        {"trading_symbol": "TCS", "quantity": 10, "average_price": 2000, "tradable_exchanges": ["NSE"]}]}}
+    spark = {"spark": {"result": [{"symbol": "HDFCBANK.NS", "response": [{"meta": {"regularMarketPrice": 804,
+                                                                                    "chartPreviousClose": 812.3}}]}]}}
+
+    async def fake(url, headers=None):
+        if url == feeds.GROWW_HOLDINGS_URL:
+            return holdings
+        return {"quotes": []} if url.startswith(feeds.SEARCH) else spark
+    found = await feeds.answer({"domain": "finance", "entities": ["HDFC"], "time": "now",
+                                "said": "how much hdfc in my portfolio"}, NOW, fake, groww=GROWW)
+    assert found.answer == ("You hold 5 HDFCBANK shares, worth ₹4,020 at ₹804.00: up ₹520 (14.9%) "
+                            "on the ₹3,500 you paid, down 1.02% today.")
+
+
+def test_owning_a_named_share_is_a_portfolio_question():
+    asked = {"domain": "finance", "entities": ["HDFC Bank"], "focus": "price", "said": "how much hdfc bank do i own?"}
+    assert feeds.is_portfolio(asked)
+    assert feeds.source_for(asked, groww=GROWW) == "Groww"
+
+
 @pytest.mark.asyncio
 async def test_without_groww_keys_portfolio_questions_go_elsewhere(monkeypatch):
     get, calls = groww_feed(monkeypatch)
@@ -641,6 +733,30 @@ async def test_portfolio_answers_stay_on_the_device(monkeypatch, caplog):
     assert {e["type"] for e in manager.bus.history} >= {"capability_observed", "task_completed", "chat_message"}
     assert "46,905" not in json.dumps(task.public(), ensure_ascii=False)
     assert task.answer["answer"].startswith("Your Groww portfolio")  # the task itself keeps it
+    await done(session, manager)
+
+
+@pytest.mark.parametrize("said", ["what is the best performer in my portfolio", "what is my top holding"])
+@pytest.mark.asyncio
+async def test_portfolio_questions_the_router_is_unsure_of_still_go_to_groww(monkeypatch, said):
+    """The chat model once answered these from an earlier HDFC Bank lookup ("I see HDFC Bank price,
+    not full portfolio data"). Their holdings are only ever read from Groww."""
+    from tests.test_conversation_truth import PlanningModel, done, session_with
+    from tests.test_permissions import settle
+    from app.chat import router
+    from app.config import Settings
+
+    get, _ = groww_feed(monkeypatch)
+    monkeypatch.setattr(feeds, "fetch", get)
+    monkeypatch.setattr(router.Route, "live", property(lambda self: False))  # the router is never sure
+    model = PlanningModel([])
+    session, manager = session_with(model, settings=Settings(intent_router="on", groww_api_key=GROWW[0],
+                                                             groww_api_secret=GROWW[1]))
+    session.submit(said)
+    await settle(session, manager)
+    assert model.prompts == []  # no chat model reply
+    kip = [t["text"] for t in session.history() if t["role"] == "kip"]
+    assert any("best INFY" in text for text in kip)
     await done(session, manager)
 
 

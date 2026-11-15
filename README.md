@@ -38,16 +38,24 @@ The installer:
 After that, add your keys to `backend/.env` and run `sudo systemctl restart kip`. To update, run
 `git pull` and the installer again; it keeps `.env` and `kip.db`.
 
-One service serves everything on port 8000, bound to the Pi itself: there is no login (see
-Configuration). Open **http://127.0.0.1:8000** in the Pi's browser. From another computer, forward
-the port over SSH, then open **http://localhost:8000** there:
+One service serves everything on port 8000, to the Pi itself and to phones and laptops on the same
+Wi-Fi. Open **http://127.0.0.1:8000** in the Pi's browser, or **http://kip-pi.local:8000** (your
+Pi's hostname, or its IP address) on a phone; the installer prints both.
 
-```bash
-ssh -L 8000:127.0.0.1:8000 pi@raspberrypi.local
-```
+**People.** Everyone picks their name and types a 4-digit PIN, or makes a profile. The first profile
+made is the owner's: make yours first. Each person has their own chats and their own memories; one
+Kip knows them all, but never tells one person what another said. Five wrong PINs lock a profile for
+a while, doubling each time.
 
-Replace `pi@raspberrypi.local` with your Pi's user and hostname; the installer prints the exact
-command.
+**Settings** (the gear beside your name). The owner decides, per person, who may ask about the Groww
+portfolio and who may change their own PIN; the owner always may do both. Anyone allowed changes
+their PIN there (the current one first), which signs out their other devices. To make a profile for
+someone who picks their own PIN the first time they sign in, run `.venv/bin/python -m app.people add
+NAME` in `backend` (`list` shows everyone).
+
+**Chats.** Like a chat app: Kip opens on a new chat, your chats are listed newest first, and
+deleting one removes its messages (not what Kip learned from it). The chat from before profiles
+becomes the owner's "Earlier chats".
 
 **On the Pi's own screen.** Run this once on the desktop version of Raspberry Pi OS:
 
@@ -194,13 +202,13 @@ Copy `backend/.env.example` to `backend/.env`; environment variables override it
 | `PERSONA_MAKER` | unset | Who built Kip, as he should know it; unset, he says he doesn't know |
 | `CHAT_DEFAULT_SPEAKER` | unset | Who is talking when nobody has said; otherwise learned from "my name is …" |
 | `LOG_LEVEL` | `INFO` | `DEBUG` for diagnostics |
-| `ALLOWED_HOSTS` | `127.0.0.1,localhost` | Host names the server answers to; any other is refused |
-| `ALLOWED_ORIGINS` | `http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:8000,http://localhost:8000` | Pages that may open the WebSocket or send changes; a page on any other site is refused |
+| `ALLOWED_HOSTS` | `127.0.0.1,localhost` | Extra host names the server answers to, besides the machine's own name (`kip-pi`, `kip-pi.local`) and private IP addresses; any other is refused |
+| `ALLOWED_ORIGINS` | `http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:8000,http://localhost:8000` | Extra pages that may open the WebSocket or send changes, besides the page Kip served (the dev server) |
 
-Run **one Uvicorn worker**, bound to loopback as shown. **There is no login**: anyone who can reach
-the port can read the conversation and memories and start errands. On loopback that is only you, and
-the Host and Origin checks above stop other websites in your browser from reaching it. Don't expose
-it on a network (or add its address to `ALLOWED_HOSTS`) until authentication has been added.
+Run **one Uvicorn worker**. On the Pi it listens on the home network, and everyone signs in with a
+PIN. A PIN is a lock for a household, not for the internet: never forward Kip's port from your
+router. The connection is plain HTTP, so someone on the same Wi-Fi who captures traffic could read
+chats; keep the Wi-Fi itself private.
 
 ## Speed on a Raspberry Pi 4
 
@@ -212,21 +220,31 @@ second and writes about 3.
 - **Tens of seconds**: anything the local model writes.
 
 Measure real numbers on the Pi with `.venv/bin/python -m app.bench` from `backend` while Kip runs.
-The benchmark talks to Kip like the browser does, so its messages join the conversation; point
-`MEMORY_DB_FILE` at a copy of `kip.db` for the run if they shouldn't be kept.
+The benchmark talks to Kip like the browser does, as the owner and in a new chat of its own; point
+`MEMORY_DB_FILE` at a copy of `kip.db` for the run if it shouldn't be kept.
 
 ## API
 
 | Endpoint | Result |
 |---|---|
 | `GET /api/health` | Backend health and model availability |
-| `GET /api/state` | The event sequence and the active or latest task |
-| `GET /api/chat` / `POST /api/chat` | Conversation history / `{"message": "..."}` → 202 |
+| `GET /api/profiles` | Profile names for the picker, and who this device is signed in as |
+| `POST /api/profiles` / `POST /api/signin` / `POST /api/signout` | Make a profile `{"name", "pin"}` / sign in `{"profile_id", "pin"}` / sign out |
+| `GET /api/me` | The signed-in profile (the owner also gets everyone else's) |
+| `POST /api/profiles/{id}/access` | Owner only: `{"portfolio": true, "pin_change": true}` (either or both) |
+| `POST /api/profiles/{id}/pin` | A profile made without a PIN: `{"pin"}` chooses it and signs in |
+| `POST /api/me/pin` | `{"current", "pin"}`: change your own PIN, when allowed |
+| `GET /api/conversations` / `DELETE /api/conversations/{id}` | Your chats, newest first / delete one |
+| `GET /api/state` | The event sequence and your active or latest task |
+| `GET /api/chat` / `POST /api/chat` | `?conversation_id=`: a chat's history / `{"message", "conversation_id"}` → 202 (a new id starts a chat) |
 | `GET /api/memories` | `?q=&kind=&limit=`: search or list memories |
 | `GET /api/persona` | Mood, traits, relationships and recent moments |
 | `POST /api/tasks` | `{"goal": "..."}` → 202 with task state |
 | `GET /api/tasks/{id}` / `POST /api/tasks/{id}/cancel` | Task state / cancel it |
-| `WS /ws` | A snapshot, then chat, task, tool and persona events |
+| `WS /ws` | A snapshot, then your chat, task and tool events, and Kip's mood |
+
+Everything but `/api/health`, `/api/profiles` and signing in needs a signed-in device (a cookie).
+A program on the Pi itself may act as the owner by sending `X-Kip-Local: 1` (the benchmark does).
 
 Interactive docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
 

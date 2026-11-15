@@ -40,3 +40,11 @@ def _no_results_feeds(monkeypatch):
     monkeypatch.setattr(feeds, "post", offline)
     feeds._CACHE.clear()  # no test sees another's cached scoreboard
     feeds._GROWW_TOKEN.clear()
+
+
+def sign_in(client, name: str = "Neave", pin: str = "1234") -> dict:
+    """Make a profile through the API and keep its sign-in cookie on the client. The first one
+    made is the owner."""
+    response = client.post("/api/profiles", json={"name": name, "pin": pin})
+    assert response.status_code == 201, response.text
+    return response.json()

@@ -74,8 +74,9 @@ if curl -fsS http://127.0.0.1:8000/api/health >/dev/null 2>&1; then
   say "Kip is running"
   cat <<EOF
 On the Pi:              open http://127.0.0.1:8000
-From another computer:  ssh -L 8000:127.0.0.1:8000 $(id -un)@$(hostname).local
-                        then open http://localhost:8000 there
+On a phone or laptop:   open http://$(hostname).local:8000 or http://$(hostname -I | awk '{print $1}'):8000
+                        (on the same Wi-Fi; everyone picks a profile and a 4-digit PIN,
+                        and the first profile made is the owner's)
 Logs:                   journalctl -u kip -f
 Restart / stop:         sudo systemctl restart kip / sudo systemctl stop kip
 EOF

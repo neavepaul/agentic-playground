@@ -4,6 +4,9 @@
  *
  * The server's /api/chat history is authoritative: on load and on every reconnect the
  * log is rebuilt from it in server order, so nothing is lost or duplicated.
+ *
+ * One conversation is open at a time. A new chat gets its id here, before its first message is
+ * sent, so the reply streaming in over the socket is recognised as this chat's.
  */
 import { api } from './api.js';
 import { clockTime, parseRich, safeSources, sourceKey, taskTitle } from './format.js';
@@ -17,6 +20,33 @@ let reloading = null;        // pending reload promise
 let queued = [];             // live chat events that arrived during a reload
 let sending = false;
 let noteTimer;
+let conversation = null;     // the open chat's id; null for a new chat not yet sent
+let startedHook = () => {};
+let missingHook = () => {};
+
+/** A fresh chat id, made where crypto.randomUUID may be missing (plain http on the home network). */
+export function newChatId() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+export function activeConversation() { return conversation; }
+export function onStarted(callback) { startedHook = callback; }
+export function onMissing(callback) { missingHook = callback; }
+
+/** Show a chat (an id) or a new, empty one (null). */
+export function setConversation(id) {
+  if (id === conversation && id !== null) return reloadChat();
+  conversation = id;
+  return reloadChat();
+}
+
+/** The chat an event belongs to, when it names one. */
+export function eventConversation(event) {
+  const d = event?.data || {};
+  return d.session_id || d.turn?.session_id || d.task?.session_id || null;
+}
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -202,6 +232,8 @@ export function isChatEvent(event) {
 export function handleChatEvent(event) {
   if (!isChatEvent(event)) return false;
   if (reloading) { queued.push(event); return true; }
+  const owner = eventConversation(event);
+  if (owner && owner !== conversation) return true; // another of your chats: shown when you open it
   const d = event.data || {};
   if (event.type === 'chat_message') renderTurn(d.turn);
   else if (event.type === 'chat_thinking') {
@@ -254,10 +286,17 @@ export function setName(name) {
 export function reloadChat() {
   if (reloading) return reloading;
   queued = [];
+  const showing = conversation;
   reloading = (async () => {
+    // Always yield first: a new chat needs no fetch, and finishing synchronously would clear
+    // `reloading` before it is even assigned, leaving every later event queued forever.
+    await null;
     try {
-      const { turns, name } = await api('/chat');
-      setName(name);
+      const { turns, name } = showing
+        ? await api(`/chat?conversation_id=${encodeURIComponent(showing)}`)
+        : { turns: [], name: null };
+      if (showing !== conversation) return; // another chat was opened meanwhile; it reloads itself
+      if (name) setName(name);
       releaseStreaming();
       seen.clear();
       $('chat-log').replaceChildren();
@@ -265,7 +304,11 @@ export function reloadChat() {
       updateEmpty();
       reloadHooks.forEach(hook => hook());
       scrollToEnd(true);
-    } catch { /* keep what is shown; the next reconnect retries */ }
+    } catch (error) {
+      // A deleted chat, or one that is not yours: start a new one. Otherwise keep what is shown;
+      // the next reconnect retries.
+      if (error?.status === 404 && showing === conversation) missingHook();
+    }
     finally {
       const pending = queued;
       reloading = null;
@@ -305,11 +348,19 @@ async function send(text) {
   autosize(input);
   updateSend();
   $('chat-form').setAttribute('aria-busy', 'true');
+  const fresh = conversation === null;
+  if (fresh) {
+    conversation = newChatId();
+    seen.clear();
+  }
+  const sentTo = conversation;
   try {
-    renderTurn(await api('/chat', { message }));
+    renderTurn(await api('/chat', { message, conversation_id: sentTo }));
+    if (fresh) startedHook(sentTo);
     showNote('');
     scrollToEnd(true);
   } catch (error) {
+    if (fresh && conversation === sentTo) conversation = null;
     // 409 and friends: the backend explains why it cannot take the message right now.
     showNote(error.message || 'Kip could not take that message. Please try again.');
     if (!input.value) input.value = message;

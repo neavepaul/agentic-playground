@@ -38,17 +38,18 @@ INTENT_OF_DOMAIN = {**{d: "information.sports" for d in SPORTS}, "weather": "inf
 
 # ── lexicon: alias -> (canonical name, domain, kind). Ambiguous aliases ("max", "city",
 # "apple") count only when something else already points at their domain. ──────────────
-_F1 = {"lando|norris": "Lando Norris", "oscar|piastri": "Oscar Piastri", "max|verstappen": "Max Verstappen",
+F1_DRIVERS = {"lando|norris": "Lando Norris", "oscar|piastri": "Oscar Piastri", "max|verstappen": "Max Verstappen",
        "charles|leclerc": "Charles Leclerc", "lewis|hamilton": "Lewis Hamilton", "george|russell": "George Russell",
        "kimi|antonelli": "Andrea Kimi Antonelli", "fernando|alonso": "Fernando Alonso", "lance|stroll": "Lance Stroll",
        "pierre|gasly": "Pierre Gasly", "franco|colapinto": "Franco Colapinto", "carlos|sainz": "Carlos Sainz",
        "alex|albon": "Alexander Albon", "liam|lawson": "Liam Lawson", "isack|hadjar": "Isack Hadjar",
        "arvid|lindblad": "Arvid Lindblad", "esteban|ocon": "Esteban Ocon", "ollie|oliver|bearman": "Oliver Bearman",
        "nico|hulkenberg|hülkenberg": "Nico Hülkenberg", "gabriel|bortoleto": "Gabriel Bortoleto",
-       "checo|sergio|perez|pérez": "Sergio Pérez", "valtteri|bottas": "Valtteri Bottas",
-       "mclaren": "McLaren", "ferrari": "Ferrari", "red bull": "Red Bull", "mercedes": "Mercedes",
+       "checo|sergio|perez|pérez": "Sergio Pérez", "valtteri|bottas": "Valtteri Bottas"}
+F1_TEAMS = {"mclaren": "McLaren", "ferrari": "Ferrari", "red bull": "Red Bull", "mercedes": "Mercedes",
        "aston martin|aston": "Aston Martin", "alpine": "Alpine", "williams": "Williams", "haas": "Haas",
        "racing bulls": "Racing Bulls", "audi|sauber": "Audi", "cadillac": "Cadillac"}
+_F1 = {**F1_DRIVERS, **F1_TEAMS}
 _CRICKET = {"virat|kohli": "Virat Kohli", "rohit": "Rohit Sharma", "bumrah|jasprit": "Jasprit Bumrah",
             "shubman|gill": "Shubman Gill", "rishabh|pant": "Rishabh Pant", "jadeja": "Ravindra Jadeja",
             "hardik": "Hardik Pandya", "surya|suryakumar": "Suryakumar Yadav", "dhoni": "MS Dhoni",
@@ -718,9 +719,11 @@ def frame_of(route: Route, said: str, turn: int) -> Frame | None:
                  place=route.place, time=route.time, said=said, turn=turn)
 
 
-def fast_path(route: Route, intent, *, web_allowed: bool) -> bool:
+def fast_path(route: Route, intent, *, web_allowed: bool, own_data: bool = False) -> bool:
     """Whether a live-information question may go straight to the web lookup. Every gate the
-    usual path has comes first: stop, permissions, offers and requested tools."""
+    usual path has comes first: stop, permissions, offers and requested tools. own_data: it asks
+    about their own accounts (their Groww portfolio), which a model must never guess at, so it
+    goes to the lookup however unsure the router is of the wording."""
     if intent.cancel or intent.wants_offer or intent.needs_tools:
         return False
     # Only a permission change or a refusal, with nothing asked: no lookup. "No, I meant the
@@ -732,7 +735,7 @@ def fast_path(route: Route, intent, *, web_allowed: bool) -> bool:
     if not (intent.question or intent.request or route.followup or route.correction or route.lookup_phrase
             or route.asks):
         return False
-    return route.live
+    return route.live or own_data
 
 
 _ROUTER: IntentRouter | None = None

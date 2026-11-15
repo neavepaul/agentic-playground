@@ -22,6 +22,7 @@ from app.persona.engine import FOLLOWUP_DELAY, QUIET_SECONDS
 from app.persona.profile import BASELINE, IDENTITY, TONES, VOICE
 from app.persona.state import CHARACTER_VERSION, PersonaState
 from app.tasks.manager import TaskManager
+from tests.conftest import sign_in
 from tests.fakes import WaitingLLM
 from tests.test_chat import StreamingModel, reply
 from tests.test_persona import Clock, check_in_later, event
@@ -293,9 +294,12 @@ def test_conversation_changes_are_saved_on_shutdown_and_back_after_restart(tmp_p
     settings = Settings()
     db = tmp_path / "kip.db"
     with TestClient(create_app(client=WaitingLLM(), settings=settings, memory_store=MemoryStore(db))) as client:
-        assert client.post("/api/chat", json={"message": "haha, nice one", "speaker": "neave"}).status_code == 202
+        sign_in(client, "Neave")
+        assert client.post("/api/chat", json={"message": "haha, nice one"}).status_code == 202
     saved = json.loads(MemoryStore(db).get_state("persistent"))
     assert saved["persona"]["relationships"]["neave"]["chats"] == 1
     with TestClient(create_app(client=WaitingLLM(), settings=settings, memory_store=MemoryStore(db))) as client:
+        assert client.post("/api/signin", json={"profile_id": client.get("/api/profiles").json()["profiles"][0]["id"],
+                                                "pin": "1234"}).status_code == 200
         bond = client.get("/api/persona").json()["relationships"]["neave"]
     assert bond["chats"] == 1 and bond["humour_reception"] > 0.5

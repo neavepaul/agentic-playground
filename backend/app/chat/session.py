@@ -25,7 +25,7 @@ from .router import (THRESHOLD as ROUTER_THRESHOLD, LIVE, SPORTS, Frame, Route, 
                      fast_path, frame_of, read_slots)
 from app.clock import date_str, spoken_time
 from app.agents.schemas import GoalCondition, GoalPlan, InitialCapability, LookupPlan
-from app.capabilities.feeds import FEEDS
+from app.capabilities.feeds import FEEDS, is_portfolio
 from .prompt import ChatAction, TrailerSplitter, build_messages
 from .spoken import spoken
 from .context import ContextBudgetError, message_tokens
@@ -63,7 +63,15 @@ _CORE_FACT = re.compile(r"\b(name|named|called|works?|job|engineer|developer|stu
 
 class ChatSession:
     def __init__(self, client, bus, manager, settings, store=None, persona=None,
-                 shares_task_model: bool = True, session_id: str | None = None) -> None:
+                 shares_task_model: bool = True, session_id: str | None = None,
+                 speaker: str | None = None, owner: bool = True, portfolio: bool = True) -> None:
+        self.session_id = session_id or str(uuid4())
+        # A signed-in person's conversation: who is talking is fixed, and it sees only its own
+        # errands and memories. Without one (tests, tools), Kip learns names as he always has.
+        self.person, self.owner, self.portfolio = speaker, owner, portfolio
+        if speaker:
+            from .hub import OwnTasks
+            manager = OwnTasks(manager, self.session_id, _speaker_slug(speaker), portfolio)
         self.client, self.bus, self.manager = client, bus, manager
         self.settings, self.store, self.persona = settings, store, persona
         self.shares_task_model = shares_task_model
@@ -77,7 +85,6 @@ class ChatSession:
         # Bumped by every reset: offers, queued errands and narration from before it
         # are never acted on.
         self.generation = 0
-        self.session_id = session_id or str(uuid4())
         if self.store:
             self.turns.extend(self.store.conversation_turns(self.session_id, HISTORY))
         self._announced: set[tuple[str, ...]] = set()
@@ -98,7 +105,9 @@ class ChatSession:
         # Who Kip is talking with: a name they gave ("my name is Neave"), kept across restarts.
         self._speaker: str | None = None
         self._speaker_display: str | None = None
-        if self.store:
+        if speaker:
+            self._speaker, self._speaker_display = _speaker_slug(speaker), speaker
+        elif self.store:
             saved = self.store.get_state(SPEAKER_STATE)
             if saved:
                 self._speaker, self._speaker_display = _speaker_slug(saved), saved
@@ -141,7 +150,9 @@ class ChatSession:
             _log.info("Restrictions now: %s", self.manager.restrictions.describe())
             self.manager.save_restrictions()
         after = set(self.manager.restrictions.describe())
-        if not speaker:
+        if self.person:
+            speaker = self.person
+        elif not speaker:
             self._learn_speaker(text)
         speaker_id = self._speaker_id(speaker)
         earlier = list(self.turns)
@@ -320,11 +331,15 @@ class ChatSession:
             # Core facts about the person first, whatever was said; then durable knowledge
             # relevant to this message. Past chat snippets would otherwise crowd it out,
             # since they often repeat the very facts they mention.
-            core = await asyncio.to_thread(self.store.core_facts, speaker, 4)
+            # A signed-in person's conversation recalls only what they told Kip (and, for the owner,
+            # what Kip knew before there were profiles): never another person's facts or chats.
+            who = {"viewer": self._speaker, "legacy": self.owner} if self.person else {}
+            core = await asyncio.to_thread(lambda: self.store.core_facts(speaker, 4, **who))
             pinned = {m["id"] for m in core}
-            memories = [m for m in await self.store.recall(text, kinds=["fact", "preference", "episode", "skill"], k=4)
+            memories = [m for m in await self.store.recall(text, kinds=["fact", "preference", "episode", "skill"], k=4,
+                                                           **who)
                         if m["id"] not in pinned]
-            chats = await self.store.recall(text, kinds=["conversation"], k=2)
+            chats = await self.store.recall(text, kinds=["conversation"], k=2, **who)
             return core + memories + [{**m, "text": _OWN_OLD_LINE.sub("", m["text"])} for m in chats]
         except Exception:
             _log.exception("Memory recall failed; continuing conversation without recalled memories")
@@ -391,8 +406,8 @@ class ChatSession:
                     return
                 self.replying = True
                 waiting = self.shares_task_model and self.manager.active_id is not None
-                self.bus.emit("chat_thinking", self.name, skip_history=True, reply_id=reply_id,
-                              waiting_on_errand=waiting)
+                self.bus.emit("chat_thinking", self.name, skip_history=True, session_id=self.session_id,
+                              reply_id=reply_id, waiting_on_errand=waiting)
                 recall_started = time.monotonic()
                 memories = await self._recall(user_turn["text"], user_turn.get("speaker"))
                 recall_seconds = time.monotonic() - recall_started
@@ -423,8 +438,8 @@ class ChatSession:
                                                                temperature=self.settings.chat_temperature):
                         visible = splitter.feed(chunk)
                         if visible:
-                            self.bus.emit("chat_delta", self.name, skip_history=True, reply_id=reply_id,
-                                          text=visible)
+                            self.bus.emit("chat_delta", self.name, skip_history=True,
+                                          session_id=self.session_id, reply_id=reply_id, text=visible)
                 except ModelError as exc:
                     if not splitter.text.strip():
                         raise
@@ -437,7 +452,8 @@ class ChatSession:
                     return
                 remaining, parsed = splitter.finish()
                 if remaining:
-                    self.bus.emit("chat_delta", self.name, skip_history=True, reply_id=reply_id, text=remaining)
+                    self.bus.emit("chat_delta", self.name, skip_history=True, session_id=self.session_id,
+                                  reply_id=reply_id, text=remaining)
                 metrics = dict(getattr(self.client, "last_metrics", {}) or {})
                 metrics["memory_recall_seconds"] = round(recall_seconds, 3)
                 metrics["input_chars"] = sum(len(m["content"]) for m in messages)
@@ -500,8 +516,8 @@ class ChatSession:
                 self.gate.conversation_waiting(-1)
             if not finished:
                 # Cancelled (reset, shutdown): release any "Thinking…" indicator.
-                self.bus.emit("chat_reply_ended", self.name, skip_history=True, reply_id=reply_id,
-                              reason="cancelled")
+                self.bus.emit("chat_reply_ended", self.name, skip_history=True, session_id=self.session_id,
+                              reply_id=reply_id, reason="cancelled")
 
     def _tool_request(self, user_turn: dict, intent: Intent) -> bool:
         """Their own words plainly ask for a tool to run, with nothing that needs a word first:
@@ -742,7 +758,10 @@ class ChatSession:
         if seen is not None and self._offer_valid() and self.offer.id == seen:
             return False  # an answer to Kip's offer is never a fresh lookup
         allowed = self.settings.digital_tools_enabled and not self.manager.restrictions.forbids_tool("web_search")
-        return fast_path(route, intent, web_allowed=allowed)
+        # "What's the best performer in my portfolio?": the router may be unsure of the wording, but
+        # their holdings are never answered from the chat model's memory of earlier lookups.
+        own = route.intent == "information.finance" and is_portfolio(_feed_question(route, user_turn["text"]))
+        return fast_path(route, intent, web_allowed=allowed, own_data=own)
 
     def _routed_lookup(self, user_turn: dict, intent: Intent, route: Route) -> tuple[str, str] | None:
         """(goal, search query) when the router sends this straight to the lookup. The goal keeps
@@ -927,13 +946,14 @@ class ChatSession:
         self.pending_goals.clear()
         self._queued_grants.clear()
         self._queued_plans.clear()
-        if self.manager.active_id:
-            goal = self.manager.active()["goal"]
+        active = self.manager.active()  # only this conversation's errand: never someone else's
+        if active:
+            goal = active["goal"]
 
             async def stop(task_id: str) -> None:
                 await self.manager.cancel(task_id)
                 self._add_turn("kip", f"Stopped: {goal}", source="narration")
-            self._spawn(stop(self.manager.active_id))
+            self._spawn(stop(active["id"]))
 
     def _check_claims(self, reply: str, intent: Intent | None = None, live: bool = False) -> None:
         """Kip must not claim runs or lookups his tool evidence does not support."""
@@ -995,7 +1015,7 @@ class ChatSession:
                                  importance=0.3, source="conversation", meta={"speaker": speaker or "unknown"})
             await self.store.set_keyed(f"chat-session:{self.session_id}", "episode", self._session_summary(),
                                        about=sorted({t for turn in self.turns for t in self._mentioned(turn["text"])}),
-                                       importance=0.5, source="conversation")
+                                       importance=0.5, source="conversation", speaker=speaker)
         except Exception:
             _log.exception("Could not save conversation")
 
@@ -1085,6 +1105,11 @@ class ChatSession:
         if self._closed:
             return
         task = data.get("task") or {}
+        if self.person and not self._mine(data):
+            # Someone else's errand. Its end may free the slot this conversation's queue waits for.
+            if kind in {"task_cancelled", "task_completed", "task_failed"} and self.pending_goals:
+                self._spawn(self._start_next_when_free(self.generation))
+            return
         if kind == "task_cancelled":
             if self.pending_goals:
                 self._spawn(self._start_next_when_free(self.generation))
@@ -1133,6 +1158,11 @@ class ChatSession:
             self._needs_permission(data)
 
 
+    def _mine(self, data: dict) -> bool:
+        """The event is about an errand this conversation asked for."""
+        task_id = (data.get("task") or {}).get("id") or data.get("task_id")
+        return self.manager.owns(task_id)
+
     def _needs_permission(self, data: dict) -> None:
         """A task stopped before acting because it needed more than it was cleared for."""
         goal, needs = data.get("goal", ""), set(data.get("needs", []))
@@ -1148,13 +1178,19 @@ class ChatSession:
                        source="narration")
 
 
+def _feed_question(route: Route, words: str) -> dict:
+    """What a feed reads: the router's reading and their words. A follow-up ("what about Max?")
+    or correction also carries the question it leans on, whose words say what is being asked."""
+    leans = bool(route.followup or route.correction)
+    return {"domain": route.domain, "entities": list(route.entities), "focus": route.focus, "time": route.time,
+            "place": route.place, "said": words, "followup": leans, "earlier": route.earlier if leans else ""}
+
+
 def _lookup_plan(said: str, route: Route | None = None, words: str = "") -> LookupPlan:
     """A plain web lookup of what they asked, searched in their own words. A subject with a feed
     (F1, cricket, weather) carries the router's reading and their words, so the feed can answer first."""
     query = re.sub(r"^\W*(?:hey |ok |so )?kip\W+", "", said.strip(), flags=re.I)[:200]
-    feed = ({"domain": route.domain, "entities": list(route.entities), "focus": route.focus,
-             "time": route.time, "place": route.place, "said": words}
-            if route and route.domain in FEEDS else None)
+    feed = (_feed_question(route, words) if route and route.domain in FEEDS else None)
     return LookupPlan(summary="Look it up.", conditions=[GoalCondition(kind="answer", required_tools=["web_search"])],
                       initial_actions=[InitialCapability(tool="web_search", arguments={"query": query})], feed=feed)
 

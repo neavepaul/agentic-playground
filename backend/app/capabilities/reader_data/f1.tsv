@@ -1,0 +1,130 @@
+# The F1 reader's examples: ask, table (standings only), sentence. Drivers and teams are recognised
+# by name; places in [brackets]. Not the evaluation questions (evaluations/slot_cases.jsonl).
+ask	table	text
+standings	drivers	who's leading the drivers championship
+standings	drivers	who is top of the standings
+standings	drivers	what are the f1 standings
+standings	drivers	championship standings please
+standings	drivers	where is norris in the championship
+standings	drivers	how many points does verstappen have
+standings	drivers	how many points is leclerc on
+standings	drivers	what position is hamilton in the standings
+standings	drivers	how far ahead is piastri
+standings	drivers	what's the points gap at the top
+standings	drivers	who is second in the championship
+standings	drivers	who's going to win the title
+standings	drivers	can norris still win the title
+standings	drivers	who won the drivers title in 2023
+standings	drivers	who was champion in 2021
+standings	drivers	who is the current world champion
+standings	drivers	who's the reigning champion
+standings	drivers	which driver has the most points
+standings	drivers	is russell ahead of hamilton in the standings
+standings	drivers	where does alonso stand in the championship
+standings	drivers	how many points behind is max
+standings	drivers	who will be champion this year
+standings	drivers	f1 points table
+standings	drivers	drivers standings
+standings	drivers	who is the world champion
+standings	drivers	who's winning the championship
+standings	drivers	how many points has piastri got
+standings	drivers	how many points does mclaren's piastri have
+standings	drivers	where is ferrari's leclerc in the standings
+standings	drivers	how many points has red bull driver verstappen got
+standings	drivers	is mercedes driver russell ahead in the championship
+standings	drivers	how is ferrari's hamilton doing in the championship
+standings	constructors	what are the constructors standings
+standings	constructors	who's leading the constructors championship
+standings	constructors	which team has the most points
+standings	constructors	how many points do ferrari have
+standings	constructors	where are mercedes in the standings
+standings	constructors	is mclaren ahead of red bull
+standings	constructors	how far behind is ferrari in the constructors
+standings	constructors	which team is winning the championship
+standings	constructors	team standings in f1
+standings	constructors	how is williams doing in the championship
+standings	constructors	what position are aston martin in
+standings	constructors	how many points have red bull scored this season
+standings	constructors	who are the constructors champions
+standings	constructors	which team won the 2024 championship
+standings	constructors	what position is mclaren in the championship
+standings	constructors	how many points has mercedes got
+standings	constructors	who won the constructors title
+standings	constructors	is ferrari second in the constructors
+race result	-	who won today's race
+race result	-	who won in [qatar]
+race result	-	how did norris finish
+race result	-	where did hamilton finish in [mexico]
+race result	-	did verstappen win
+race result	-	did ferrari score points
+race result	-	who came second in the race
+race result	-	what were the race results
+race result	-	who got the podium in [brazil]
+race result	-	how did mclaren do in the last race
+race result	-	did leclerc finish the race
+race result	-	results of the last grand prix
+race result	-	who won the grand prix
+race result	-	how did alonso get on in [vegas]
+race result	-	who finished third
+race result	-	did russell get points today
+race result	-	who won the [monaco] grand prix
+race result	-	did a mercedes finish on the podium
+qualifying	-	who's on pole
+qualifying	-	who got pole position in [monaco]
+qualifying	-	where did leclerc qualify
+qualifying	-	qualifying results
+qualifying	-	what was the qualifying order
+qualifying	-	who topped qualifying
+qualifying	-	how did ferrari do in qualifying
+qualifying	-	did max make q3
+qualifying	-	who qualified fastest in [baku]
+qualifying	-	who's starting from pole after qualifying
+sprint	-	who won the sprint race
+sprint	-	sprint results
+sprint	-	where did norris finish in the sprint
+sprint	-	how did hamilton do in the sprint
+sprint	-	sprint race winner in [brazil]
+sprint	-	who won the [qatar] sprint
+starting grid	-	where does verstappen start tomorrow
+starting grid	-	what's the starting grid
+starting grid	-	who starts on the front row
+starting grid	-	grid position for leclerc
+starting grid	-	where did russell start the race
+starting grid	-	starting order for the grand prix
+starting grid	-	what grid slot is alonso in
+next race	-	when's the next grand prix
+next race	-	what time is the race on sunday
+next race	-	when does qualifying start
+next race	-	where is the next race
+next race	-	f1 schedule this weekend
+next race	-	when is the [las vegas] grand prix
+next race	-	what time is the sprint
+next race	-	is there a race this weekend
+next race	-	race start time in india
+next race	-	when does the [qatar] race begin
+next race	-	what time does the race start
+other	-	what does drs mean
+other	-	how does f1 qualifying work
+other	-	who is the fastest driver ever
+other	-	what car does mclaren use
+other	-	how fast is an f1 car
+other	-	where can i watch the race
+other	-	how many races are in a season
+other	-	who designed the red bull car
+other	-	which team does hamilton drive for
+other	-	how old is verstappen
+other	-	is there a pit stop penalty
+race result	-	where did norris end up
+race result	-	where did ferrari end up in [austin]
+race result	-	what position did piastri end up in
+race result	-	how did russell get on today
+next race	-	when is the [brazil] gp
+race result	-	who won the [mexico] gp
+race result	-	who took the win in [qatar]
+standings	drivers	is norris going to be champ
+standings	drivers	who's still in the title fight
+other	-	are norris and piastri rivals
+other	-	is hamilton moving teams
+other	-	did verstappen get a penalty
+race result	-	results of the most recent race
+race result	-	how did hamilton do in the recent grand prix

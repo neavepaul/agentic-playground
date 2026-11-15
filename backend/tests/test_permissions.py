@@ -284,8 +284,10 @@ def test_task_api_applies_restrictions_from_the_authorizing_goal(dispatched):
     from fastapi.testclient import TestClient
     from app.main import create_app
     from tests.fakes import WaitingLLM
+    from tests.conftest import sign_in
     app = create_app(client=WaitingLLM(), settings=Settings())
     with TestClient(app) as client:
+        sign_in(client)
         response = client.post("/api/tasks", json={"goal": "Work out 6 times 7; don't use Python"})
         assert response.status_code == 202
         manager = app.state.manager

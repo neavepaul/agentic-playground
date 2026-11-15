@@ -4,7 +4,7 @@
  * cancel button while it runs and source chips once it has an answer.
  */
 import { api } from './api.js';
-import { appendToLog, onChatReload, scrollToEnd, showNote, sourceChips, sourcesShown } from './chat.js';
+import { activeConversation, appendToLog, onChatReload, scrollToEnd, showNote, sourceChips, sourcesShown } from './chat.js';
 import { sourceKey, taskTitle } from './format.js';
 
 const cards = new Map(); // task id -> card element
@@ -75,6 +75,8 @@ function fill(card, task) {
 /** Apply a TaskPublic from the snapshot or a task_* event. */
 export function update(task) {
   if (!task?.id) return;
+  // Only the open chat's own lookups get a card; another chat shows its own when opened.
+  if (!task.session_id || task.session_id !== activeConversation()) return;
   current = task;
   let card = cards.get(task.id);
   if (!card) {
@@ -97,6 +99,6 @@ export function initLookups() {
   // The chat log is rebuilt from history on reconnect; keep a still-running lookup visible.
   onChatReload(() => {
     cards.clear();
-    if (current?.status === 'running') update(current);
+    if (current?.status === 'running' && current.session_id === activeConversation()) update(current);
   });
 }

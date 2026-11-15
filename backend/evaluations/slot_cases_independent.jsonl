@@ -1,0 +1,46 @@
+{"say": "who's leading the drivers championship rn", "domain": "f1", "expect": {"ask": "standings", "table": "drivers"}, "tags": ["independent"]}
+{"say": "how many points does ferrari have in the constructors", "domain": "f1", "expect": {"ask": "standings", "table": "constructors"}, "tags": ["independent"]}
+{"say": "where is norris in the championship", "domain": "f1", "expect": {"ask": "standings", "table": "drivers"}, "tags": ["independent"]}
+{"say": "which team is top of the teams standings", "domain": "f1", "expect": {"ask": "standings", "table": "constructors"}, "tags": ["independent"]}
+{"say": "who won the last grand prix?", "domain": "f1", "expect": {"ask": "race result"}, "tags": ["independent"]}
+{"say": "tell me the podium from the last race", "domain": "f1", "expect": {"ask": "race result"}, "tags": ["independent"]}
+{"say": "did verstappen win on sunday", "domain": "f1", "expect": {"ask": "race result"}, "tags": ["independent"]}
+{"say": "who got pole last weekend", "domain": "f1", "expect": {"ask": "qualifying"}, "tags": ["independent"]}
+{"say": "how did quali go, who was fastest in q3", "domain": "f1", "expect": {"ask": "qualifying"}, "tags": ["independent"]}
+{"say": "who won the sprint", "domain": "f1", "expect": {"ask": "sprint"}, "tags": ["independent"]}
+{"say": "sprint race results pls", "domain": "f1", "expect": {"ask": "sprint"}, "tags": ["independent"]}
+{"say": "whos starting p1 tomorrow, what's the grid look like", "domain": "f1", "expect": {"ask": "starting grid"}, "tags": ["independent"]}
+{"say": "when is the next f1 race", "domain": "f1", "expect": {"ask": "next race"}, "tags": ["independent"]}
+{"say": "next gp kab hai? and where", "domain": "f1", "expect": {"ask": "next race"}, "tags": ["independent"]}
+{"say": "is hamilton leaving ferrari, any rumours?", "domain": "f1", "expect": {"ask": "other"}, "tags": ["independent", "off-topic"]}
+{"say": "what's drs and how does it work", "domain": "f1", "expect": {"ask": "other"}, "tags": ["independent", "off-topic"]}
+{"say": "did anyone get a penalty after the race for that crash", "domain": "f1", "expect": {"ask": "other"}, "tags": ["independent", "off-topic"]}
+{"say": "how much is verstappen's red bull contract worth", "domain": "f1", "expect": {"ask": "other"}, "tags": ["independent", "off-topic"]}
+{"say": "what's my portfolio doing today", "domain": "finance", "expect": {"kind": "my portfolio"}, "tags": ["independent"]}
+{"say": "am i in profit overall on my stocks", "domain": "finance", "expect": {"kind": "my portfolio"}, "tags": ["independent"]}
+{"say": "how many hdfc bank shares do i have", "domain": "finance", "expect": {"kind": "my holding", "name": "hdfc bank"}, "tags": ["independent"]}
+{"say": "how much have i made on infosys", "domain": "finance", "expect": {"kind": "my holding", "name": "infosys"}, "tags": ["independent"]}
+{"say": "my tata motors holding, whats it worth now", "domain": "finance", "expect": {"kind": "my holding", "name": "tata motors"}, "tags": ["independent"]}
+{"say": "reliance share price", "domain": "finance", "expect": {"kind": "share price", "name": "reliance"}, "tags": ["independent"]}
+{"say": "what is adani ports trading at", "domain": "finance", "expect": {"kind": "share price", "name": "adani ports"}, "tags": ["independent"]}
+{"say": "icici bank price right now?", "domain": "finance", "expect": {"kind": "share price", "name": "icici bank"}, "tags": ["independent"]}
+{"say": "how's nifty doing", "domain": "finance", "expect": {"kind": "index"}, "tags": ["independent"]}
+{"say": "sensex kitna hai abhi", "domain": "finance", "expect": {"kind": "index"}, "tags": ["independent"]}
+{"say": "bank nifty level today", "domain": "finance", "expect": {"kind": "index"}, "tags": ["independent"]}
+{"say": "did the nasdaq go up overnight", "domain": "finance", "expect": {"kind": "index"}, "tags": ["independent"]}
+{"say": "bitcoin price in rupees", "domain": "finance", "expect": {"kind": "crypto"}, "tags": ["independent"]}
+{"say": "what's eth at", "domain": "finance", "expect": {"kind": "crypto"}, "tags": ["independent"]}
+{"say": "dollar to rupee today", "domain": "finance", "expect": {"kind": "exchange rate"}, "tags": ["independent"]}
+{"say": "how many rupees is 100 euros", "domain": "finance", "expect": {"kind": "exchange rate"}, "tags": ["independent"]}
+{"say": "should i buy more tcs or wait for a dip", "domain": "finance", "expect": {"kind": "other"}, "tags": ["independent", "off-topic"]}
+{"say": "explain what a mutual fund sip is", "domain": "finance", "expect": {"kind": "other"}, "tags": ["independent", "off-topic"]}
+{"say": "gold rate today in india", "domain": "finance", "expect": {"kind": "other"}, "tags": ["independent", "off-topic"]}
+{"say": "any news on adani group today", "domain": "finance", "expect": {"kind": "other"}, "tags": ["independent", "off-topic"]}
+{"say": "how did leclerc do compared to his ferrari teammate in the standings", "domain": "f1", "expect": {"ask": "standings", "table": "drivers"}, "tags": ["independent"]}
+{"say": "who won the 2023 championship", "domain": "f1", "expect": {"ask": "standings", "table": "drivers"}, "tags": ["independent"]}
+{"say": "red bull or mclaren, who's ahead in the constructors", "domain": "f1", "expect": {"ask": "standings", "table": "constructors"}, "tags": ["independent"]}
+{"say": "how's the whole book looking, give me my total p&l across everything", "domain": "finance", "expect": {"kind": "my portfolio"}, "tags": ["independent"]}
+{"say": "whats my stash worth today", "domain": "finance", "expect": {"kind": "my portfolio"}, "tags": ["independent"]}
+{"say": "hdfc bank share price today, not my holding just the market price", "domain": "finance", "expect": {"kind": "share price", "name": "hdfc bank"}, "tags": ["independent"]}
+{"say": "infy stock is at what rate", "domain": "finance", "expect": {"kind": "share price", "name": "infy"}, "tags": ["independent"]}
+{"say": "which is higher right now, sensex or nifty, and by how much", "domain": "finance", "expect": {"kind": "index"}, "tags": ["independent"]}

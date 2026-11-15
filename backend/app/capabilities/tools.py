@@ -33,6 +33,10 @@ def required_tool_progress(context) -> dict:
             "successful_evidence_ids": {tool: ids[-6:] for tool, ids in evidence.items()}}
 
 
+NOT_SHARED = ("That's the owner's Groww portfolio, and they haven't shared it with you. "
+              "They can turn that on for your profile.")
+
+
 class CapabilityTools:
     def __init__(self, bus: EventBus, enabled: bool = True, hosted=None, cricket_key=None, football_key=None, groww=(None, None)):
         self.bus, self.enabled = bus, enabled
@@ -90,16 +94,29 @@ class CapabilityTools:
                               tool="web_search", arguments={"query": query}, **result)
         return {**result, "evidence_id": event["id"]}, answer
 
-    def feed_source(self, question: dict) -> str | None:
-        """The feed about to be asked, by name ("Groww"), or None when no feed will try."""
+    def feed_source(self, question: dict, portfolio: bool = True) -> str | None:
+        """The feed about to be asked, by name ("Groww"), or None when no feed will try. Without
+        portfolio (the person may not see the owner's holdings), never Groww."""
         from . import feeds
         return feeds.source_for(question, cricket_key=self.cricket_key, football_key=self.football_key,
-                                groww=self.groww)
+                                groww=self.groww if portfolio else ("", ""))
 
     async def feed_answer(self, query: str, question: dict, context) -> tuple[dict | None, str]:
         """(web_search result, answer) from a results feed (feeds.py), recorded like any search;
         (None, "") when the feed does not cover the question or cannot be reached."""
         from . import feeds
+        if not getattr(context, "portfolio", True) and feeds.is_portfolio(question):
+            # The holdings are the owner's: only people they allow may see them, and the question
+            # never goes on to a web search or a model either.
+            found = feeds.FeedAnswer(NOT_SHARED, "", "Groww holdings", "kip")
+            # Nothing here is worth remembering, and it is about the owner's accounts: no memory.
+            context.private = True
+            result = {"success": True, "observation": {
+                "query": query, "results": [{"title": found.title, "url": "", "snippet": found.answer}],
+                "provider": found.provider, "quote": found.answer, "untrusted_content": False}}
+            event = self.bus.emit("capability_observed", "explorer", task_id=context.id,
+                                  tool="web_search", arguments={"query": query}, **result)
+            return {**result, "evidence_id": event["id"]}, found.answer
         try:
             found = await feeds.answer(question, clock.now(), cricket_key=self.cricket_key,
                                        football_key=self.football_key, groww=self.groww)

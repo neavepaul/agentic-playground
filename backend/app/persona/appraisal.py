@@ -30,6 +30,8 @@ class Appraisal:
     concern_reason: str = ""
     wants_space: bool = False
     episode: str | None = None
+    # Whose the episode is when it is not a conversation with them (an errand they asked for).
+    about: str | None = None
     moment: str | None = None
     followup: str | None = None
     settles_followups: bool = False
@@ -53,13 +55,14 @@ def _outcome(task: dict, succeeded: bool, state: PersonaState) -> Appraisal:
     expected = record.expected if record else 0.5
     surprise = (1 - expected) if succeeded else expected
     goal = task.get("goal", "a task")[:120]
+    about = task.get("speaker")  # who asked: the moment is theirs, never shown to anyone else
     first_time = record is None or record.attempts == 0
     if succeeded:
         streak_break = bool(record and record.streak <= -2)
         return Appraisal(
             valence=(0.05 + 0.2 * surprise), energy=0.05, confidence=0.12 * surprise + 0.02,
             relief=0.6 if streak_break else 0.3, skill=skill, succeeded=True,
-            traits={"resilience": 0.004} if streak_break else {},
+            traits={"resilience": 0.004} if streak_break else {}, about=about,
             # Ordinary successes are history in the memory store; only notable ones are moments.
             episode=(f"Finished: {goal}" + (" (after a run of failures)" if streak_break else ""))
             if first_time or streak_break or surprise > 0.5 else None)
@@ -70,7 +73,7 @@ def _outcome(task: dict, succeeded: bool, state: PersonaState) -> Appraisal:
         energy=-0.05, confidence=-0.12 * surprise - 0.02,
         frustration=min(0.4, 0.12 + 0.06 * failures_in_a_row), skill=skill, succeeded=False,
         # Repeated failure makes him more careful and methodical, not more upset.
-        traits={"caution": 0.01} if failures_in_a_row >= 2 else {},
+        traits={"caution": 0.01} if failures_in_a_row >= 2 else {}, about=about,
         episode=f"Could not finish: {goal}")  # failures are never quietly dropped
 
 

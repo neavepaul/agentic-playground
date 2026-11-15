@@ -103,6 +103,12 @@ class Embedder:
         return await asyncio.to_thread(self.embed_sync, texts)
 
 
+# A memory a signed-in person may see: one they said or asked about (meta.speaker), or, for the owner,
+# one from before there were profiles (no speaker, or "unknown"). Binds (viewer, legacy).
+_WHOSE_SQL = (" AND (json_extract(m.meta, '$.speaker') = ? OR (? AND "
+              "COALESCE(json_extract(m.meta, '$.speaker'), 'unknown') IN ('unknown', '')))")
+
+
 class MemoryStore:
     def __init__(self, path: Path | str, embedder: Embedder | None = None) -> None:
         self.path = Path(path) if str(path) != ":memory:" else path
@@ -272,17 +278,25 @@ class MemoryStore:
 
     # ── recall ──────────────────────────────────────────────────────────────
     async def recall(self, query: str, about: list[str] | None = None, kinds: list[str] | None = None,
-                     k: int = 6, touch: bool = True, include_superseded: bool = False) -> list[dict]:
+                     k: int = 6, touch: bool = True, include_superseded: bool = False,
+                     viewer: str | None = None, legacy: bool = False) -> list[dict]:
+        """Memories relevant to query. With a viewer (a signed-in person), only theirs: what they
+        said or asked, plus, when legacy, what Kip knew before there were profiles."""
         vector = await self._embed(query) if query.strip() else None
-        return await asyncio.to_thread(self._recall, query, about, kinds, k, touch, vector, include_superseded)
+        return await asyncio.to_thread(self._recall, query, about, kinds, k, touch, vector, include_superseded,
+                                       viewer, legacy)
 
-    def _recall(self, query, about, kinds, k, touch, vector, include_superseded=False) -> list[dict]:
+    def _recall(self, query, about, kinds, k, touch, vector, include_superseded=False,
+                viewer=None, legacy=False) -> list[dict]:
         with self._lock:
             db = self._db
             kind_sql = f" AND m.kind IN ({','.join('?' * len(kinds))})" if kinds else ""
             if not include_superseded:
                 kind_sql += " AND m.superseded_by IS NULL"
             kind_args = list(kinds or [])
+            if viewer is not None:
+                kind_sql += _WHOSE_SQL
+                kind_args += [viewer, int(legacy)]
             keyword, semantic = {}, {}
             words = _WORD.findall(query.casefold())
             if words:
@@ -340,13 +354,18 @@ class MemoryStore:
                 db.commit()
             return results
 
-    def recent(self, limit: int = 20, kind: str | None = None, include_superseded: bool = True) -> list[dict]:
+    def recent(self, limit: int = 20, kind: str | None = None, include_superseded: bool = True,
+               viewer: str | None = None, legacy: bool = False) -> list[dict]:
         where = [clause for clause in ("kind = ?" if kind else "",
                                        "" if include_superseded else "superseded_by IS NULL") if clause]
+        args: list = [kind] if kind else []
+        if viewer is not None:
+            where.append(_WHOSE_SQL.removeprefix(" AND "))
+            args += [viewer, int(legacy)]
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM memories" + (" WHERE " + " AND ".join(where) if where else "")  # constants and ? only  # nosec B608
-                + " ORDER BY id DESC LIMIT ?", ([kind] if kind else []) + [limit]).fetchall()
+                "SELECT * FROM memories m" + (" WHERE " + " AND ".join(where) if where else "")  # constants and ? only  # nosec B608
+                + " ORDER BY id DESC LIMIT ?", args + [limit]).fetchall()
         return [{"id": row["id"], "kind": row["kind"], "text": row["text"], "about": json.loads(row["about"]),
                  "importance": round(row["importance"], 2), "created_at": row["created_at"],
                  "superseded_by": row["superseded_by"]} for row in rows]
@@ -411,7 +430,7 @@ class MemoryStore:
         return best
 
     async def set_keyed(self, key: str, kind: str, text: str, about: list[str] | None = None,
-                        importance: float = 0.5, source: str = "") -> int:
+                        importance: float = 0.5, source: str = "", speaker: str | None = None) -> int:
         """Create or update the single memory identified by key (e.g. a running session summary)."""
         text = " ".join(text.split())[:2000]
         vector = await self._embed(text)
@@ -421,17 +440,18 @@ class MemoryStore:
                 db = self._db
                 row = db.execute("SELECT id FROM memories WHERE json_extract(meta, '$.key') = ?", (key,)).fetchone()
                 tags = json.dumps(sorted({a.casefold() for a in about or [] if a}))
+                meta = json.dumps({"key": key, **({"speaker": speaker} if speaker else {})})
                 if row:
                     memory_id = row["id"]
-                    db.execute("UPDATE memories SET text = ?, about = ?, importance = ? WHERE id = ?",
-                               (text, tags, importance, memory_id))
+                    db.execute("UPDATE memories SET text = ?, about = ?, importance = ?, meta = ? WHERE id = ?",
+                               (text, tags, importance, meta, memory_id))
                     if self.vectors:
                         db.execute("DELETE FROM memories_vec WHERE rowid = ?", (memory_id,))
                 else:
                     memory_id = db.execute(
                         "INSERT INTO memories(kind, text, about, importance, source, created_at, meta) "
                         "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (kind, text, tags, importance, source, _now(), json.dumps({"key": key}))).lastrowid
+                        (kind, text, tags, importance, source, _now(), meta)).lastrowid
                 if vector is not None and self.vectors:
                     db.execute("INSERT INTO memories_vec(rowid, embedding) VALUES (?, ?)",
                                (memory_id, sqlite_vec.serialize_float32(vector)))
@@ -473,19 +493,25 @@ class MemoryStore:
                                "updated_at = excluded.updated_at",
                                [(key, value, _now()) for key, value in values.items()])
 
-    def core_facts(self, speaker: str | None = None, k: int = 4) -> list[dict]:
+    def core_facts(self, speaker: str | None = None, k: int = 4, viewer: str | None = None,
+                   legacy: bool = False) -> list[dict]:
         """The few facts that matter in every conversation (who someone is, what they do, who
         they are to Kip), newest first: pinned into each reply, never left to win a relevance
         contest with a chocolate preference."""
+        whose, args = (_WHOSE_SQL, [viewer, int(legacy)]) if viewer is not None else ("", [])
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM memories WHERE kind = 'fact' AND importance >= ? AND superseded_by IS NULL "
-                "ORDER BY id DESC LIMIT ?", (CORE_IMPORTANCE, k * 4)).fetchall()
+                "SELECT * FROM memories m WHERE kind = 'fact' AND importance >= ? AND superseded_by IS NULL"  # constants and ? only  # nosec B608
+                f"{whose} ORDER BY id DESC LIMIT ?", (CORE_IMPORTANCE, *args, k * 4)).fetchall()
         found = []
         for row in rows:
             meta = json.loads(row["meta"] or "{}")
             about = json.loads(row["about"] or "[]")
-            if speaker and meta.get("speaker") not in (speaker, "unknown", None) and speaker not in about:
+            if viewer is not None:
+                said_by = meta.get("speaker")
+                if said_by != viewer and not (legacy and said_by in (None, "", "unknown")):
+                    continue  # a signed-in person sees only their own
+            elif speaker and meta.get("speaker") not in (speaker, "unknown", None) and speaker not in about:
                 continue  # someone else's facts, while we know who is talking
             found.append({"id": row["id"], "kind": row["kind"], "text": row["text"], "core": True,
                           **_labels(row)})

@@ -1,0 +1,134 @@
+# The finance reader's examples: kind, when, sentence. Company names in [brackets]; indices and
+# coins are recognised by name. Not the evaluation questions (evaluations/slot_cases.jsonl).
+kind	when	text
+my portfolio	now	how are my investments doing
+my portfolio	now	what's my portfolio worth today
+my portfolio	now	how much is my portfolio worth
+my portfolio	now	show me my portfolio
+my portfolio	now	give me a portfolio update
+my portfolio	now	how are my stocks doing today
+my portfolio	now	what are my shares worth
+my portfolio	now	how much have i made overall
+my portfolio	now	am i up or down overall
+my portfolio	now	what's my total profit
+my portfolio	now	which of my stocks did best today
+my portfolio	now	which stock in my portfolio is up the most
+my portfolio	now	what's my worst performing stock
+my portfolio	now	which of my holdings fell the most
+my portfolio	now	what's the biggest gainer in my portfolio
+my portfolio	now	what's my best stock
+my portfolio	now	which stock is my biggest winner
+my portfolio	now	what's dragging my portfolio down
+my portfolio	now	what's my largest holding
+my portfolio	now	which holding is worth the most
+my portfolio	now	how many stocks do i own
+my portfolio	now	what do i own
+my portfolio	now	list my holdings
+my portfolio	now	how's my groww portfolio
+my portfolio	now	how is my demat account doing
+my portfolio	now	did my portfolio go up today
+my portfolio	now	what's my portfolio's change today
+my portfolio	now	how much did i lose today
+my portfolio	now	how much money did i make today
+my portfolio	now	how are my holdings looking
+my portfolio	now	how much do i have invested
+my portfolio	now	what is my portfolio value
+my holding	now	how much [infosys] do i have
+my holding	now	how many shares of [reliance] do i own
+my holding	now	do i own [tata steel]
+my holding	now	do i hold any [wipro]
+my holding	now	what's my [hdfc bank] holding worth
+my holding	now	how much is my [tcs] worth
+my holding	now	how much have i made on [itc]
+my holding	now	am i in profit on [infosys]
+my holding	now	am i losing money on [zomato]
+my holding	now	what's my profit on [reliance]
+my holding	now	how many [sbi] shares have i got
+my holding	now	what did i pay for my [tcs] shares
+my holding	now	how is my [hdfc] stock doing
+my holding	now	how are my [infosys] shares doing
+my holding	now	is my [wipro] position up
+my holding	now	how much [axis bank] is in my portfolio
+my holding	now	what's my average price for [itc]
+my holding	now	have i got any [adani ports]
+my holding	now	how much of my portfolio is [tcs]
+my holding	now	do i have [bajaj finance] in my portfolio
+my holding	now	is [maruti] in my portfolio
+my holding	now	how much [hdfc] do i hold
+my holding	now	how many [infosys] do i own
+my holding	now	my [tcs] shares
+my holding	now	what are my [reliance] shares worth
+share price	now	what's the [infosys] share price
+share price	now	[tcs] stock price
+share price	now	how much is [reliance] trading at
+share price	now	what's [wipro] at right now
+share price	now	price of [hdfc bank] shares
+share price	now	how is [tata motors] doing today
+share price	now	is [infosys] up today
+share price	now	is [zomato] down today
+share price	now	how much is one [tcs] share
+share price	now	what's the price of [apple] stock
+share price	now	how's [nvidia] stock doing
+share price	now	[sbi] share price today
+share price	now	what is [itc] trading at
+share price	now	has [reliance] gone up today
+share price	now	current price of [bajaj finance]
+share price	now	how did [adani ports] close today
+share price	now	what's the stock price of [maruti]
+share price	now	[tesla] price
+share price	now	how is [hdfc bank] stock doing
+share price	now	what's [larsen] trading at today
+share price	past	what was [infosys] trading at last month
+share price	past	what did [tcs] close at yesterday
+share price	past	[reliance] share price last year
+share price	past	how much was [wipro] a year ago
+share price	past	what was the price of [hdfc bank] in 2020
+share price	past	where was [itc] five years ago
+index	now	how is the nifty doing
+index	now	sensex today
+index	now	where did the sensex close
+index	now	what's the nifty at
+index	now	how's bank nifty
+index	now	nasdaq today
+index	now	how is the dow doing
+index	now	nifty level right now
+index	now	is the sensex down today
+index	now	where's the s&p
+index	now	is the nifty up
+index	past	where was the nifty last week
+index	past	what did the sensex close at yesterday
+crypto	now	what's bitcoin at
+crypto	now	ethereum price
+crypto	now	how much is one bitcoin in rupees
+crypto	now	is bitcoin up today
+crypto	now	price of eth
+crypto	now	how is solana doing
+crypto	now	dogecoin price
+crypto	now	bitcoin value today
+crypto	now	how much is btc worth
+crypto	past	what was bitcoin worth last year
+exchange rate	now	usd to inr
+exchange rate	now	how many rupees is a dollar
+exchange rate	now	euro to rupee rate
+exchange rate	now	what's the pound worth in rupees
+exchange rate	now	dollar rate today
+exchange rate	now	convert 100 dollars to rupees
+exchange rate	now	exchange rate for yen
+exchange rate	now	rupee vs dollar today
+exchange rate	now	how much is a euro worth
+exchange rate	now	what's the dollar at
+exchange rate	past	what was the dollar rate in 2015
+other	now	should i buy [tcs] shares
+other	now	what is a mutual fund
+other	now	how do i open a demat account
+other	now	what's a good stock to buy
+other	now	explain the p/e ratio
+other	now	why did the market fall today
+other	now	when does the market open
+other	now	is the stock market open today
+other	now	what is an index fund
+other	now	how do taxes on shares work
+other	now	what's the gold price
+other	now	how much is silver today
+other	now	gold rate in mumbai
+other	now	silver price per kg

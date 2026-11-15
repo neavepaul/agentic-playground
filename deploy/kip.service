@@ -9,8 +9,9 @@ Wants=network-online.target ollama.service
 Type=simple
 User=@USER@
 WorkingDirectory=@REPO@/backend
-# One worker: Kip keeps live state in memory. Loopback only: there is no login.
-ExecStart=@REPO@/backend/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+# One worker: Kip keeps live state in memory. Open to the home network: everyone signs in to a profile
+# with a PIN, and Kip answers only at the Pi's own name or a private address (app/access.py).
+ExecStart=@REPO@/backend/.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
 Restart=on-failure
 RestartSec=5
 # The embedding model's download cache stays next to kip.db.

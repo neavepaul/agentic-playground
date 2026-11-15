@@ -18,6 +18,8 @@ from datetime import date, datetime, timedelta
 
 import httpx
 
+from app.capabilities.readers import Reader, Reading
+
 _log = logging.getLogger("agentic_friend.capabilities")
 F1 = "https://api.jolpi.ca/ergast/f1"
 ESPN = "https://site.web.api.espn.com/apis/v2/scoreboard/header?sport=cricket"
@@ -114,10 +116,31 @@ _KINDS = {"qualifying position": ("qualifying", "QualifyingResults"), "sprint re
 _PAST_TIMES = (None, "latest", "latest completed", "today or latest")
 
 
+_F1_FOCUS = {"standings": "standings", "race result": "finishing position", "qualifying": "qualifying position",
+             "sprint": "sprint result", "starting grid": "starting position", "next race": "schedule"}
+
+
+def _f1_ask(q: dict) -> tuple[str | None, str] | None:
+    """(focus, table) for an F1 question: from their words by the F1 reader, or the router's focus
+    when there are no words to read. None when the reader is unsure or it is not a feed question
+    ("what does DRS mean?"): the web lookup answers."""
+    if not q.get("said") or q.get("followup"):
+        # "What about Max?" says nothing of what is asked: the router carried that over from the
+        # question it follows (a team named then is found in the constructors' table).
+        return q.get("focus"), "drivers"
+    reading = reader("f1").read(q["said"])
+    if not reading.confident or reading.form["ask"] not in _F1_FOCUS:
+        return None
+    return _F1_FOCUS[reading.form["ask"]], reading.form["table"]
+
+
 async def _f1(q: dict, now: datetime, get) -> FeedAnswer | None:
-    focus, time = q.get("focus"), q.get("time")
+    asked = _f1_ask(q)
+    if asked is None:
+        return None
+    (focus, table), time = asked, q.get("time")
     who = q.get("entities") or []
-    if focus in ("schedule", "start time") or time in ("next upcoming", "today or next"):
+    if focus in ("schedule", "start time") or (time in ("next upcoming", "today or next") and not q.get("said")):
         url = f"{F1}/current/next.json"
         races = (await get(url))["MRData"]["RaceTable"]["Races"]
         if not races:
@@ -128,16 +151,33 @@ async def _f1(q: dict, now: datetime, get) -> FeedAnswer | None:
         return FeedAnswer(f"The next race is the {race['raceName']} in {where['locality']}, {where['country']}, "
                             f"on {when}.", url, f"Jolpica F1: {race['raceName']} schedule", "jolpica")
     if focus == "standings":
-        url = f"{F1}/current/driverStandings.json"
+        # A driver, or the drivers' leader, from the drivers' table. A team ("how many points does
+        # McLaren have?") or the constructors' championship from the constructors' table: never
+        # the team's best-placed driver.
+        # A season they name ("who won the 2025 championship?") is that season's final table.
+        season = time if re.fullmatch(r"\d{4}", str(time)) and int(time) < now.year else "current"
+        if table == "drivers":
+            url = f"{F1}/{season}/driverStandings.json"
+            table = (await get(url))["MRData"]["StandingsTable"]["StandingsLists"]
+            if not table:
+                return None
+            row = _driver(table[0]["DriverStandings"], who, teams=False) if who else table[0]["DriverStandings"][0]
+            if row is not None:
+                return FeedAnswer(f"{_name(row)} {_placed(row, season, table[0]['season'])} championship with "
+                                  f"{row['points']} points.", url, "Jolpica F1: driver standings", "jolpica")
+            if not who:
+                return None
+        url = f"{F1}/{season}/constructorStandings.json"
         table = (await get(url))["MRData"]["StandingsTable"]["StandingsLists"]
         if not table:
             return None
-        rows = table[0]["DriverStandings"]
-        row = _driver(rows, who) if who else rows[0]
+        rows = table[0]["ConstructorStandings"]
+        row = _constructor(rows, who) if who else rows[0]
         if row is None:
             return None
-        return FeedAnswer(f"{_name(row)} is {_ordinal(row['position'])} in the {table[0]['season']} championship "
-                            f"with {row['points']} points.", url, "Jolpica F1: driver standings", "jolpica")
+        placed = _placed(row, season, table[0]["season"]).replace("is ", "are ", 1)
+        return FeedAnswer(f"{row['Constructor']['name']} {placed} constructors' championship with {row['points']} "
+                          f"points.", url, "Jolpica F1: constructor standings", "jolpica")
     if focus not in (None, "finishing position", "result", "starting position", *_KINDS) or (
             time not in _PAST_TIMES and not re.fullmatch(r"\d{4}", str(time))):
         return None  # practice times, pit stops, "yesterday" and the like: the web lookup
@@ -188,8 +228,8 @@ async def _round_at(place: str, year: str, now: datetime, get) -> str | None:
     return None
 
 
-def _driver(rows: list[dict], who: list[str]) -> dict | None:
-    """The row for the driver (or team) named: full name or surname, as the router writes it."""
+def _driver(rows: list[dict], who: list[str], teams: bool = True) -> dict | None:
+    """The row for the driver (or, with teams, the team) named: full name or surname, as the router writes it."""
     for name in who:
         wanted = name.casefold()
         for row in rows:
@@ -197,9 +237,29 @@ def _driver(rows: list[dict], who: list[str]) -> dict | None:
             full = f"{driver['givenName']} {driver['familyName']}".casefold()
             if wanted in (full, driver["familyName"].casefold()):
                 return row
+        if not teams:
+            continue
         for row in rows:  # a team: its best-placed driver
             team = row.get("Constructor") or (row.get("Constructors") or [{}])[0]
             if team.get("name", "").casefold() == wanted:
+                return row
+    return None
+
+
+def _placed(row: dict, season: str, year: str) -> str:
+    """"is 2nd in the 2026", or for a season that is over "won the 2025" / "finished 2nd in the 2025"."""
+    if season == "current":
+        return f"is {_ordinal(row['position'])} in the {year}"
+    return f"won the {year}" if row["position"] == "1" else f"finished {_ordinal(row['position'])} in the {year}"
+
+
+def _constructor(rows: list[dict], who: list[str]) -> dict | None:
+    """The constructors' table row for the team named: "McLaren", "Red Bull" or "Red Bull Racing"."""
+    for name in who:
+        wanted = _bare(name)
+        for row in rows:
+            team = _bare(row["Constructor"]["name"])
+            if wanted and (wanted in team or team in wanted):
                 return row
     return None
 
@@ -605,6 +665,8 @@ def source_for(q: dict, cricket_key: str = "", football_key: str = "", groww: tu
             return None
         return _MARKET_SOURCES[kind[0]]
     # The feed would not be asked: no "let me check" for the web lookup's answer.
+    if domain == "f1" and _f1_ask(q) is None:
+        return None
     league = domain == "football" and not q.get("entities") and _league(q)
     if domain == "cricket" and not _match_question(q):
         return None
@@ -621,34 +683,96 @@ def source_for(q: dict, cricket_key: str = "", football_key: str = "", groww: tu
             "weather": "Open-Meteo", "news": "Google News"}.get(domain)
 
 
+def is_portfolio(q: dict) -> bool:
+    """A question about the owner's own holdings (Groww)."""
+    return q.get("domain") == "finance" and (_market_kind(q) or ("",))[0] == "portfolio"
+
+
+# Where Grands Prix are held, as people name them: the F1 reader's places.
+_F1_PLACES = dict.fromkeys(
+    "australia|australian|melbourne|albert park|china|chinese|shanghai|japan|japanese|suzuka|bahrain|sakhir|saudi|"
+    "saudi arabia|jeddah|miami|imola|emilia romagna|monaco|monte carlo|spain|spanish|barcelona|catalunya|madrid|"
+    "canada|canadian|montreal|austria|austrian|red bull ring|spielberg|britain|british|silverstone|belgium|belgian|"
+    "spa|hungary|hungarian|budapest|hungaroring|netherlands|dutch|zandvoort|italy|italian|monza|azerbaijan|baku|"
+    "singapore|marina bay|usa|united states|austin|cota|mexico|mexican|mexico city|brazil|brazilian|sao paulo|"
+    "são paulo|interlagos|las vegas|vegas|qatar|lusail|abu dhabi|yas marina".split("|"), "")
+
+
+_METALS = dict.fromkeys(("gold", "silver"), "")  # the web lookup prices these
+_READERS: dict[str, Reader] = {}
+
+
+def reader(domain: str) -> Reader:
+    """The domain's form reader (reader_data/<domain>.tsv), trained once on first use. Names it
+    knows by kind are masked so one example covers them all: a driver, a team, an index, a coin."""
+    if domain not in _READERS:
+        from app.chat.router import F1_DRIVERS, F1_TEAMS
+        kinds = {"f1": ((F1_DRIVERS, "xdriver"), (F1_TEAMS, "xteam"), (_F1_PLACES, "xplace")),
+                 "finance": ((_INDICES, "xindex"), (_COINS, "xcoin"), (_METALS, "xmetal"))}[domain]
+        # A [bracketed] example name reads like a name the router knows: a company, a place. Any
+        # company may be asked about; an F1 name is a driver, team or place on these lists.
+        _READERS[domain] = Reader(domain, {alias: mask for names, mask in kinds for key in names
+                                           for alias in key.split("|")},
+                                  name_mask={"f1": "xplace", "finance": "xticker"}[domain],
+                                  unknown_names=domain == "finance")
+    return _READERS[domain]
+
+
+def warm_readers() -> None:
+    """Train every reader ahead of the first question (Kip's startup, in a worker thread)."""
+    for domain in ("f1", "finance"):
+        reader(domain)
+
+
+def _holding_name(reading: Reading, q: dict) -> str | None:
+    """The company asked about: the router's name for it when it knows one ("HDFC Bank"), else
+    the words the reader found ("tata motors")."""
+    named = [e for e in q.get("entities") or [] if e.casefold() not in _COINS and e.casefold() not in ("gold", "silver")
+             and not any(e == v[1] for v in _INDICES.values())]
+    if named:
+        return named[0]
+    if reading.name:
+        return " ".join(w.upper() if len(w) <= 4 else w.capitalize() for w in reading.name.split())
+    return None
+
+
 def _market_kind(q: dict) -> tuple[str, object] | None:
-    """What a markets question asks for, decided once so the callout and the answer agree:
-    ("portfolio", None), ("coin", id), ("index", (symbol, name)), ("currency", (base, target)),
-    ("share", name), or None for what goes to the web lookup (gold, past prices)."""
-    if q.get("time") not in (None, "now", "today"):
+    """What a markets question asks for, as the finance reader reads it, decided once so the
+    callout and the answer agree: ("portfolio", None or a holding), ("coin", id), ("index", (symbol,
+    name)), ("currency", (base, target)), ("share", name), or None for what goes to the web lookup
+    (gold, past prices, anything the reader is unsure of)."""
+    said = q.get("said", "")
+    # A follow-up ("and TCS?") is read through the question it follows; its own words name the company.
+    earlier = q.get("earlier") if q.get("followup") else ""
+    reading = reader("finance").read(earlier or said)
+    subject = reader("finance").read(said) if earlier else reading
+    if not reading.confident or reading.form["when"] == "past" or q.get("time") not in (None, "now", "today"):
         return None
-    if _PORTFOLIO.search(q.get("said", "")):
-        return "portfolio", None
+    kind = reading.form["kind"]
     words = " ".join([q.get("said", ""), *(q.get("entities") or [])]).casefold()
-    coin = next((cid for name, cid in _COINS.items() if re.search(rf"\b{name}\b", words)), None)
-    if coin:
-        return "coin", coin
-    index = next((v for name, v in _INDICES.items() if re.search(rf"\b{re.escape(name)}\b", words)), None)
-    if index:
-        return "index", index
-    if "gold" in words or "silver" in words:
-        return None
-    # Currencies in the order they were said; the one after "a"/"one"/"1" is being priced ("how many
-    # dollars is a pound?"), else the first one that is not the rupee.
-    found = sorted((m.start(), code, words[max(0, m.start() - 4):m.start()])
-                   for name, code in _CURRENCIES for m in re.finditer(rf"\b{name}s?\b", words))
-    named = list(dict.fromkeys(code for _, code, _ in found))
-    priced = [code for _, code, before in found if re.search(r"\b(?:a|an|one|1)\s$", before)]
-    base = next((c for c in priced if c != "INR"), None) or next((c for c in named if c != "INR"), None)
-    if base:
-        return "currency", (base, next((c for c in named if c not in ("INR", base)), "INR"))
-    shares = [e for e in q.get("entities") or [] if e.casefold() not in ("gold", "silver")]
-    return ("share", shares[0]) if shares and not named else None
+    if kind == "my portfolio":
+        return "portfolio", None
+    if kind == "my holding":
+        return "portfolio", _holding_name(subject, q)
+    if kind == "crypto":
+        coin = next((_COINS[n] for n in subject.known if n in _COINS), None)
+        return ("coin", coin) if coin else None
+    if kind == "index":
+        index = next((_INDICES[n] for n in subject.known if n in _INDICES), None)
+        return ("index", index) if index else None
+    if kind == "exchange rate":
+        # Currencies in the order they were said; the one after "a"/"one"/"1" is being priced ("how many
+        # dollars is a pound?"), else the first one that is not the rupee.
+        found = sorted((m.start(), code, words[max(0, m.start() - 4):m.start()])
+                       for name, code in _CURRENCIES for m in re.finditer(rf"\b{name}s?\b", words))
+        named = list(dict.fromkeys(code for _, code, _ in found))
+        priced = [code for _, code, before in found if re.search(r"\b(?:a|an|one|1)\s$", before)]
+        base = next((c for c in priced if c != "INR"), None) or next((c for c in named if c != "INR"), None)
+        return ("currency", (base, next((c for c in named if c not in ("INR", base)), "INR"))) if base else None
+    if kind == "share price":
+        name = _holding_name(subject, q)
+        return ("share", name) if name else None
+    return None
 
 
 async def _markets(q: dict, now: datetime, get, groww: tuple[str, str] = ("", "")) -> FeedAnswer | None:
@@ -659,7 +783,7 @@ async def _markets(q: dict, now: datetime, get, groww: tuple[str, str] = ("", ""
         return None
     what, detail = kind
     if what == "portfolio":
-        return await _portfolio(now, get, groww) if all(groww) else None
+        return await _portfolio(now, get, groww, detail) if all(groww) else None
     if what == "coin":
         price = (await get(f"{CRYPTO}?ids={detail}&vs_currencies=inr,usd&include_24hr_change=true")).get(detail)
         if not price:
@@ -709,7 +833,6 @@ async def _share(name: str, now: datetime, get) -> FeedAnswer | None:
 # Kip calls exactly two Groww endpoints: the token and the holdings. Never orders, funds or positions.
 GROWW_TOKEN_URL = f"{GROWW}/token/api/access"
 GROWW_HOLDINGS_URL = f"{GROWW}/holdings/user"
-_PORTFOLIO = re.compile(r"\bmy (?:portfolio|holdings|stocks|shares|investments)\b|\bwhat do i (?:hold|own)\b", re.I)
 _GROWW_TOKEN: dict[str, tuple[str, datetime]] = {}
 
 
@@ -734,24 +857,18 @@ async def _groww_token(groww: tuple[str, str], now: datetime) -> str:
     return reply["token"]
 
 
-async def _portfolio(now: datetime, get, groww: tuple[str, str]) -> FeedAnswer | None:
-    """Their holdings from Groww, priced from Yahoo (this Groww key is refused live market data)."""
+async def _portfolio(now: datetime, get, groww: tuple[str, str], name: str | None = None) -> FeedAnswer | None:
+    """Their holdings from Groww, priced from Yahoo (this Groww key is refused live market data):
+    all of them, or the one they name ("how much HDFC Bank do I own?")."""
     token = await _groww_token(groww, now)
     data = await get(GROWW_HOLDINGS_URL, {"Authorization": f"Bearer {token}", "Accept": "application/json",
                                           "X-API-VERSION": "1.0"})
     holdings = [h for h in (data.get("payload") or {}).get("holdings") or [] if h.get("quantity")]
     if not holdings:
         return FeedAnswer("You hold no shares on Groww right now.", "https://groww.in/", "Groww holdings", "groww")
-    listed = {h["trading_symbol"]: f"{h['trading_symbol']}{'.NS' if 'NSE' in (h.get('tradable_exchanges') or ['NSE']) else '.BO'}"
-              for h in holdings}
-    symbols = list(listed.values())
-    prices = {}
-    for start in range(0, len(symbols), 20):  # Yahoo prices up to 20 symbols a request
-        spark = await get(f"{SPARK}?{urlencode({'symbols': ','.join(symbols[start:start + 20]), 'range': '1d', 'interval': '1d'})}")
-        for item in (spark.get("spark") or {}).get("result") or []:
-            meta = item["response"][0]["meta"]
-            prices[item["symbol"]] = (meta["regularMarketPrice"], meta.get("chartPreviousClose") or meta.get("previousClose"))
-    priced = [(h, *prices[listed[h["trading_symbol"]]]) for h in holdings if listed[h["trading_symbol"]] in prices]
+    if name:
+        return await _holding(name, holdings, get)
+    priced = await _priced(holdings, get)
     if not priced:
         return None
     value = sum(h["quantity"] * price for h, price, _ in priced)
@@ -766,6 +883,59 @@ async def _portfolio(now: datetime, get, groww: tuple[str, str]) -> FeedAnswer |
         text += f"; best {moves[-1][1]} {moves[-1][0]:+.1f}%, worst {moves[0][1]} {moves[0][0]:+.1f}%"
     text += "." + (f" {len(holdings) - len(priced)} could not be priced." if len(priced) < len(holdings) else "")
     return FeedAnswer(text, "https://groww.in/", "Groww holdings", "groww")
+
+
+async def _priced(holdings: list[dict], get) -> list[tuple[dict, float, float | None]]:
+    """(holding, price, previous close) for each holding Yahoo could price, NSE where it trades there."""
+    listed = {h["trading_symbol"]: f"{h['trading_symbol']}{'.NS' if 'NSE' in (h.get('tradable_exchanges') or ['NSE']) else '.BO'}"
+              for h in holdings}
+    symbols = list(dict.fromkeys(listed.values()))
+    prices = {}
+    for start in range(0, len(symbols), 20):  # Yahoo prices up to 20 symbols a request
+        spark = await get(f"{SPARK}?{urlencode({'symbols': ','.join(symbols[start:start + 20]), 'range': '1d', 'interval': '1d'})}")
+        for item in (spark.get("spark") or {}).get("result") or []:
+            meta = item["response"][0]["meta"]
+            prices[item["symbol"]] = (meta["regularMarketPrice"], meta.get("chartPreviousClose") or meta.get("previousClose"))
+    return [(h, *prices[listed[h["trading_symbol"]]]) for h in holdings if listed[h["trading_symbol"]] in prices]
+
+
+def _bare(text: str) -> str:
+    """"HDFC Bank" and "HDFCBANK" alike: lower case, letters and digits only."""
+    return re.sub(r"[^a-z0-9]", "", text.casefold())
+
+
+async def _holding(name: str, holdings: list[dict], get) -> FeedAnswer:
+    """The holding they name: its symbol as said ("HDFCBANK", "HDFC Bank"), else the NSE or BSE
+    listing Yahoo finds for the name ("Tata Consultancy Services" is TCS), else symbols that start
+    with it ("HDFC": every HDFC company they hold)."""
+    key = _bare(name)
+    found = [h for h in holdings if _bare(h["trading_symbol"]) == key]
+    if not found:
+        quotes = (await get(f"{SEARCH}?{urlencode({'q': name, 'quotesCount': 5, 'newsCount': 0})}")).get("quotes") or []
+        listing = next((x["symbol"].rsplit(".", 1)[0] for suffix in (".NS", ".BO") for x in quotes
+                        if x.get("symbol", "").endswith(suffix)), None)
+        found = [h for h in holdings if listing and _bare(h["trading_symbol"]) == _bare(listing)]
+    if not found and len(key) >= 3:
+        found = [h for h in holdings if _bare(h["trading_symbol"]).startswith(key)]
+    if not found:
+        return FeedAnswer(f"You don't hold any {name} on Groww.", "https://groww.in/", "Groww holdings", "groww")
+    prices = {h["trading_symbol"]: (price, prev) for h, price, prev in await _priced(found, get)}
+    lines = []
+    for h in found:
+        quantity, paid = h["quantity"], h["quantity"] * h["average_price"]
+        line = f"You hold {quantity:g} {h['trading_symbol']} share{'s' if quantity != 1 else ''}"
+        if h["trading_symbol"] not in prices:
+            lines.append(f"{line} (bought at {_inr(h['average_price'], decimals=2)} each); I couldn't get today's price.")
+            continue
+        price, prev = prices[h["trading_symbol"]]
+        value = quantity * price
+        line += (f", worth {_inr(value)} at {_inr(price, decimals=2)}: "
+                 f"{'up' if value >= paid else 'down'} {_inr(abs(value - paid))}{_percent(value, paid, 1)} "
+                 f"on the {_inr(paid)} you paid")
+        if prev:
+            line += f", {'up' if price >= prev else 'down'} {abs(price / prev - 1) * 100:.2f}% today"
+        lines.append(line + ".")
+    return FeedAnswer(" ".join(lines), "https://groww.in/", "Groww holdings", "groww")
 
 
 def _percent(now: float, then: float, places: int) -> str:
