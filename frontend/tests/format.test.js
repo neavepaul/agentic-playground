@@ -30,7 +30,7 @@ test('model status names the configured provider instead of assuming a local one
   assert.deepEqual(modelStatus({ provider: 'groq', reachable: true, model: 'llama-x', model_available: true }),
     { state: 'ready', label: 'Groq · llama-x', detail: '' });
   assert.equal(modelStatus({ provider: 'ollama', reachable: false, model: 'm' }).state, 'offline');
-  assert.equal(modelStatus({ provider: 'colibri', reachable: true, model: 'm', model_available: false }).state, 'warn');
+  assert.equal(modelStatus({ provider: 'ollama', reachable: true, model: 'm', model_available: false }).state, 'warn');
   assert.equal(modelStatus(null).label, 'Backend offline');
 });
 

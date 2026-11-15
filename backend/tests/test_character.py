@@ -54,7 +54,7 @@ def test_character_text_avoids_assistant_cliches_and_scripted_lines():
     for phrase in BANNED:
         # The voice may name what to avoid, but must never instruct Kip to say it.
         assert text.count(phrase) <= text.count("no " + phrase)
-    assert "robot" in IDENTITY and "childhood" in IDENTITY
+    assert "You know you are a robot" in IDENTITY
 
 
 def test_earlier_character_state_is_carried_over_without_losing_anything():

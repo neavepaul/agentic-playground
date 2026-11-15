@@ -3,48 +3,40 @@
 Kip is a robot friend in a chat window. He remembers you, has a persistent personality,
 and can look things up on the web, read pages and run small Python programs to answer you.
 Behind the conversation, three software agents (Coordinator, Explorer and Critic) run those
-lookups and check answers against their sources. Models run on your local Colibri server,
-optionally with Groq for faster replies and web search.
+lookups and check answers against their sources. Kip is built for a **Raspberry Pi 4 (8 GB)**: a
+small local model (Qwen3.5 2B on Ollama) answers when Groq can't, Groq answers first while it has
+quota, and F1, cricket and weather come straight from data feeds with no model at all.
 
-## Start on Windows
+## Start
 
 Prerequisites: Python **3.12+**, Node.js **20.19+ or 22.12+** with npm, and
-[Colibri](https://github.com/JustVugg/colibri) serving Qwen3.6-35B-A3B on port 8001. Install dependencies once while online.
-After dependencies and the model are downloaded, the application works offline.
+[Ollama](https://ollama.com/download). Install dependencies once while online.
 
-Run these commands from the project directory unless a `cd` is shown.
+Run these commands from the project directory unless a `cd` is shown. The examples are for
+Raspberry Pi OS (Linux); on Windows use `.venv\Scripts\python.exe` and `Copy-Item`.
 
-**Terminal 1 — Colibri**
+**The model** (once; keep `ollama serve` running, which the installer sets up as a service):
 
-```powershell
-# In your Colibri c directory; setup uses the installed engine and model.
-.\coli setup
+```bash
+ollama pull qwen3.5:2b-q4_K_M
 ```
 
-Keep your configured Colibri server running at `http://127.0.0.1:8001/v1`.
-The model ID is `qwen3.6-colibri`. Verify the configured model before running goals:
+**Backend**
 
-```powershell
+```bash
 cd backend
-python -m app.check_model
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+cp .env.example .env          # add GROQ_API_KEY and CRICKETDATA_API_KEY if you have them
+.venv/bin/python -m app.check_model
+.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-**Terminal 2 — backend**
+Do not overwrite an existing `.env` when updating.
 
-```powershell
-cd backend
-python -m venv .venv
-python -m pip install -r requirements.txt
-Copy-Item .env.example .env
-python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
-```
+**Frontend**
 
-Environment activation is optional because these commands invoke the virtual
-environment's Python directly. Do not overwrite an existing `.env` when updating.
-
-**Terminal 3 — frontend**
-
-```powershell
+```bash
 cd frontend
 npm install -g pnpm
 pnpm install
@@ -54,28 +46,6 @@ pnpm dev
 Open **[http://127.0.0.1:5173](http://127.0.0.1:5173)**. The development server proxies
 `/api` and `/ws` to FastAPI on port 8000. Keep both processes running. Everything is
 served from installed packages, with no CDN or external fonts.
-
-On macOS/Linux, use `python3 -m venv .venv` and `.venv/bin/python` in place of the
-Windows Python paths. Other commands are the same.
-
-### Already-installed environment in this workspace
-
-The implementation session created a **root** `.venv` and `frontend/node_modules`.
-On this machine, Python's normal launcher and npm were unavailable on PATH, so
-the available bundled Python and pnpm were used to install dependencies. You can
-use these commands from the project root with that existing installation:
-
-```powershell
-# Backend, terminal 1
-python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
-
-# Frontend, terminal 2
-cd frontend
-pnpm dev
-```
-
-The standard setup above remains the portable way to recreate the environment.
-The included pnpm lockfile records the frontend versions used here; npm is also supported.
 
 ## Use it
 
@@ -115,15 +85,8 @@ plainly asked for still starts. Set
 `CHAT_HOSTED=false` to keep conversation local. The `chat_reply` log line names the provider and
 model, and how the prompt's size splits between system, history and the latest message.
 
-Without Groq, chat uses the main model unless you configure a separate one. While an
-errand is running on the same Colibri model, chat replies wait behind its planning
-calls. If replies are slow, point chat at a small, fast model; errands keep using
-Colibri:
-
-```
-CHAT_PROVIDER=ollama
-CHAT_MODEL=qwen3:4b
-```
+Without Groq, chat and errands share the one local model: while an errand runs, a reply goes
+before its next model call.
 
 The backend log reports `first_token_seconds` and `total_seconds` for every reply, and
 hovering over a reply in the UI shows the same timing.
@@ -156,12 +119,12 @@ better on wording the examples never used.
 
 Offline, from `backend`:
 
-```powershell
-..\.venv\Scripts\python.exe -m app.chat.router_train eval              # accuracy against evaluations/intent_eval.jsonl
-..\.venv\Scripts\python.exe -m app.chat.router_train eval --embeddings --compare
-..\.venv\Scripts\python.exe -m app.chat.router_train shadow            # router vs usual path, from kip.db
-..\.venv\Scripts\python.exe -m app.chat.router_train review            # corrections people made
-..\.venv\Scripts\python.exe -m app.chat.router_train accept 3          # use correction 3 as a training example
+```bash
+.venv/bin/python -m app.chat.router_train eval              # accuracy against evaluations/intent_eval.jsonl
+.venv/bin/python -m app.chat.router_train eval --embeddings --compare
+.venv/bin/python -m app.chat.router_train shadow            # router vs usual path, from kip.db
+.venv/bin/python -m app.chat.router_train review            # corrections people made
+.venv/bin/python -m app.chat.router_train accept 3          # use correction 3 as a training example
 ```
 
 Corrections are stored in `kip.db` as unreviewed, deduplicated, with what was predicted,
@@ -202,9 +165,9 @@ backend/app/
   capabilities/ web search, webpage reading, restricted Python, answer grounding
   memory/       kip.db: searchable memories and structured state
   persona/      deterministic personality: mood, traits, relationships (no model calls)
-  llm/          small LLM protocol, JSON validation/retry, Colibri/Ollama/Groq adapters
+  llm/          small LLM protocol, JSON validation/retry, Ollama and Groq adapters
   events/       bounded event history and WebSocket subscriber queues
-  clock.py      the real device clock (date, time, timezone)
+  clock.py      the one clock, in TIMEZONE (IST by default) whatever the device says
   main.py       FastAPI lifecycle, endpoints, WebSocket stream
   check_model.py  live structured-output smoke check
 frontend/src/   the chat interface
@@ -220,12 +183,8 @@ calls, model calls and time bound every task.
 
 ### Model interface
 
-The default adapter uses Colibri's OpenAI-compatible `/v1/chat/completions` API,
-with `stream: false`, `enable_thinking: false`, low temperature and bounded output.
-The Qwen engine does not support schema response formats, so the JSON schema is
-included in the prompt. Context capacity is configured on the Colibri server
-(8192 tokens in the current setup), rather than using Ollama's `num_ctx` option.
-Set `LLM_PROVIDER=ollama` to use the existing Ollama adapter with schema-constrained output.
+The local model runs on Ollama's `/api/chat`, with schema-constrained output (`format`), low
+temperature, bounded output and the model kept loaded. Groq, when its key is set, goes first.
 Pydantic validates the result. Invalid JSON or a schema mismatch gets one retry,
 then a safe task failure. HTTP failures and timeouts also become task failures.
 Optional model reasoning fields are ignored. Invalid raw output, model prompts
@@ -245,33 +204,28 @@ Copy `backend/.env.example` to `backend/.env`. Environment variables override it
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `LLM_PROVIDER` | `colibri` | `colibri` or `ollama`; shared by all roles |
-| `COLIBRI_BASE_URL` | `http://127.0.0.1:8001/v1` | Colibri OpenAI-compatible endpoint |
-| `COLIBRI_MODEL` | `qwen3.6-colibri` | Qwen3.6-35B-A3B model ID reported by Colibri |
-| `GROQ_API_KEY` | unset | Optional hosted Groq for goal planning and web-research tasks; unset keeps everything on Colibri |
+| `GROQ_API_KEY` | unset | Optional hosted Groq: answers first while it has quota (chat, planning, web search); unset keeps everything on the Pi |
 | `CRICKETDATA_API_KEY` | unset | Optional CricketData.org key for cricket (100 requests a day free); unset, ESPN's scoreboard answers cricket |
 | `GROQ_MODELS` | `openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b` | Preference order. Free-tier limits are per model, so a model whose quota is spent is skipped until its reset |
 | `GROQ_MAX_WAIT_SECONDS` | `20` | When every Groq model is rate-limited and one frees within this long, a call waits for it (once) instead of falling back to the local model, which can take minutes |
-| `GROQ_PLAN_CALLS` / `GROQ_RESEARCH_CALLS` | `2` / `4` | Hard caps on Groq calls per goal plan and per web-research task; past a cap, or on any Groq failure, Colibri continues |
+| `GROQ_PLAN_CALLS` / `GROQ_RESEARCH_CALLS` | `2` / `4` | Hard caps on Groq calls per goal plan and per web-research task; past a cap, or on any Groq failure, the local model continues |
 | `CHAT_HOSTED` / `GROQ_CHAT_MODELS` | `true` / `qwen/qwen3.8-27b,openai/gpt-oss-20b` | Conversation on Groq while it has quota, streamed, falling back to the local chat model |
 | `GROQ_SEARCH_REASONING` | `low` | Effort for Groq's browser search. Higher opens more pages, and every step re-reads each page read so far (one page can be ~50k tokens) |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Optional Ollama endpoint |
-| `OLLAMA_MODEL` | `qwen3:4b` | Used only when LLM_PROVIDER=ollama |
-| `OLLAMA_KEEP_ALIVE` | unset | How long Ollama keeps the model loaded (`-1` always, or `30m`); unset is Ollama's 5 minutes |
-| `PROMPT_PROFILE` | `full` | `compact`: the same character, rules and action line in about a third of the size, at most 2 memories, for small local models. Groq gets the same prompt |
-| `LOCAL_CHAT_ERRANDS` | `true` | `false`: a reply the local model writes keeps its memories, but its task and offer are dropped; errands start only from the person's own words. For small local models. Groq-written replies are unaffected |
-| `COMPACT_HISTORY_TOKENS` | `600` | Earlier conversation the compact prompt carries; a long message itself is never refused for it |
-| `LLM_TIMEOUT_SECONDS` | `120` | Per model HTTP request; `.env.example` uses 600 for Colibri CPU inference |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama endpoint |
+| `OLLAMA_MODEL` | `qwen3.5:2b-q4_K_M` | The one local model (4-bit; the plain `qwen3.5:2b` tag is 8-bit, about half the speed on a Pi) |
+| `OLLAMA_KEEP_ALIVE` | `-1` | How long Ollama keeps the model loaded (`-1` always, `30m`, or empty for Ollama's 5 minutes); reloading from microSD takes tens of seconds |
+| `LOCAL_CHAT_ERRANDS` | `false` | A reply the local model writes keeps its memories, but its task and offer are dropped: errands start only from your own words. `true` lets it start errands. Groq-written replies are unaffected |
+| `CHAT_HISTORY_TOKENS` | `250` | Earlier conversation each reply carries; less is faster on a Pi. A long message itself is never refused for it |
+| `LLM_TIMEOUT_SECONDS` | `600` | Per model HTTP request; a small model on a Pi can take minutes over a long call |
 | `TASK_TIMEOUT_SECONDS` | `1800` | Entire task, including retries and reviews; allows CPU-only inference |
 | `TEMPERATURE` | `0.1` | Conservative structured generation |
-| `CONTEXT_TOKENS` | `8192` | Ollama context size |
+| `CONTEXT_TOKENS` | `4096` | Ollama context size; smaller needs less memory |
 | `MAX_COORDINATOR_CYCLES` | `20` | Maximum planning iterations |
 | `MAX_EXPLORER_ACTIONS` | `40` | Hard safety ceiling per delegation, not the normal exit |
 | `MAX_TOOL_CALLS` | `80` | Includes failed calls |
 | `MAX_CRITIC_REVIEWS` | `8` | Bounds plan/completion reviews and recovery |
 | `LOG_LEVEL` | `INFO` | Use `DEBUG` for application diagnostics |
 | `TIMEZONE` | `Asia/Kolkata` | Every time Kip says or reasons with (the clock, match and race times, the status line), whatever the device's clock is set to; an IANA name |
-| `CHAT_PROVIDER` / `CHAT_MODEL` / `CHAT_BASE_URL` | unset | Optional separate (faster) model for conversation; unset uses the main model |
 | `CHAT_MAX_TOKENS` | `300` | Upper bound on one chat reply |
 | `CHAT_TEMPERATURE` | `0.6` | Conversational variety (tasks keep `TEMPERATURE`) |
 | `INTENT_ROUTER` | `on` | Local intent router: `on` sends confident live questions straight to the lookup, `shadow` only records what it would do, `off` |
@@ -286,39 +240,30 @@ Copy `backend/.env.example` to `backend/.env`. Environment variables override it
 The application uses in-process memory; use **one Uvicorn worker**. Bind it to
 loopback as shown. There is intentionally no authentication or remote deployment setup.
 
-### Running on a Raspberry Pi 4 (8 GB)
+### Speed on a Raspberry Pi 4 (8 GB)
 
-Colibri does not fit a Pi: its 35B model is ~18 GB and streams weights from storage, which on a
-microSD card means seconds per word. Use Ollama with one small Qwen model instead, and the compact
-prompt. Start from `backend/.env.pi.example`:
+Estimates from the Pi 4's memory bandwidth, not measurements: the 2B model reads a prompt at roughly
+6–10 tokens a second and writes about 3.
 
-1. Install Ollama and `ollama pull qwen3.5:2b-q4_K_M` (the 4-bit build; the plain `qwen3.5:2b`
-   tag is 8-bit, twice the weights and about half the speed on a Pi).
-2. `Copy-Item .env.pi.example .env` (or `cp` on the Pi), then add `GROQ_API_KEY` if you have one.
-3. Check the model with `python -m app.check_model`.
-
-What to expect, as estimates from the Pi 4's memory bandwidth, not measurements: a 2B model reads a
-prompt at roughly 6–10 tokens a second and writes about 3; 0.8B roughly 15–25 and 6–8. So:
-
-- **Instant** (no model): the clock, router answers, F1 and cricket results from their feeds (below),
-  live lookups with Groq, and explicit tool requests like "use Python to…" or "read https://…",
-  whose errand starts at once. A named page is read with no planning call. Times are always in
-`TIMEZONE` (IST by default) and temperatures in °C, whichever model or feed answers.
-- **Tens of seconds**: anything the local model writes. The compact system prompt stays the same
-  every reply, so Ollama reuses it; each reply adds the mood, two memories, the status, recent
-  history (`COMPACT_HISTORY_TOKENS`) and the message.
+- **Instant** (no model): the clock, router answers, F1, cricket and weather from their feeds
+  (below), live lookups with Groq, and explicit tool requests like "use Python to…" or "read
+  https://…", whose errand starts at once. A named page is read with no planning call. Times are
+  always in `TIMEZONE` (IST by default) and temperatures in °C, whichever model or feed answers.
+- **Tens of seconds**: anything the local model writes. The system prompt is a few hundred tokens
+  and the same every reply, so Ollama reuses it; each reply adds the mood, two memories, the
+  status, recent history (`CHAT_HISTORY_TOKENS`) and the message.
 
 A 2B model is a weak judge of what to do: tested without Groq, its replies proposed nonsense
-errands, and one became an offer that blocked lookups for ten minutes. So the Pi settings keep it to
-talking and remembering (`LOCAL_CHAT_ERRANDS=false`); errands start from what you said. A request
-that only asks for Python costs one narrow model call that writes just the code.
+errands, and one became an offer that blocked lookups for ten minutes. So it is kept to talking and
+remembering (`LOCAL_CHAT_ERRANDS=false`); errands start from what you said. A request that only asks
+for Python costs one narrow model call that writes just the code.
 
-With `GROQ_API_KEY` set, Groq answers while it has quota, from the same compact prompt, and the
-Pi's model takes over when Groq cannot. Measure your own numbers with `python -m app.bench` from
-`backend` while Kip runs: it times chat, memory, a live lookup, Python and a page read. It talks to
-Kip like the browser, so start that backend with `MEMORY_DB_FILE` pointing at a copy of `kip.db` if
-the test conversation should not be kept. Keep `kip.db` on a USB 3 SSD if you can: it is written
-constantly, which wears microSD cards.
+With `GROQ_API_KEY` set, Groq answers while it has quota, from the same prompt, and the Pi's model
+takes over when Groq cannot. Measure your own numbers with `python -m app.bench` from `backend`
+while Kip runs: it times chat, memory, a live lookup, Python and a page read. It talks to Kip like
+the browser, so start that backend with `MEMORY_DB_FILE` pointing at a copy of `kip.db` if the test
+conversation should not be kept. Keep `kip.db` on a USB 3 SSD if you can: it is written constantly,
+which wears microSD cards.
 
 ## API
 
@@ -342,20 +287,17 @@ Neither survives a process restart. The UI keeps at most 200 activity entries.
 
 From `backend`, with its virtual environment installed:
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe -m app.check_model
+```bash
+.venv/bin/python -m pytest -q
+.venv/bin/python -m app.check_model
 ```
-
-If using this workspace's root virtual environment, substitute
-`..\.venv\Scripts\python.exe` for those commands while in `backend`.
 
 `pytest` uses scripted/mock model responses and does **not** require a running model server.
 The smoke check intentionally calls your local model.
 
 From `frontend`:
 
-```powershell
+```bash
 npm test
 npm run build
 ```
@@ -366,13 +308,12 @@ the actual validation performed during implementation.
 
 ## Troubleshooting and V1 limits
 
-- **Model missing/offline:** start Colibri on port 8001 and check `/v1/models`
-  agrees with `COLIBRI_MODEL`. Restart the backend after changing `.env`.
-- **Slow inference:** CPU inference with a small expert cache can take minutes per
-  decision. Increase the request/task timeout as needed, or set `GROQ_API_KEY`.
-- **Truncated model output:** increase Colibri's output/context capacity or shorten
-  the context. The adapter reports truncation as a task failure; it never accepts
-  a partial JSON response as a completed decision.
+- **Model missing/offline:** start Ollama (`ollama serve`), check `ollama list` shows
+  `OLLAMA_MODEL`, and run `python -m app.check_model`. Restart the backend after changing `.env`.
+- **Slow replies:** a Pi's model takes tens of seconds for anything it writes. Set `GROQ_API_KEY`,
+  lower `CHAT_HISTORY_TOKENS`, or raise the request/task timeout if calls time out.
+- **Truncated model output:** raise `CONTEXT_TOKENS` or shorten the context. The adapter reports
+  truncation as a task failure; it never accepts a partial JSON response as a completed decision.
 - **Disconnected UI:** it retries automatically and fetches a fresh snapshot.
 - **Port conflict:** stop the existing process on 8000 or 5173. If changing ports,
   update both Vite proxy targets and the backend launch command.
@@ -384,7 +325,7 @@ the actual validation performed during implementation.
 
 Every digital request goes through the model, including an explicit URL plus a
 simple calculation. The former direct-command parser and its setting have been
-removed. Colibri chooses the tools, their arguments, and the final answer.
+removed. The model (Groq, else the local one) chooses the tools, their arguments, and the final answer.
 
 The initial goal plan can request up to four independent tools with fully known
 arguments. Later decisions can use `batch_capabilities` to group independent

@@ -9,7 +9,7 @@ from app.chat.consent import task_identity
 from app.chat.prompt import TrailerSplitter, parse_reply
 from app.config import Settings
 from app.llm.base import ModelError
-from app.llm.colibri import ColibriClient
+from app.llm.ollama import OllamaClient
 from app.chat.context import assemble, message_tokens, select_history
 from app.memory.recall import MemoryStore
 from tests.test_chat import make_session, reply
@@ -55,10 +55,9 @@ def test_rich_content_survives_chunked_control_parser(content):
 @pytest.mark.asyncio
 async def test_unconfirmed_stream_eof_is_an_error_even_with_complete_action_json():
     payload = 'Ready.\n###\n{"task": "Find keys"}'
-    async def respond(request):
-        event = {"choices": [{"delta": {"content": payload}}]}
-        return httpx.Response(200, text="data: " + json.dumps(event) + "\n\n")
-    client = ColibriClient(Settings())
+    async def respond(request):  # the stream stops before Ollama's {"done": true}
+        return httpx.Response(200, text=json.dumps({"message": {"content": payload}}))
+    client = OllamaClient(Settings())
     await client.http.aclose()
     client.http = httpx.AsyncClient(transport=httpx.MockTransport(respond), base_url="http://local/")
     try:
@@ -171,14 +170,15 @@ async def test_canonical_screen_and_voice_are_separate():
     assert "```" not in turn["spoken_text"]
     assert turn["text"] == turn["spoken_text"]
     assert turn["metrics"]["chat_model_calls"] == 1
-    assert turn["metrics"]["estimated_prompt_tokens"] <= session.settings.chat_context_tokens
+    settings = session.settings
+    assert turn["metrics"]["estimated_prompt_tokens"] <= settings.context_tokens - settings.chat_max_tokens
     await session.close()
 
 
 @pytest.mark.asyncio
 async def test_context_overflow_is_reported_without_claiming_model_outage():
     session, model, _, _ = make_session([])
-    session.settings.chat_context_tokens = 1024
+    session.settings.context_tokens, session.settings.chat_max_tokens = 2048, 1800  # ~250 left
     session.submit("Hello")
     await session.drain()
     turn = session.history()[-1]

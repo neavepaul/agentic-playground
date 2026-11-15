@@ -414,11 +414,9 @@ class ChatSession:
                     guidance = (guidance + " " + checked).strip()
                 messages = build_messages(self.name, voice, prompt_memories(memories),
                                           self._status(user_turn.get("speaker")), earlier, user_turn["text"],
-                                          guidance=guidance, context_tokens=min(
-                                              self.settings.chat_context_tokens,
-                                              self.settings.context_tokens - self.settings.chat_max_tokens),
-                                          compact=self.settings.prompt_profile == "compact",
-                                          history_tokens=self.settings.compact_history_tokens)
+                                          guidance=guidance,
+                                          context_tokens=self.settings.context_tokens - self.settings.chat_max_tokens,
+                                          history_tokens=self.settings.chat_history_tokens)
                 splitter = TrailerSplitter()
                 try:
                     async for chunk in self.client.stream_text(messages, max_tokens=self.settings.chat_max_tokens,

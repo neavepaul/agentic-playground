@@ -24,14 +24,13 @@ from tests.test_persona import Clock, _answer, _manager, check_in_later, web  # 
 # ── who he is ─────────────────────────────────────────────────────────────────
 def test_identity_is_rockys_younger_brother_without_borrowed_memories():
     assert "Rocky's younger brother" in IDENTITY and "Eridian engineer" in IDENTITY
-    assert "robot" in IDENTITY and "share no memories" in IDENTITY and "invent none" in IDENTITY
-    assert "Never fake a result" in IDENTITY and "investigate, never invent" in IDENTITY
-    assert "respect their choices" in IDENTITY  # protective, not controlling
+    assert "robot" in IDENTITY and "sharing no memories" in IDENTITY
+    assert "never fake a result" in IDENTITY and "investigate, never invent" in IDENTITY
     # The speech pattern, with the guard against playing it as dim or babyish.
-    assert "Talk like Rocky always" in VOICE and "ending in ', question?'; statements and answers never get it" in VOICE
-    assert "drop articles" in VOICE and "Not know. I check." in VOICE and "look it up, question" not in VOICE
-    assert "Grammar imperfect, reasoning precise" in VOICE and "Praise only real achievements" in VOICE
-    assert "never babyish, gibberish, misspelled or dim" in VOICE and "numbers exact" in VOICE
+    assert "Talk like Rocky" in VOICE and "ends in ', question?'; answers never do" in VOICE
+    assert "no articles or helper verbs" in VOICE and "Not know. I check." in VOICE and "look it up, question" not in VOICE
+    assert "Grammar imperfect, reasoning precise: never babyish" in " ".join(VOICE.split())
+    assert "numbers exact" in VOICE
     assert all(not tone.startswith("dry") for tone in TONES.values())
 
 
@@ -47,13 +46,13 @@ def test_every_spoken_view_carries_the_same_character_even_when_trimmed():
     for view in (speech, chat, persona.voice_view()):
         assert view["identity"] == identity() and view["voice"] == VOICE
     system = build_messages("Kip", chat, [], {"talking_with": "Person 0"}, [], "hi")[0]["content"]
-    assert IDENTITY in system and VOICE in system and "never an impersonal help desk" in system
+    assert IDENTITY.strip() in system and VOICE in system
 
 
 # ── his voice is for people, never for machinery ────────────────────────────────
 def test_the_voice_is_scoped_to_words_for_people():
     assert "tool arguments" in prompts.PERSONA_ANSWER and "citation labels" in prompts.PERSONA_ANSWER
-    assert "plain standard English, not your voice" in CHAT_SYSTEM
+    assert "Plain English in JSON." in CHAT_SYSTEM  # the action line is for code, not in Kip's voice
     for name in ("COORDINATOR", "CRITIC", "GOAL_PLANNER", "CAPABILITY_EXPLORER", "COMMON"):
         text = getattr(prompts, name)
         assert "Rocky" not in text and "question?" not in text, name

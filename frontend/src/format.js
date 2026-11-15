@@ -3,7 +3,7 @@
  */
 
 const LOOKUP_PREFIX = 'Look up online: ';
-const PROVIDERS = { groq: 'Groq', ollama: 'Ollama', colibri: 'Colibri', openai: 'OpenAI' };
+const PROVIDERS = { groq: 'Groq', ollama: 'Ollama' };
 
 /** Keep only http(s) sources, de-duplicated by URL, with a readable host name. */
 export function safeSources(sources) {

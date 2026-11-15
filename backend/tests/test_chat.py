@@ -10,7 +10,6 @@ from app.chat.prompt import TrailerSplitter, build_messages
 from app.config import Settings
 from app.events.bus import EventBus
 from app.llm.base import ModelError
-from app.llm.colibri import ColibriClient
 from app.llm.ollama import OllamaClient
 from app.memory.recall import MemoryStore
 from app.persona import Persona
@@ -316,45 +315,23 @@ def test_memory_tags_match_names_and_ids_without_substring_collisions():
 
 
 @pytest.mark.asyncio
-async def test_colibri_streams_server_sent_events():
-    body = ("data: " + json.dumps({"choices": [{"delta": {"content": "Hel"}}]}) + "\n\n"
-            "data: " + json.dumps({"choices": [{"delta": {"content": "lo"}}]}) + "\n\ndata: [DONE]\n\n")
-    seen = {}
-    def respond(request):
-        seen.update(json.loads(request.content))
-        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
-    client = ColibriClient(Settings())
-    client.http = httpx.AsyncClient(transport=httpx.MockTransport(respond), base_url="http://colibri/")
-    assert "".join([chunk async for chunk in client.stream_text([{"role": "user", "content": "hi"}])]) == "Hello"
-    assert seen["stream"] is True and seen["enable_thinking"] is False
-    assert "first_token_seconds" in client.last_metrics
-    await client.close()
-
-
-@pytest.mark.asyncio
-async def test_colibri_records_stream_usage_without_changing_the_reply():
-    events = [{"choices": [{"delta": {"content": "Hello"}}]},
-              {"choices": [], "usage": {"prompt_tokens": 120, "completion_tokens": 7}}]
-    body = "".join("data: " + json.dumps(event) + "\n\n" for event in events) + "data: [DONE]\n\n"
-    def respond(request):
-        assert json.loads(request.content)["stream_options"] == {"include_usage": True}
-        return httpx.Response(200, text=body)
-    client = ColibriClient(Settings())
-    client.http = httpx.AsyncClient(transport=httpx.MockTransport(respond), base_url="http://colibri/")
-    assert "".join([chunk async for chunk in client.stream_text([])]) == "Hello"
-    assert client.last_metrics["prompt_tokens"] == 120
-    assert client.last_metrics["completion_tokens"] == 7
-    await client.close()
-
-
-@pytest.mark.asyncio
-async def test_colibri_truncated_reply_is_flagged_not_reported_as_a_dead_model():
-    """A reply cut off at the token limit is still a working model: flag it, keep the text."""
-    body = ('data: {"choices":[{"delta":{"content":"Partial an"}}]}\n\n'
-            'data: {"choices":[{"delta":{"content":"swer"},"finish_reason":"length"}]}\n\n')
-    client = ColibriClient(Settings())
+async def test_ollama_records_token_usage_without_changing_the_reply():
+    lines = [{"message": {"content": "Hello"}}, {"done": True, "prompt_eval_count": 120, "eval_count": 7}]
+    client = OllamaClient(Settings())
     client.http = httpx.AsyncClient(transport=httpx.MockTransport(
-        lambda request: httpx.Response(200, text=body)), base_url="http://colibri/")
+        lambda request: httpx.Response(200, text="\n".join(json.dumps(l) for l in lines))), base_url="http://ollama")
+    assert "".join([chunk async for chunk in client.stream_text([])]) == "Hello"
+    assert client.last_metrics["prompt_tokens"] == 120 and client.last_metrics["completion_tokens"] == 7
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_ollama_truncated_reply_is_flagged_not_reported_as_a_dead_model():
+    """A reply cut off at the token limit is still a working model: flag it, keep the text."""
+    lines = [{"message": {"content": "Partial an"}}, {"message": {"content": "swer"}}, {"done": True, "done_reason": "length"}]
+    client = OllamaClient(Settings())
+    client.http = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, text="\n".join(json.dumps(l) for l in lines))), base_url="http://ollama")
     assert "".join([chunk async for chunk in client.stream_text([])]) == "Partial answer"
     assert client.last_metrics["truncated"] is True
     await client.close()
@@ -371,7 +348,7 @@ async def test_ollama_streams_ndjson():
     client = OllamaClient(Settings())
     client.http = httpx.AsyncClient(transport=httpx.MockTransport(respond), base_url="http://ollama")
     assert "".join([chunk async for chunk in client.stream_text([{"role": "user", "content": "hi"}])]) == "Hi there"
-    assert seen["stream"] is True and "format" not in seen and "keep_alive" not in seen
+    assert seen["stream"] is True and "format" not in seen and seen["keep_alive"] == -1  # kept loaded on a Pi
     await client.close()
 
 
@@ -394,7 +371,9 @@ async def test_ollama_keeps_the_model_loaded_when_asked(setting, sent):
     await client.close()
 
 
-def test_the_compact_prompt_keeps_the_character_and_contract_in_a_third_of_the_size():
+def test_the_prompt_is_small_and_keeps_the_character_and_contract():
+    """A Pi reads every prompt in full at a few tokens a second: the system message stays a few
+    hundred tokens, and each reply adds two whole memories, the status that matters and capped history."""
     voice = Persona().voice_view(speaker=None, message="hi")
     status = {"now": "Saturday 14 November 2026, 12:31", "talking_with": "Neave", "current_errand": "none",
               "my_tools": "available: search the web, read webpages, run Python",
@@ -402,26 +381,23 @@ def test_the_compact_prompt_keeps_the_character_and_contract_in_a_third_of_the_s
     memories = [{"kind": "fact", "text": "Neave's favourite fruit is mango."}, {"kind": "fact", "text": "x" * 301},
                 {"kind": "fact", "text": "Neave supports McLaren."}, {"kind": "fact", "text": "Neave has a cat."}]
     turns = [{"id": str(i), "role": "user" if i % 2 == 0 else "kip", "text": "words " * 40} for i in range(20)]
-    full = build_messages("Kip", voice, memories, status, turns, "What's my favourite fruit?")
-    compact = build_messages("Kip", voice, memories, status, turns, "What's my favourite fruit?",
-                             compact=True, history_tokens=200)
-    system, latest = compact[0]["content"], compact[-1]["content"]
-    assert len(system) * 3 < len(full[0]["content"]) and "Rocky" in system and "', question?'" in system
-    assert '{"task": "", "offer": "", "remember": [], "forget": []}' in system  # the same action line
+    messages = build_messages("Kip", voice, memories, status, turns, "What's my favourite fruit?", history_tokens=200)
+    system, latest = messages[0]["content"], messages[-1]["content"]
+    assert len(system) < 2400 and "Rocky" in system and "', question?'" in system
+    assert '{"task": "", "offer": "", "remember": [], "forget": []}' in system  # the action line
     # Two whole memories at most; one too long to keep whole is left out, never cut.
     assert "mango" in latest and "McLaren" in latest and "cat" not in latest and "x" * 50 not in latest
     assert '"recent_errands":[{"goal":"two"}]' in latest and "queued_errands" not in latest
-    assert len(compact) - 2 < len(full) - 2  # less history
-    # The system message is the same every reply, so a local server can keep it cached.
-    again = build_messages("Kip", Persona().voice_view(speaker="neave", message="other"), [], status, [],
-                           "Hello", compact=True)
+    assert 0 < len(messages) - 2 < len(turns)  # recent history only
+    # The system message is the same every reply, so Ollama can keep it cached.
+    again = build_messages("Kip", Persona().voice_view(speaker="neave", message="other"), [], status, [], "Hello")
     assert again[0]["content"] == system
 
 
-def test_a_long_message_is_never_refused_by_the_compact_history_budget():
+def test_a_long_message_is_never_refused_by_the_history_budget():
     long = "Please read this carefully. " * 300
     messages = build_messages("Kip", Persona().voice_view(speaker=None, message=long), [], {"now": "x"},
-                              [], long, compact=True, history_tokens=0)
+                              [], long, history_tokens=0)
     assert messages[-1]["content"].count("Please read this carefully.") == 300
 
 
@@ -478,8 +454,8 @@ def test_one_bad_memory_does_not_lose_the_rest_of_the_action_line():
 
 
 @pytest.mark.asyncio
-async def test_a_compact_session_sends_the_compact_prompt_and_still_acts_on_the_action_line():
-    bus, settings = EventBus(), Settings(prompt_profile="compact")
+async def test_a_session_sends_the_small_prompt_and_still_acts_on_the_action_line():
+    bus, settings = EventBus(), Settings()
     model = StreamingModel([reply("Kiwi. Good taste.", remember=["Neave likes kiwi."])])
     manager, store = TaskManager(model, bus, settings), MemoryStore(":memory:")
     session = ChatSession(model, bus, manager, settings, store=store, persona=Persona())

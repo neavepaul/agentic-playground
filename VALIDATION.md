@@ -1,5 +1,9 @@
 # Digital tools — 2026-10-25
 
+> **Note (15 November 2026):** Kip is now built only for a Raspberry Pi 4: Groq first, then Ollama
+> with Qwen3.5 2B as the one local model. Colibri support was removed; passages that mention
+> Colibri describe the earlier design. See the README for the current setup.
+
 - Current implementation: removed the direct-command parser, execution path,
   configuration flag and shortcut-specific tests at the user's request. The
   earlier 0.295-second result below is historical and does NOT describe the

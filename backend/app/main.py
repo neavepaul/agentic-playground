@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.config import Settings, get_settings
 from app.events.bus import EventBus
 from app.chat import ChatSession
-from app.llm.factory import create_chat_client, create_client, create_hosted_client
+from app.llm.factory import create_client, create_hosted_client
 from app.llm.priority import ConversationFirst
 from app.memory.recall import Embedder, MemoryStore
 from app.memory.store import open_persistent
@@ -53,22 +53,20 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
     if config.persona_enabled:
         persona = Persona(persistent.persona, config.persona_name, now=time.time, maker=config.persona_maker)
         persona.attach(bus)
-    local_chat = create_chat_client(config, llm) if live else llm
-    shared = local_chat is llm
     # One local model for both: a person waiting for a reply goes before the next errand call.
-    task_llm = ConversationFirst(llm) if shared else llm
+    task_llm = ConversationFirst(llm)
     # Optional Groq for goal planning and web research; injected test clients never get it.
     hosted = create_hosted_client(config) if live else None
-    chat_llm = local_chat
+    chat_llm = llm
     if hosted is not None and config.chat_hosted:
         # Conversation on Groq while it has quota (about a second to the first word, against
         # minutes for a long prompt on a local CPU model); the local chat model otherwise.
         from app.llm.groq import HostedChat
-        chat_llm = HostedChat(hosted, local_chat, [m.strip() for m in config.groq_chat_models.split(",") if m.strip()])
+        chat_llm = HostedChat(hosted, llm, [m.strip() for m in config.groq_chat_models.split(",") if m.strip()])
     manager = TaskManager(task_llm, bus, config, persistent, persona=persona, memory_store=store, hosted=hosted)
     chat = ChatSession(chat_llm, bus, manager, config, store=store, persona=persona,
-                       shares_task_model=shared, session_id=config.chat_session_id)
-    chat.gate = task_llm if shared else None
+                       session_id=config.chat_session_id)
+    chat.gate = task_llm
     chat.attach()
     if config.intent_router != "off":
         # Reviewed corrections join the shipped examples; the embedding model joins once loaded.
@@ -115,9 +113,7 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
         await manager.close()
         save_persona()  # including what changed since the last save
         if client is None:
-            await llm.close()
-            if local_chat is not llm:
-                await local_chat.close()  # the hosted chat wrapper owns nothing of its own
+            await llm.close()  # the hosted chat wrapper owns nothing of its own
         if hosted is not None:
             await hosted.close()
         store.close()
@@ -158,8 +154,8 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
         memory = {"meaning_search": store.vectors and bool(embedder and embedder.available),
                   "keyword_search": True, "persistent_error": persistent.load_error or None}
         result = {"status": "ok" if not persistent.load_error else "degraded",
-                  "llm": {"provider": config.llm_provider, **model}, "memory": memory}
-        if chat_llm is not local_chat:
+                  "llm": {"provider": "ollama", **model}, "memory": memory}
+        if chat_llm is not llm:
             # Conversation runs on Groq while it has quota; the local model only stands in.
             result["chat"] = {"provider": "groq", "model": chat_llm.models[0] if chat_llm.models else ""}
         return result

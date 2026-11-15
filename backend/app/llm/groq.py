@@ -1,6 +1,6 @@
 """Groq's hosted OpenAI-compatible API, for a few bounded, high-value calls.
 
-Colibri stays the engine for conversation and the task loop. Groq's free tier
+The local model (Ollama) is the engine for conversation and the task loop. Groq's free tier
 limits each model separately, so a pool of models is tried in preference order and
 a model whose quota is spent is skipped until its reset time. Each model is tried
 at most once per call, except that when every model is rate-limited and one frees within

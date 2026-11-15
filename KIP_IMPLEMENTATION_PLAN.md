@@ -1,5 +1,9 @@
 # Kip cognitive architecture implementation
 
+> **Note (15 November 2026):** Kip is now built only for a Raspberry Pi 4: Groq first, then Ollama
+> with Qwen3.5 2B as the one local model. Colibri support was removed; passages that mention
+> Colibri describe the earlier design. See the README for the current setup.
+
 Status: initial safe migration verified, 31 October 2026. Larger migrations remain
 explicitly deferred below; this is not completion of the full cognitive architecture.
 Preserve FastAPI,

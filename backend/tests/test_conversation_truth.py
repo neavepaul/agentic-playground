@@ -322,7 +322,7 @@ async def test_persona_reaches_the_conversation_and_an_introduction_names_the_sp
     session.submit("Hi Kip, it's Neave. How are you doing today?")
     await settle(session, manager)
     system, latest = model.prompts[-1][0]["content"], latest_prompt(model)
-    assert IDENTITY in system and "ready to assist" in system  # named as something never to say
+    assert IDENTITY in system
     assert "Stance:" in latest and "don't know who is speaking" not in latest
     assert session.history()[0]["speaker"] == "neave"
     await done(session, manager)

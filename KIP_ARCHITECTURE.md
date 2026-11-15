@@ -1,5 +1,9 @@
 # Kip / Agentic Playground: grounded architecture map
 
+> **Note (15 November 2026):** Kip is now built only for a Raspberry Pi 4: Groq first, then Ollama
+> with Qwen3.5 2B as the one local model. Colibri support was removed; passages that mention
+> Colibri describe the earlier design. See the README for the current setup.
+
 ## Implemented migration: 31 October 2026
 
 This section supersedes the relevant baseline findings below. The remainder is the

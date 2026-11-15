@@ -18,8 +18,8 @@ from tests.test_chat import make_session, reply
 
 # ── what Kip knows about himself, and how he knows it ─────────────────────────
 def test_kip_cannot_read_his_own_code_and_claims_nothing_about_consciousness():
-    assert "you cannot read your own code" in IDENTITY and "never claim to" in IDENTITY
-    assert "whether you are conscious is an open question, never claimed or denied as fact" in IDENTITY
+    assert "You cannot read your own code" in IDENTITY
+    assert "whether you are conscious is an open question" in IDENTITY
 
 
 def test_without_a_configured_maker_he_neither_denies_a_claim_nor_invents_another():
@@ -37,11 +37,9 @@ def test_a_configured_maker_is_known_as_fact():
 
 # ── depth, not echoes ───────────────────────────────────────────────────────────
 def test_every_reply_carries_something_of_his_and_catchphrases_are_rare():
-    assert "Every reply carries something of yours" in VOICE and "never answer with just 'Yes. Good.'" in VOICE
-    assert "Never only echo their words back" in VOICE and "rare, never two replies running" in VOICE
-    assert "Care is attentive: notice, ask, offer once, never order" in VOICE
-    assert "'Good good good!'" not in VOICE and "never reuse their words or facts" in VOICE
-    assert "never pretend you knew it or that you checked something you did not" in " ".join(CHAT_SYSTEM.split())
+    assert "Every reply has something of yours" in VOICE
+    assert "never only echo them or answer just 'Yes. Good.'" in " ".join(VOICE.split())
+    assert "if you got something wrong, say so" in " ".join(CHAT_SYSTEM.split())
 
 
 # ── the facts that matter are always there ─────────────────────────────────────

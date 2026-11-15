@@ -11,14 +11,12 @@ _BACKEND_DIR = Path(__file__).resolve().parents[1]
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=_BACKEND_DIR / ".env", extra="ignore")
-    llm_provider: Literal["colibri", "ollama"] = "colibri"
-    colibri_base_url: str = "http://127.0.0.1:8001/v1"
-    colibri_model: str = "qwen3.6-colibri"
+    # The one local model, built for a Raspberry Pi 4 (8 GB): Ollama with a 4-bit Qwen3.5 2B.
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "qwen3:4b"
+    ollama_model: str = "qwen3.5:2b-q4_K_M"
     # Groq: a hosted model for a few bounded, high-value calls (goal planning and
     # web-research tasks). Free-tier limits are per model, so several are listed and
-    # the first with quota left is used. Without a key, everything stays on Colibri.
+    # the first with quota left is used. Without a key, everything stays on the local model.
     groq_api_key: SecretStr | None = None
     # CricketData.org (CricAPI): cricket results, live scores and fixtures for a week or more either
     # side, 100 requests a day free. Unset: ESPN's scoreboard (no key, unofficial, a few days) only.
@@ -31,7 +29,7 @@ class Settings(BaseSettings):
     groq_max_wait_seconds: float = Field(default=20, ge=0, le=120)
     groq_max_output_tokens: int = Field(default=4096, ge=256, le=32768)
     # Hard caps: Groq calls per goal plan, and per web-research task. Past a cap, or
-    # whenever Groq cannot serve a call, Colibri carries on.
+    # whenever Groq cannot serve a call, the local model carries on.
     groq_plan_calls: int = Field(default=2, ge=0, le=4)
     groq_research_calls: int = Field(default=4, ge=0, le=10)
     # Conversation on Groq while it has quota, streamed, falling back to the local chat model.
@@ -43,13 +41,15 @@ class Settings(BaseSettings):
     # Legacy JSON stores: imported into memory_db_file once, then never read or written.
     memory_file: Path = _BACKEND_DIR / "memory" / "persistent.json"
     graph_file: Path = _BACKEND_DIR / "memory" / "beliefs.json"
-    # How long Ollama keeps the model loaded after a call ("-1": always, "30m", ...). Empty: Ollama's
-    # default (5 minutes). On a Pi, reloading a model from a microSD card takes tens of seconds.
-    ollama_keep_alive: str = ""
-    llm_timeout_seconds: float = Field(default=120, gt=0)
+    # How long Ollama keeps the model loaded after a call: -1 always (a Pi reloading ~2 GB from a
+    # microSD card takes tens of seconds), "30m" and so on, or empty for Ollama's 5 minutes.
+    ollama_keep_alive: str = "-1"
+    # A small model on a Pi can take minutes over a long call.
+    llm_timeout_seconds: float = Field(default=600, gt=0)
     task_timeout_seconds: float = Field(default=1800, gt=0)
     temperature: float = Field(default=0.1, ge=0, le=1)
-    context_tokens: int = Field(default=8192, ge=2048, le=32768)
+    # Ollama's context window: smaller needs less memory and is quicker to set up per call.
+    context_tokens: int = Field(default=4096, ge=2048, le=32768)
     decision_thinking: bool = False
     digital_tools_enabled: bool = True
     decision_output_tokens: int = Field(default=4096, ge=1024, le=16384)
@@ -69,27 +69,18 @@ class Settings(BaseSettings):
     # Every time Kip says or reasons with is in this zone, whatever the device's clock is set to
     # (a Raspberry Pi often runs on UTC). An IANA name.
     timezone: str = "Asia/Kolkata"
-    # Conversation with Kip. Leave chat_* unset to chat with the main model; set e.g.
-    # CHAT_PROVIDER=ollama CHAT_MODEL=qwen3:4b for a fast, separate chat model.
-    chat_provider: Literal["colibri", "ollama"] | None = None
-    chat_model: str | None = None
-    chat_base_url: str | None = None
-    # Brevity comes from the prompt, not a 300-token ceiling on complex answers.
-    chat_max_tokens: int = Field(default=1200, ge=50, le=16384)
+    # A spoken reply plus its action line; a Pi writes only a few tokens a second.
+    chat_max_tokens: int = Field(default=300, ge=50, le=16384)
     # One ongoing conversation. Separate IDs at the ChatSession boundary isolate
     # transcripts; they are not user authentication.
     chat_session_id: str = Field(default="home", min_length=1, max_length=100)
-    chat_context_tokens: int = Field(default=6000, ge=1024, le=32768)
-    # full: the whole character sheet and rules (~2,000+ tokens a reply). compact: the same character,
-    # rules and action line in a few hundred tokens, at most 2 memories and a short history, for small
-    # local models (a Raspberry Pi reads a prompt at ~5-25 tokens/s). Groq gets the same prompt either way.
-    prompt_profile: Literal["full", "compact"] = "full"
     # false: a reply written by the local model keeps its memories, but its task and offer are dropped;
     # errands then start only from the person's own words (tool requests, live questions, a yes to an
-    # offer). For small local models, whose errands can be nonsense. Groq-written replies are unaffected.
-    local_chat_errands: bool = True
-    # Earlier turns the compact prompt carries. A long message itself is never refused for it.
-    compact_history_tokens: int = Field(default=600, ge=0, le=8192)
+    # offer). A 2B model's own errands can be nonsense; Groq-written replies are unaffected.
+    local_chat_errands: bool = False
+    # Earlier turns each reply carries: less is faster on a Pi, more remembers the thread better.
+    # A long message itself is never refused for it.
+    chat_history_tokens: int = Field(default=250, ge=0, le=8192)
     chat_temperature: float = Field(default=0.6, ge=0, le=1.5)
     # confirm: errands start only when asked or after a yes to Kip's offer.
     # act: any errand the chat model proposes starts immediately (less safe).
