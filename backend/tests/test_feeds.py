@@ -695,6 +695,9 @@ async def test_a_holding_with_no_recorded_cost_still_gets_an_answer(monkeypatch)
     ({"domain": "weather", "place": "London", "time": "now", "said": "weather in london"}, "<html>bot check</html>"),
     ({"domain": "finance", "entities": ["Bitcoin"], "said": "bitcoin price"}, None),
     ({"domain": "news", "said": "top headlines"}, "<rss><channel><item><title>Cut off"),
+    # Entity tricks need a DOCTYPE; RSS never has one, so any feed with one is refused unread.
+    ({"domain": "news", "said": "top headlines"},
+     '<?xml version="1.0"?><!DOCTYPE r [<!ENTITY a "aaaa">]><rss><channel><item><title>&a;</title></item></channel></rss>'),
 ])
 async def test_a_feed_that_sends_something_else_hands_over_to_the_web_lookup(monkeypatch, question, body):
     """An HTML bot check, JSON null or a cut-off RSS body: not answered from the feed, never a failed task."""

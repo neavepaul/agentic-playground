@@ -24,10 +24,12 @@ MESSAGES = [
 
 
 def _call(base: str, method: str, path: str, body=None):
+    if not base.startswith(("http://", "https://")):
+        raise SystemExit(f"Kip's address must be http(s)://, not {base!r}")
     data = json.dumps(body).encode() if body is not None else None
     request = urllib.request.Request(base + path, data=data, method=method,
                                      headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with urllib.request.urlopen(request, timeout=30) as response:  # http(s) only, checked above  # nosec B310
         return json.loads(response.read())
 
 

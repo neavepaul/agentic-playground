@@ -452,7 +452,7 @@ class IntentRouter:
     def __init__(self, extra: list[tuple[str, str]] = (), embedder=None) -> None:
         self.rows = training_rows() + list(extra)
         self.model = TfidfLogistic([text for _, text in self.rows], [label for label, _ in self.rows])
-        self.version = hashlib.sha1(json.dumps(self.rows).encode()).hexdigest()[:10]
+        self.version = hashlib.sha1(json.dumps(self.rows).encode(), usedforsecurity=False).hexdigest()[:10]
         self.embedder, self.embedding = embedder, None
 
     def add_embeddings(self) -> bool:

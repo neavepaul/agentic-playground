@@ -13,7 +13,7 @@ import struct
 import time
 from dataclasses import dataclass
 from urllib.parse import quote, urlencode
-from xml.etree import ElementTree
+from xml.etree import ElementTree  # feeds with a DOCTYPE are refused before parsing  # nosec B405
 from datetime import date, datetime, timedelta
 
 import httpx
@@ -662,7 +662,11 @@ async def _news(q: dict, get) -> FeedAnswer | None:
     where = "hl=en-IN&gl=IN&ceid=IN:en"
     url = f"{NEWS}/search?q={quote(topic.group(1))}&{where}" if topic else f"{NEWS}?{where}"
     feed = await get(url)
-    titles = [item.findtext("title", "").strip() for item in ElementTree.fromstring(feed).iter("item")][:3]
+    if "<!DOCTYPE" in feed.upper():
+        # RSS never needs one; refusing it rules out entity tricks (expat also limits them).
+        raise ValueError("RSS with a DOCTYPE")
+    items = ElementTree.fromstring(feed).iter("item")  # no DOCTYPE, so no entities  # nosec B314
+    titles = [item.findtext("title", "").strip() for item in items][:3]
     titles = [t for t in titles if t]
     if not titles:
         return None

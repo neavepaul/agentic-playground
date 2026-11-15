@@ -442,7 +442,7 @@ class ChatSession:
                 metrics["memory_recall_seconds"] = round(recall_seconds, 3)
                 metrics["input_chars"] = sum(len(m["content"]) for m in messages)
                 metrics["estimated_prompt_tokens"] = message_tokens(messages)
-                metrics["token_estimator"] = "utf8_bytes_div3_estimate"
+                metrics["token_estimator"] = "utf8_bytes_div3_estimate"  # a label, not a secret  # nosec B105
                 metrics["queue_seconds"] = round(queue_seconds, 3)
                 metrics["chat_model_calls"] = 1
                 # Where the prompt's size goes: a long prompt is what makes a local model slow to start.

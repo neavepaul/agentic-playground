@@ -29,8 +29,9 @@ _WORD = re.compile(r"[\w']{2,}", re.UNICODE)
 
 
 DUPLICATE_OVERLAP = 0.7
-# A memory with no context label was stated as real.
-_CONTEXT_SQL = "COALESCE(json_extract(meta, '$.context'), 'actual')"
+# A memory with no context label was stated as real. SQL built with f-strings here interpolates only
+# constants like this one and runs of ? placeholders; every value is bound (each such line carries a nosec B608 comment).
+_CONTEXT_SQL ="COALESCE(json_extract(meta, '$.context'), 'actual')"
 # High on purpose: "Neave is allergic to peanuts" vs "Paul is allergic to peanuts" share
 # 4 of 6 words, and a correction must never delete the corrected fact.
 FORGET_OVERLAP = 0.8
@@ -229,12 +230,12 @@ class MemoryStore:
         context = meta.get("context") or "actual"
         with self._lock:
             db = self._db
-            duplicate = db.execute(f"SELECT id FROM memories WHERE kind = ? AND text = ? AND superseded_by IS NULL "
+            duplicate = db.execute(f"SELECT id FROM memories WHERE kind = ? AND text = ? AND superseded_by IS NULL "  # constants and ? only  # nosec B608
                                    f"AND {_CONTEXT_SQL} = ?", (kind, text, context)).fetchone()
             if duplicate is None and vector is not None and self.vectors:
                 import sqlite_vec
                 nearest = db.execute(
-                    f"SELECT v.rowid, v.distance, m.kind, m.text, {_CONTEXT_SQL} AS context FROM memories_vec v "
+                    f"SELECT v.rowid, v.distance, m.kind, m.text, {_CONTEXT_SQL} AS context FROM memories_vec v "  # constants and ? only  # nosec B608
                     "JOIN memories m ON m.id = v.rowid "
                     "WHERE v.embedding MATCH ? AND k = 1 AND m.superseded_by IS NULL",
                     (sqlite_vec.serialize_float32(vector),)).fetchone()
@@ -287,7 +288,7 @@ class MemoryStore:
             if words:
                 match = " OR ".join(f'"{word}"' for word in dict.fromkeys(words))
                 rows = db.execute(
-                    "SELECT m.id, bm25(memories_fts) AS rank FROM memories_fts JOIN memories m ON m.id = memories_fts.rowid "
+                    "SELECT m.id, bm25(memories_fts) AS rank FROM memories_fts JOIN memories m ON m.id = memories_fts.rowid "  # constants and ? only  # nosec B608
                     f"WHERE memories_fts MATCH ?{kind_sql} ORDER BY rank LIMIT ?",
                     [match, *kind_args, CANDIDATES]).fetchall()
                 best = max((-row["rank"] for row in rows), default=0) or 1
@@ -300,7 +301,7 @@ class MemoryStore:
                 limit = CANDIDATES
                 while True:
                     rows = db.execute(
-                        "SELECT v.rowid AS id, v.distance FROM memories_vec v JOIN memories m ON m.id = v.rowid "
+                        "SELECT v.rowid AS id, v.distance FROM memories_vec v JOIN memories m ON m.id = v.rowid "  # constants and ? only  # nosec B608
                         f"WHERE v.embedding MATCH ? AND k = ?{kind_sql}",
                         [sqlite_vec.serialize_float32(vector), min(limit, 4096), *kind_args]).fetchall()
                     if len(rows) >= CANDIDATES or limit >= min(total, 4096):
@@ -310,12 +311,12 @@ class MemoryStore:
             ids = set(keyword) | set(semantic)
             if not ids:
                 # Nothing matched: offer the most important recent memories of these kinds.
-                rows = db.execute(f"SELECT m.id FROM memories m WHERE 1=1{kind_sql} "
+                rows = db.execute(f"SELECT m.id FROM memories m WHERE 1=1{kind_sql} "  # constants and ? only  # nosec B608
                                   "ORDER BY m.importance DESC, m.id DESC LIMIT ?", [*kind_args, CANDIDATES]).fetchall()
                 ids = {row["id"] for row in rows}
             if not ids:
                 return []
-            rows = db.execute(f"SELECT * FROM memories WHERE id IN ({','.join('?' * len(ids))})", list(ids)).fetchall()
+            rows = db.execute(f"SELECT * FROM memories WHERE id IN ({','.join('?' * len(ids))})", list(ids)).fetchall()  # constants and ? only  # nosec B608
             wanted = {a.casefold() for a in about or []}
             now = datetime.now(timezone.utc)
             scored = []
@@ -344,7 +345,7 @@ class MemoryStore:
                                        "" if include_superseded else "superseded_by IS NULL") if clause]
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM memories" + (" WHERE " + " AND ".join(where) if where else "")
+                "SELECT * FROM memories" + (" WHERE " + " AND ".join(where) if where else "")  # constants and ? only  # nosec B608
                 + " ORDER BY id DESC LIMIT ?", ([kind] if kind else []) + [limit]).fetchall()
         return [{"id": row["id"], "kind": row["kind"], "text": row["text"], "about": json.loads(row["about"]),
                  "importance": round(row["importance"], 2), "created_at": row["created_at"],
@@ -500,7 +501,8 @@ class MemoryStore:
                               correction: str) -> int | None:
         """The id of a new correction, or None when the same one is already recorded."""
         key = hashlib.sha1(json.dumps([" ".join(utterance.casefold().split()), corrected.get("intent"),
-                                       corrected.get("focus"), corrected.get("time")]).encode()).hexdigest()
+                                       corrected.get("focus"), corrected.get("time")]).encode(),
+                           usedforsecurity=False).hexdigest()  # a dedupe key, not security
         with self._lock:
             db = self._db
             with db:
@@ -522,7 +524,7 @@ class MemoryStore:
 
     def intent_corrections(self, status: str | None = None) -> list[dict]:
         with self._lock:
-            rows = self._db.execute("SELECT * FROM intent_corrections" + (" WHERE status = ?" if status else "")
+            rows = self._db.execute("SELECT * FROM intent_corrections" + (" WHERE status = ?" if status else "")  # constants and ? only  # nosec B608
                                     + " ORDER BY id", (status,) if status else ()).fetchall()
         return [{**dict(row), **{k: json.loads(row[k]) for k in ("context", "predicted", "corrected")}}
                 for row in rows]
