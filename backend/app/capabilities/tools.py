@@ -103,7 +103,7 @@ class CapabilityTools:
         try:
             found = await feeds.answer(question, clock.now(), cricket_key=self.cricket_key,
                                        football_key=self.football_key, groww=self.groww)
-        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
+        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError, ArithmeticError) as exc:
             logging.getLogger("agentic_friend.capabilities").info("results feed not used: %s", type(exc).__name__)
             return None, ""
         if found is None:
@@ -112,8 +112,17 @@ class CapabilityTools:
             # The feed's facts are the result's text: answer checks read evidence as titles and snippets.
             "query": query, "results": [{"title": found.title, "url": found.url, "snippet": found.answer}],
             "provider": found.provider, "quote": found.answer, "untrusted_content": True}}
+        shown = result
+        if found.provider in feeds.PRIVATE_PROVIDERS:
+            # Their own accounts: private from here on (prompts, memories, logs). The task record keeps
+            # the figures for the answer checks; the event, its history and the log carry none.
+            context.private = True
+            hidden = "(private: shown only in the answer)"
+            shown = {"success": True, "private": True, "observation": {
+                **result["observation"], "quote": hidden,
+                "results": [{"title": found.title, "url": found.url, "snippet": hidden}]}}
         event = self.bus.emit("capability_observed", "explorer", task_id=context.id,
-                              tool="web_search", arguments={"query": query}, **result)
+                              tool="web_search", arguments={"query": query}, **shown)
         return {**result, "evidence_id": event["id"]}, found.answer
 
     async def execute(self, tool: str, arguments: dict, context) -> dict:
@@ -146,8 +155,9 @@ class CapabilityTools:
                 # Provider/runtime exceptions can contain environment details.
                 error = f"{tool} failed ({type(exc).__name__}). Check the input, simplify it, or try another source."
             result, event_type = {"success": False, "error": error}, "tool_failed"
+        private = {"private": True} if getattr(context, "private", False) else {}
         event = self.bus.emit(event_type, "explorer", task_id=context.id,
-                              tool=tool, arguments=arguments, **result)
+                              tool=tool, arguments=arguments, **result, **private)
         return {**result, "evidence_id": event["id"]}
 
     @staticmethod

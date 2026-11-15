@@ -16,6 +16,8 @@ os.environ["EMBEDDINGS_ENABLED"] = "false"
 # Scripted test models stand in for any model, Groq included, whose action lines are acted on: the
 # offer, consent and errand tests need that. Tests of LOCAL_CHAT_ERRANDS=false set it themselves.
 os.environ["LOCAL_CHAT_ERRANDS"] = "true"
+# FastAPI's TestClient calls itself "testserver"; the real server answers only to loopback names.
+os.environ["ALLOWED_HOSTS"] = "127.0.0.1,localhost,testserver"
 
 from app.config import Settings  # noqa: E402  (after the environment is set)
 

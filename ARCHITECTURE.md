@@ -75,10 +75,12 @@ Some feed details:
 - **Groww.** The access token is made from a standard-library TOTP code (RFC 6238) and kept until
   it expires. Only `GROWW_TOKEN_URL` and `GROWW_HOLDINGS_URL` are ever called: the key could
   place orders. Prices come from Yahoo Finance, because Groww's live-data endpoint refuses this key.
-- **Privacy.** A Groww answer sets `TaskContext.private`. Private turns are dropped from
-  `select_history` (the history in every prompt). `task_memories` returns nothing for them, and
-  `task_record` keeps only "checked their Groww holdings". The answer is shown and stored on
-  the device, but never sent to Groq.
+- **Privacy.** A Groww answer sets `TaskContext.private` in `feed_answer`, before any event is
+  emitted (`feeds.PRIVATE_PROVIDERS`). The feed's event carries no figures. Every later event of
+  the task, and its chat turn, is flagged, so the bus logs "(private: not logged)". Private turns
+  are dropped from `select_history` (the history in every prompt). `task_memories` returns nothing
+  for them, and `task_record` keeps only "checked their Groww holdings". The answer is shown, and
+  kept in `kip.db` and the task journal on the device, but never sent to Groq or written to the log.
 
 **Groq browser search.** A plain live lookup the feeds can't answer skips planning: one Groq call
 searches and answers. The answer is then checked against what the search read
@@ -143,6 +145,16 @@ The `chat_reply` log line gives the provider, model, timings and how the prompt'
 
 The old `persistent.json` and `beliefs.json` are imported once, into a `kip.db` with no state, then
 backed up and never read again.
+
+## Access
+
+There is no login, so the boundary is the machine and the browser. Uvicorn binds to loopback.
+`TrustedHostMiddleware` refuses any Host not in `ALLOWED_HOSTS`, for HTTP and the WebSocket,
+which stops DNS rebinding (another site pointing its own name at this machine). The WebSocket
+refuses an Origin not in `ALLOWED_ORIGINS` before accepting. So does any request other than GET,
+HEAD or OPTIONS, so a page on another site can neither read the event stream nor post messages or
+tasks. Clients that aren't browsers send no Origin, and are allowed: they are already on the
+machine. Network exposure needs authentication first.
 
 ## Realtime
 

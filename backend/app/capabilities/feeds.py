@@ -458,6 +458,8 @@ _CURRENCY_NAMES = {"USD": "US dollar", "EUR": "euro", "GBP": "British pound", "J
                    "CNY": "Chinese yuan", "CHF": "Swiss franc", "INR": "rupee"}
 
 
+# Feeds that answer from the person's own accounts: their answers never leave the device.
+PRIVATE_PROVIDERS = frozenset({"groww"})
 _MARKET_SOURCES = {"portfolio": "Groww", "coin": "CoinGecko", "index": "Yahoo Finance", "share": "Yahoo Finance",
                    "currency": "Frankfurter"}
 
@@ -615,13 +617,19 @@ async def _portfolio(now: datetime, get, groww: tuple[str, str]) -> FeedAnswer |
     paid = sum(h["quantity"] * h["average_price"] for h, _, _ in priced)
     before = sum(h["quantity"] * (prev or price) for h, price, prev in priced)
     moves = sorted(((price / prev - 1) * 100, h["trading_symbol"]) for h, price, prev in priced if prev)
-    text = (f"Your Groww portfolio: {len(priced)} holdings worth {_inr(value)}, "
-            f"{'up' if value >= paid else 'down'} {_inr(abs(value - paid))} ({abs(value / paid - 1) * 100:.1f}%) on what you paid. "
-            f"On the day {'up' if value >= before else 'down'} {_inr(abs(value - before))} ({abs(value / before - 1) * 100:.2f}%)")
+    # A zero cost (gifted or bonus shares, or a cost Groww has not recorded) has no percentage gain.
+    text = (f"Your Groww portfolio: {len(priced)} holding{'s' if len(priced) != 1 else ''} worth {_inr(value)}, "
+            f"{'up' if value >= paid else 'down'} {_inr(abs(value - paid))}{_percent(value, paid, 1)} on what you paid. "
+            f"On the day {'up' if value >= before else 'down'} {_inr(abs(value - before))}{_percent(value, before, 2)}")
     if len(moves) > 1:
         text += f"; best {moves[-1][1]} {moves[-1][0]:+.1f}%, worst {moves[0][1]} {moves[0][0]:+.1f}%"
     text += "." + (f" {len(holdings) - len(priced)} could not be priced." if len(priced) < len(holdings) else "")
     return FeedAnswer(text, "https://groww.in/", "Groww holdings", "groww")
+
+
+def _percent(now: float, then: float, places: int) -> str:
+    """" (6.6%)", or nothing when there is no base to compare with."""
+    return f" ({abs(now / then - 1) * 100:.{places}f}%)" if then > 0 else ""
 
 
 async def post(url: str, body: dict, headers: dict) -> dict:

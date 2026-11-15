@@ -3,7 +3,9 @@ import logging
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import JSONResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import Settings, get_settings
@@ -120,6 +122,22 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
 
     app = FastAPI(title="agentic_friend", lifespan=lifespan)
     app.state.manager, app.state.bus = manager, bus
+    # No login: Kip trusts whoever reaches him, so only his own pages and host names get in. The
+    # Host check (HTTP and WebSocket) stops another site pointing its own name at this machine.
+    origins = {o.strip().rstrip("/") for o in config.allowed_origins.split(",") if o.strip()}
+    app.add_middleware(TrustedHostMiddleware,
+                       allowed_hosts=[h.strip() for h in config.allowed_hosts.split(",") if h.strip()])
+
+    def trusted_origin(origin: str | None) -> bool:
+        return origin is None or origin.rstrip("/") in origins
+
+    @app.middleware("http")
+    async def same_site_changes(request: Request, call_next):
+        # A page on another site can make the browser send a POST here (a chat message, a new task,
+        # a cancel). Browsers name that page in Origin, so a foreign one is refused.
+        if request.method not in ("GET", "HEAD", "OPTIONS") and not trusted_origin(request.headers.get("origin")):
+            return JSONResponse({"detail": "Requests from other sites are not accepted."}, status_code=403)
+        return await call_next(request)
 
     def snapshot() -> dict:
         latest = next(reversed(manager.tasks.values()), None) if manager.tasks else None
@@ -187,6 +205,11 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
 
     @app.websocket("/ws")
     async def websocket(socket: WebSocket):
+        # A browser always says which page opened the socket: only Kip's own may read the stream.
+        # Clients that are not browsers (the benchmark) send no Origin and are already on this machine.
+        if not trusted_origin(socket.headers.get("origin")):
+            await socket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
         await socket.accept()
         queue = bus.subscribe()
         # Subscribe before taking a snapshot: no startup race can lose an action.

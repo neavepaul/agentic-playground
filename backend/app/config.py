@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     # One ongoing conversation. Separate IDs at the ChatSession boundary isolate
     # transcripts; they are not user authentication.
     chat_session_id: str = Field(default="home", min_length=1, max_length=100)
+    # Who may talk to the API. There is no login, so Kip trusts whoever reaches it: keep it on
+    # loopback. Host names the server answers to (a page on another site that points its own name at
+    # this machine is refused), and web pages allowed to open the WebSocket or send changes, comma-separated.
+    allowed_hosts: str = "127.0.0.1,localhost"
+    allowed_origins: str = "http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:8000,http://localhost:8000"
     # false: a reply written by the local model keeps its memories, but its task and offer are dropped;
     # errands then start only from the person's own words (tool requests, live questions, a yes to an
     # offer). A 2B model's own errands can be nonsense; Groq-written replies are unaffected.

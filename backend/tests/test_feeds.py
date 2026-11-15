@@ -598,8 +598,11 @@ def test_the_callout_names_the_feed_that_will_be_asked(question, keys, expected)
 
 
 @pytest.mark.asyncio
-async def test_portfolio_answers_stay_on_the_device(monkeypatch):
-    """Shown to them, but never in a later prompt, a memory or a task record: nothing of it reaches Groq."""
+async def test_portfolio_answers_stay_on_the_device(monkeypatch, caplog):
+    """Shown to them, but never in a later prompt, a memory, a task record, the log or the feed's
+    event: nothing of it reaches Groq or a shared log."""
+    import logging
+    caplog.set_level(logging.INFO)
     from tests.test_conversation_truth import PlanningModel, done, session_with
     from tests.test_permissions import settle
     from app.chat.context import select_history
@@ -622,6 +625,9 @@ async def test_portfolio_answers_stay_on_the_device(monkeypatch):
     assert answer["private"]
     assert all("46,905" not in m["content"] for m in select_history(session.history(), "my portfolio", 4000))
     assert "46,905" not in str(task_record(task)) and task_memories(task) == []
+    assert "Your Groww portfolio" not in caplog.text and "46,905" not in caplog.text
+    fed = next(e for e in manager.bus.history if e["type"] == "capability_observed")
+    assert "46,905" not in str(fed) and fed["data"]["private"]
     await done(session, manager)
 
 
@@ -660,3 +666,19 @@ async def test_a_score_asked_before_the_game_says_when_it_starts():
     assert await feeds.answer({"domain": "basketball", "entities": ["Los Angeles Lakers"], "focus": "match result",
                                "time": "yesterday", "said": "did the lakers win yesterday"},
                               NOW.replace(day=15, hour=10), get) is None
+
+
+@pytest.mark.asyncio
+async def test_a_holding_with_no_recorded_cost_still_gets_an_answer(monkeypatch):
+    """Gifted or bonus shares, or a cost Groww has not recorded: no percentage, never a crash."""
+    holdings = {"status": "SUCCESS", "payload": {"holdings": [
+        {"trading_symbol": "BONUS", "quantity": 1, "average_price": 0, "tradable_exchanges": ["NSE"]}]}}
+    spark = {"spark": {"result": [{"symbol": "BONUS.NS", "response": [
+        {"meta": {"regularMarketPrice": 100, "chartPreviousClose": 100}}]}]}}
+    get, _ = groww_feed(monkeypatch)
+
+    async def priced(url, headers=None):
+        return holdings if url == feeds.GROWW_HOLDINGS_URL else spark if url.startswith(feeds.SPARK) else await get(url, headers)
+    found = await feeds.answer({"domain": "finance", "entities": [], "time": "now", "said": "how is my portfolio doing?"},
+                               NOW, priced, groww=GROWW)
+    assert found.answer == "Your Groww portfolio: 1 holding worth ₹100, up ₹100 on what you paid. On the day up ₹0 (0.00%)."

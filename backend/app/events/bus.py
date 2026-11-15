@@ -7,6 +7,13 @@ from uuid import uuid4
 logger = logging.getLogger("agentic_friend.events")
 
 
+def _private(data: dict) -> bool:
+    """An event about their own accounts (a Groww answer, its task or its chat turn): its words stay
+    out of the log, which is kept in plain text and may be shared when asking for help."""
+    return bool(data.get("private") or (data.get("turn") or {}).get("private")
+                or (data.get("task") or {}).get("private"))
+
+
 class EventBus:
     def __init__(self) -> None:
         self.sequence = 0
@@ -25,7 +32,7 @@ class EventBus:
                  "type": type, "agent": agent, "data": data}
         if not skip_history:
             self.history.append(event)
-        logger.info("%s [%s] %s", type, agent,
+        logger.info("%s [%s] %s", type, agent, "(private: not logged)" if _private(data) else
                     data.get("summary", data.get("observation", data.get("error", ""))))
         for queue in tuple(self.subscribers):
             if queue.full():

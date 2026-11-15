@@ -48,3 +48,22 @@ def test_event_queue_overflow_requests_resync():
     assert queue.get_nowait()["type"] == "resync_required"
     bus.unsubscribe(queue)
     assert not bus.subscribers
+
+
+def test_only_kips_own_pages_and_host_names_get_in():
+    """No login, so the boundary is the browser's: another site's page may neither read the event
+    stream nor send changes, and another host name (DNS rebinding) is refused outright."""
+    import pytest
+    from starlette.websockets import WebSocketDisconnect
+    with TestClient(create_app(client=WaitingLLM())) as client:
+        with pytest.raises(WebSocketDisconnect) as refused:
+            with client.websocket_connect("/ws", headers={"origin": "https://untrusted.example"}) as socket:
+                socket.receive_json()
+        assert refused.value.code == 1008
+        with client.websocket_connect("/ws", headers={"origin": "http://127.0.0.1:5173"}) as socket:
+            assert socket.receive_json()["type"] == "snapshot"
+        foreign = {"origin": "https://untrusted.example"}
+        assert client.post("/api/chat", json={"message": "hi"}, headers=foreign).status_code == 403
+        assert client.post("/api/tasks", json={"goal": "Find charger."}, headers=foreign).status_code == 403
+        assert client.post("/api/chat", json={"message": "hi"}, headers={"origin": "http://localhost:5173"}).status_code == 202
+        assert client.get("/api/health", headers={"host": "kip.attacker.example"}).status_code == 400

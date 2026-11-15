@@ -325,8 +325,7 @@ class TaskManager:
         context.pending_action = None
         if result is None:
             return False
-        # Their own accounts stay on the device: never in a later prompt, memory or status line.
-        context.private = result["observation"]["provider"] == "groww"
+        # context.private is already set (feed_answer, before any event) for their own accounts.
         context.tool_count += 1
         self._record_capability(context, "web_search", arguments, result)
         finished = await self.call_capability(context, "finish_answer", {"answer": answer,

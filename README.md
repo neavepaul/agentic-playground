@@ -91,7 +91,7 @@ and silver, past prices, tomorrow's air, UV, practice times, pit stops and broad
 
 **Your portfolio stays on the device.** Kip calls only Groww's token and holdings endpoints, never
 orders, funds or positions (a test enforces this). The answer is shown to you but left out of every
-later prompt (so it never reaches Groq), every memory and every task record.
+later prompt (so it never reaches Groq), every memory, every task record and the log.
 
 ## Configuration
 
@@ -126,9 +126,13 @@ Copy `backend/.env.example` to `backend/.env`; environment variables override it
 | `PERSONA_MAKER` | unset | Who built Kip, as he should know it; unset, he says he doesn't know |
 | `CHAT_DEFAULT_SPEAKER` | unset | Who is talking when nobody has said; otherwise learned from "my name is …" |
 | `LOG_LEVEL` | `INFO` | `DEBUG` for diagnostics |
+| `ALLOWED_HOSTS` | `127.0.0.1,localhost` | Host names the server answers to; any other is refused |
+| `ALLOWED_ORIGINS` | `http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:8000,http://localhost:8000` | Pages that may open the WebSocket or send changes; a page on any other site is refused |
 
-Run **one Uvicorn worker**, bound to loopback as shown. There is deliberately no authentication or
-remote deployment.
+Run **one Uvicorn worker**, bound to loopback as shown. **There is no login**: anyone who can reach
+the port can read the conversation and memories and start errands. On loopback that is only you, and
+the Host and Origin checks above stop other websites in your browser from reaching it. Don't expose
+it on a network (or add its address to `ALLOWED_HOSTS`) until authentication has been added.
 
 ## Speed on a Raspberry Pi 4
 
