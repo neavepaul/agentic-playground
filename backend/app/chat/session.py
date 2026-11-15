@@ -1004,7 +1004,8 @@ class ChatSession:
         turns = list(self.turns)
         start = turns[0]["at"][:16].replace("T", " ") if turns else ""
         topics = [_clip(t["text"], 60) for t in turns if t["role"] == "user"][-6:]
-        errands = [f"{t['text'][:80]} ({t['outcome']})" for t in turns if t.get("outcome")][-4:]
+        # A private answer (their own accounts) is never summarised: this episode is recalled into prompts.
+        errands = [f"{t['text'][:80]} ({t['outcome']})" for t in turns if t.get("outcome") and not t.get("private")][-4:]
         speakers = [t.get("speaker") for t in turns if t["role"] == "user" and t.get("speaker")]
         parts = [f"Conversation that started {start} UTC with {self._speaker_name(speakers[-1] if speakers else None)}."]
         if topics:

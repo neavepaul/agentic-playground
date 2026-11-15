@@ -54,9 +54,17 @@ def condition_effects(conditions) -> set[str]:
 # ── restrictions: what people asked Kip not to do ───────────────────────────────
 _CUE = re.compile(r"\b(don'?t|do not|never|no|without|avoid|stop|mustn'?t|shouldn'?t|not allowed to)\b")
 _LIFT = re.compile(r"\b(you can|you may|feel free to|go ahead and|it'?s (?:fine|ok|okay) to|ok(?:ay)? to|you'?re allowed to)\b")
-_FILLER = re.compile(r"^(?:(?:you|please|even|ever|any|bother|try|need|want|to|be|using|use of)\s+)*")
+_FILLER = re.compile(r"^(?:(?:you|please|even|ever|any|bother|try|need|want|to|be|dare|use of)\s+)*")
 _ACTION = re.compile(r"^(use|using|run|running|read|reading|search|searching|go|going|open|opening|"
-                     r"browse|browsing|google|look|looking|access|check|visit)\b")
+                     r"browse|browsing|google|look|looking|access|check|visit|do|doing|make|making|"
+                     r"touch|touching)\b")
+# "Stop using Python", "avoid the internet", "never touch python": these may name the thing straight away.
+_DIRECT_CUES = {"stop", "avoid", "never"}
+# "Stay offline", "keep it offline": no cue word, but plainly no internet.
+_OFFLINE = re.compile(r"\b(?:stay|keep(?: it)?|remain|work|be|go)\s+offline\b")
+# A message that lifts and also forbids or defers ("I know you can run code, but please don't",
+# "you can use python later, not now", "ok to use python? no, don't") lifts nothing.
+_HOLD = re.compile(r"\b(don'?t|do not|never|not now|later|avoid|stop|mustn'?t|shouldn'?t|not allowed|without)\b")
 # What each kind of wording rules out, mapped onto the registry.
 _SUBJECTS = [
     (re.compile(r"\b(python|code|programs?|scripts?)\b"), {"tools": {"run_python"}}),
@@ -105,13 +113,25 @@ class Restrictions:
             return set()  # "I don't know if the web is down"
         return self._subjects(clause, at_start=False)
 
+    def _direct(self, clause: str) -> set[str]:
+        """After stop/avoid/never: an action ("stop using python") or the thing itself ("avoid the internet")."""
+        return self._targets(clause, False) or self._subjects(
+            re.sub(r"^(?:(?:more|using|the|any|all)\s+)*", "", clause), at_start=True)
+
     def update(self, text: str) -> bool:
         """Apply prohibitions and lifted prohibitions in the person's own words."""
         before = set(self.tools)
-        for cue, clause in self._clauses(text, _LIFT):
-            self.tools -= self._targets(clause, False)
+        lowered = " ".join(text.casefold().replace("’", "'").split())
+        if not _HOLD.search(lowered):  # a message that also forbids or defers lifts nothing
+            for cue, clause in self._clauses(lowered, _LIFT):
+                self.tools -= self._targets(clause, False)
         for cue, clause in self._clauses(text, _CUE):
-            self.tools |= self._targets(clause, cue in {"no", "without"})
+            if cue in _DIRECT_CUES:
+                self.tools |= self._direct(clause)
+            else:
+                self.tools |= self._targets(clause, cue in {"no", "without"})
+        if _OFFLINE.search(lowered):
+            self.tools |= {"web_search", "read_webpage"}
         return before != self.tools
 
     def forbids_tool(self, tool: str) -> bool:

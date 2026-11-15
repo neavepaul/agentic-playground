@@ -34,9 +34,11 @@ backend/app/
 
 ## A message's path
 
-1. **Stop, permissions and offers first.** "Stop" cancels the running errand. "Don't use Python"
-   becomes a restriction that every later tool call is checked against. A "yes" to Kip's offer
-   starts the offered errand.
+1. **Stop, permissions and offers first.** "Stop" cancels the running errand. "Don't use Python",
+   "stop using the internet", "avoid the internet" or "stay offline" becomes a restriction that
+   every later tool call is checked against (`tasks/permissions.py`). Only a plain "you can…" lifts
+   it: a message that also says "don't", "not now" or "later" lifts nothing. A "yes" to Kip's
+   offer starts the offered errand.
 2. **The router reads it** (`chat/router.py`, about 0.1 ms, or 5–8 ms with embeddings). It reports
    an intent (`information.sports`, `conversation.emotional`, `action.request`…), the domain, who
    or what is named, what is asked (a position, a forecast, a price) and when. Short follow-ups lean
@@ -58,7 +60,9 @@ backend/app/
 
 **Data feeds** (`capabilities/feeds.py`). The router's reading is handed to the feed for its domain
 as a `LookupPlan.feed` (domain, entities, focus, time, place, the words said). The feed answers in
-fixed words or returns `None`, and then the next step takes over. Each answer is recorded as web
+fixed words or returns `None`, and then the next step takes over. So does any `FEED_ERRORS`
+failure: a feed that is down, changed shape, or sent something else (an HTML bot check, JSON
+`null`, a cut-off RSS body). Each answer is recorded as web
 search evidence, with its provider and the answer as the snippet, so the usual answer checks
 and "don't use the internet" apply unchanged. `source_for()` applies each feed's own entry checks,
 so the "Let me check Jolpica for that." callout is spoken only when that feed will really be asked.
@@ -83,8 +87,9 @@ Some feed details:
     pages already connected, but replay history keeps only a redacted copy (`events/bus.py:redact`).
     A page that connects later rebuilds the chat from `/api/chat`.
   - Kip's reply is written from the task in this process, not from the event.
-  - Private turns are dropped from `select_history` (the history in every prompt), `task_memories`
-    returns nothing, and `task_record` keeps only "checked their Groww holdings".
+  - Private turns are dropped from `select_history` (the history in every prompt) and from the
+    conversation episode saved as a memory (`_session_summary`). `task_memories` returns nothing,
+    and `task_record` keeps only "checked their Groww holdings".
 
   So the answer is shown to you, and kept in `kip.db` and the task journal on the device. It is
   never sent to Groq, written to the log, or replayed from event history.
@@ -107,7 +112,8 @@ errand. A restart turns unfinished runs into explicit failures, never replays.
   reported, never replaced with invented results.
 - **The page reader** reads public HTML and plain text. It validates every redirect, pins the
   connection to a checked public address, rejects private networks and limits download size and
-  time. It runs no JavaScript and reads no PDFs. Long pages are read in windows.
+  time. It parses in a worker thread, so a heavy page never stalls chat or the WebSocket. It runs
+  no JavaScript and reads no PDFs. Long pages are read in windows.
 - **Python** runs in Monty 1.3.0, a restricted interpreter in a separate worker: a fresh session,
   3 seconds, 64 MB, no filesystem, network, shell or credentials. It suits small calculations,
   not packages. A request that only asks for Python costs one narrow model call that writes just

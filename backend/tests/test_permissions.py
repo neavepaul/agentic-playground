@@ -319,3 +319,31 @@ async def test_batch_rechecks_restrictions_when_each_worker_starts(dispatched):
     assert dispatched.count("web_search") == 1 and "run_python" not in dispatched
     assert task.tool_count == len(dispatched)
     await finish(session, manager)
+
+
+@pytest.mark.parametrize("said,ruled_out", [
+    ("stop using python", {"run_python"}),
+    ("stop using the internet", {"web_search", "read_webpage"}),
+    ("avoid the internet", {"web_search", "read_webpage"}),
+    ("never touch python", {"run_python"}),
+    ("Don't you dare use Python", {"run_python"}),
+    ("don't do any web searches", {"web_search"}),
+    ("please stay offline", {"web_search", "read_webpage"}),
+    ("stop it", set()), ("never mind", set()), ("avoid spoilers please", set()),
+    ("I don't know if the web is down", set()), ("no, use python", set()),
+])
+def test_the_ways_people_say_dont_are_recognised(said, ruled_out):
+    restrictions = Restrictions()
+    restrictions.update(said)
+    assert restrictions.tools == ruled_out
+
+
+@pytest.mark.parametrize("said", ["I know you can run code, but please don't", "You can use python later, not now",
+                                  "ok to use python? no, don't"])
+def test_a_message_that_also_forbids_or_defers_lifts_nothing(said):
+    restrictions = Restrictions()
+    restrictions.update("don't use python")
+    restrictions.update(said)
+    assert restrictions.tools == {"run_python"}
+    restrictions.update("Fine. You can use Python again.")
+    assert restrictions.tools == set()

@@ -79,3 +79,17 @@ def test_a_private_event_reaches_live_pages_whole_but_replays_without_its_words(
     stored = bus.history[-1]["data"]
     assert "46,905" not in str(stored) and stored["turn"]["id"] == "t1" and stored["turn"]["private"]
     assert turn["text"] == "Worth 46,905."  # redaction copies; the live event is untouched
+
+
+def test_a_task_from_the_api_is_its_public_view():
+    """No audit trail (page text, tool output), and a private answer's words hidden."""
+    from app.tasks.models import TaskContext
+    app = create_app(client=WaitingLLM())
+    with TestClient(app) as client:
+        task = TaskContext(goal="how is my portfolio doing?", status="completed", private=True,
+                           answer={"answer": "Worth 46,905.", "sources": [{"title": "Groww holdings", "url": "https://groww.in/"}]},
+                           action_history=[{"tool": "web_search", "success": True, "observation": {"quote": "Worth 46,905."}}])
+        app.state.manager.tasks[task.id] = task
+        shown = client.get(f"/api/tasks/{task.id}").json()
+        assert "46,905" not in str(shown) and "action_history" not in shown
+        assert shown["answer"]["sources"][0]["url"] == "https://groww.in/"

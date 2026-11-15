@@ -103,7 +103,7 @@ class CapabilityTools:
         try:
             found = await feeds.answer(question, clock.now(), cricket_key=self.cricket_key,
                                        football_key=self.football_key, groww=self.groww)
-        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError, ArithmeticError) as exc:
+        except feeds.FEED_ERRORS as exc:
             logging.getLogger("agentic_friend.capabilities").info("results feed not used: %s", type(exc).__name__)
             return None, ""
         if found is None:

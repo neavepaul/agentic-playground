@@ -688,3 +688,33 @@ async def test_a_holding_with_no_recorded_cost_still_gets_an_answer(monkeypatch)
     found = await feeds.answer({"domain": "finance", "entities": [], "time": "now", "said": "how is my portfolio doing?"},
                                NOW, priced, groww=GROWW)
     assert found.answer == "Your Groww portfolio: 1 holding worth ₹100, up ₹100 on what you paid. On the day up ₹0 (0.00%)."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("question,body", [
+    ({"domain": "weather", "place": "London", "time": "now", "said": "weather in london"}, "<html>bot check</html>"),
+    ({"domain": "finance", "entities": ["Bitcoin"], "said": "bitcoin price"}, None),
+    ({"domain": "news", "said": "top headlines"}, "<rss><channel><item><title>Cut off"),
+])
+async def test_a_feed_that_sends_something_else_hands_over_to_the_web_lookup(monkeypatch, question, body):
+    """An HTML bot check, JSON null or a cut-off RSS body: not answered from the feed, never a failed task."""
+    from app.capabilities.tools import CapabilityTools
+    from app.events.bus import EventBus
+    from app.tasks.models import TaskContext
+
+    async def odd(url, headers=None):
+        return body
+    monkeypatch.setattr(feeds, "fetch", odd)
+    result, answer = await CapabilityTools(EventBus()).feed_answer("q", question, TaskContext(goal="q"))
+    assert result is None and answer == ""
+
+
+def test_the_conversation_episode_never_carries_a_private_answer():
+    """The session summary is saved as a memory and recalled into later prompts."""
+    from tests.test_conversation_truth import PlanningModel, session_with
+    session, _ = session_with(PlanningModel([]))
+    session._add_turn("user", "how is my portfolio doing?")
+    session._add_turn("kip", "Your Groww portfolio: worth ₹46,905.", source="narration", outcome="completed", private=True)
+    session._add_turn("kip", "Bitcoin is ₹60,00,000.", source="narration", outcome="completed")
+    summary = session._session_summary()
+    assert "46,905" not in summary and "Bitcoin" in summary

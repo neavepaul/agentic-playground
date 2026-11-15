@@ -81,7 +81,10 @@ async def read_webpage(url: str, start_char: int = 0) -> dict:
                         if len(body) > 1_000_000:
                             raise ValueError("Page exceeds the 1 MB reading limit.")
                     text = bytes(body).decode(response.encoding or "utf-8", errors="replace")
-                    return extract_page(text, str(current), start_char, "html" in content_type)
+                    # Parsing a heavy page takes seconds (more on a Pi): off the event loop, so chat,
+                    # the WebSocket and every timeout keep running meanwhile.
+                    return await asyncio.to_thread(extract_page, text, str(current), start_char,
+                                                   "html" in content_type)
     raise ValueError("Too many webpage redirects.")
 
 

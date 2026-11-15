@@ -194,7 +194,8 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
     async def task(task_id: str):
         if task_id not in manager.tasks:
             raise HTTPException(404, "Task not found (only the latest 50 tasks are retained).")
-        return manager.tasks[task_id].model_dump()
+        # The public view: no audit trail (page text, tool output), and a private answer's words hidden.
+        return manager.tasks[task_id].public()
 
     @app.post("/api/tasks/{task_id}/cancel")
     async def cancel(task_id: str):

@@ -74,6 +74,31 @@ async def test_reader_bounds_downloads(monkeypatch, body, kind, error):
         await web.read_webpage('https://example.com/')
 
 
+@pytest.mark.asyncio
+async def test_parsing_a_heavy_page_leaves_the_server_responsive(monkeypatch):
+    """Parsing runs in a worker thread: chat, the WebSocket and timeouts keep going meanwhile."""
+    import time
+    async def address(*args):
+        return '93.184.216.34'
+    original = httpx.AsyncClient
+    monkeypatch.setattr(web, 'public_address', address)
+    transport = httpx.MockTransport(lambda req: httpx.Response(200, content=b'<p>hi', headers={'content-type': 'text/html'}))
+    monkeypatch.setattr(web.httpx, 'AsyncClient', lambda **kwargs: original(transport=transport, **kwargs))
+    real = web.extract_page
+    monkeypatch.setattr(web, 'extract_page', lambda *a: (time.sleep(0.4), real(*a))[1])  # a slow parse
+    ticks = 0
+
+    async def heartbeat():
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.05)
+            ticks += 1
+    beat = asyncio.create_task(heartbeat())
+    page = await web.read_webpage('https://example.com/')
+    beat.cancel()
+    assert 'hi' in page['text'] and ticks >= 4  # the loop kept ticking through the 0.4 s parse
+
+
 def test_reader_extracts_text_links_and_continuations():
     body = '<title>Manual</title><script>secret()</script><nav>Menu</nav><main>Hello <a href="/more">More</a>' + 'x' * 7000 + '</main>'
     first = web.extract_page(body, 'https://example.com', 0)

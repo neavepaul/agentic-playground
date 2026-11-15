@@ -39,6 +39,12 @@ FEEDS = {"f1": "jolpica", "cricket": "cricketdata, then espn", "weather": "open-
          "football": "football-data, then espn", "basketball": "espn"}
 
 
+# What a feed that is down, changed shape or sent something else (an HTML bot check, JSON null, a cut-off
+# RSS body) can raise. Any of them means: not answered from the feed; the web lookup takes over.
+FEED_ERRORS = (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError, AttributeError, ArithmeticError,
+               ElementTree.ParseError)
+
+
 @dataclass
 class FeedAnswer:
     answer: str
@@ -199,7 +205,7 @@ async def _cricket(q: dict, now: datetime, get, key: str) -> FeedAnswer | None:
                     return found
             else:
                 _log.info("CricketData not used: %s", str(data.get("reason", "no reason given"))[:120])
-        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+        except FEED_ERRORS as exc:
             _log.info("CricketData not used: %s", type(exc).__name__)
     return _pick(q, now, _espn_matches(await get(ESPN)), "espn")
 
@@ -291,7 +297,7 @@ async def _football(q: dict, now: datetime, get, key: str) -> FeedAnswer | None:
             found = _pick(q, now, _fd_matches({"matches": list(unique.values())}), "football-data")
             if found:
                 return found
-        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+        except FEED_ERRORS as exc:
             _log.info("football-data.org not used: %s", type(exc).__name__)
     boards = await asyncio.gather(*(get(f"{ESPN_SPORTS}/soccer/{league}/scoreboard") for league in _ESPN_FOOTBALL),
                                   return_exceptions=True)
