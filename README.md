@@ -49,6 +49,17 @@ ssh -L 8000:127.0.0.1:8000 pi@raspberrypi.local
 Replace `pi@raspberrypi.local` with your Pi's user and hostname; the installer prints the exact
 command.
 
+**On the Pi's own screen.** Run this once on the desktop version of Raspberry Pi OS:
+
+```bash
+bash agentic-playground/deploy/desktop.sh
+```
+
+It adds a Kip icon to the desktop and to the menu (Internet > Kip), and turns on kiosk mode:
+after the desktop logs in, Kip opens full screen with no browser bars. It waits for the service
+to answer first. Alt+F4 closes the kiosk, and the icon brings Kip back as a window. Turn kiosk
+mode off with `bash agentic-playground/deploy/desktop.sh --no-kiosk`.
+
 **Bringing Kip's memories.** Everything Kip remembers is in `backend/memory/kip.db`. Stop Kip on
 both machines, copy it across, then start Kip on the Pi:
 
