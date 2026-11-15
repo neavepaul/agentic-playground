@@ -5,8 +5,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from app.agents.explorer import Explorer
-from app.agents.schemas import GoalCondition, StrictModel
+from app.agents.schemas import StrictModel
 from app.capabilities.context import evidence_view
 from app.capabilities.schemas import BatchAction
 from app.config import Settings
@@ -14,14 +13,11 @@ from app.events.bus import EventBus
 from app.llm.base import structured
 from app.tasks.manager import TaskManager, LimitReached
 from app.tasks.models import TaskContext
-from app.world.engine import WorldEngine
-from app.world.tools import WorldTools
 from tests.fakes import ScriptedLLM
 
 
 def manager(client, **settings):
-    bus, engine = EventBus(), WorldEngine()
-    return TaskManager(client, WorldTools(engine, bus), bus, Settings(**settings))
+    return TaskManager(client, EventBus(), Settings(**settings))
 
 
 @pytest.mark.asyncio
@@ -45,7 +41,7 @@ async def test_literal_request_still_requires_model_and_two_calls_can_complete(m
             assert any(o.get('observation', {}).get('stdout') == '42\n' for o in payload['tool_observations'])
             return json.dumps({'summary': 'Verified.', 'action': {'tool': 'finish_answer',
                 'answer': 'Example Domain; 42.', 'evidence_ids': [o['evidence_id'] for o in payload['tool_observations']]}})
-    runner = manager(Model(), direct_initial_delegation=False)
+    runner = manager(Model())
     task = runner.start('Read https://example.com and use Python to calculate 6 × 7. Tell me both results.')
     await runner.runner
     assert task.status == 'completed', task.summary
@@ -125,10 +121,9 @@ async def test_batch_cancellation_keeps_completed_evidence_and_cancels_pending()
 
 @pytest.mark.parametrize('actions', [
     [{'tool': 'finish_answer', 'answer': 'Claim', 'evidence_ids': ['e1']}],
-    [{'tool': 'give', 'object': 'medicine', 'person': 'neave'}],
     [{'tool': 'run_python', 'code': '42'}] * 2,
 ])
-def test_batch_rejects_mutations_answers_and_duplicates(actions):
+def test_batch_rejects_answers_and_duplicates(actions):
     with pytest.raises(ValidationError):
         BatchAction(tool='batch_capabilities', actions=actions)
 
@@ -191,7 +186,7 @@ async def test_bad_initial_actions_fall_back_to_explorer(monkeypatch):
                 return json.dumps({'summary': 'Reading.', 'action': {'tool': 'read_webpage', 'url': 'https://example.com'}})
             return json.dumps({'summary': 'Done.', 'action': {'tool': 'finish_answer', 'answer': 'Example Domain.',
                 'evidence_ids': [o['evidence_id'] for o in payload['tool_observations']]}})
-    runner = manager(Model(), direct_initial_delegation=False)
+    runner = manager(Model())
     task = runner.start('Read https://example.com and tell me its title.')
     await runner.runner
     assert task.status == 'completed', task.summary

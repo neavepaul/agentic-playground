@@ -1,12 +1,11 @@
 """The capability boundary: what a task may do is decided by a grant and checked where tools run.
 
-Every test here records what was actually dispatched (world tools, web search, page reads,
-Python), not what a classifier returned. Models are deterministic fakes; no live services,
+Every test here records what was actually dispatched (web search, page reads, Python), not
+what a classifier returned. Models are deterministic fakes; no live services,
 and no store outside the test sandbox is touched.
 """
 import asyncio
 import json
-from pathlib import Path
 
 import pytest
 
@@ -16,15 +15,11 @@ from app.config import Settings
 from app.events.bus import EventBus
 from app.memory.recall import MemoryStore
 from app.tasks.manager import TaskManager
-from app.tasks.permissions import (COMMUNICATION, EVERYTHING, MANIPULATION, NAVIGATION, READ_ONLY, TOOL_EFFECTS,
+from app.tasks.permissions import (CALCULATION, DIGITAL_LOOKUP, EVERYTHING, READ_ONLY, REPLY, TOOL_EFFECTS,
                                    Grant, Restrictions)
-from app.world.engine import WorldEngine
-from app.world.tools import WorldTools
-from tests.fakes import ScriptedLLM, complete, tool
+from tests.fakes import ScriptedLLM
 
-LEGACY_WORLD = Path(__file__).parent / "fixtures" / "legacy_house.json"
-PHYSICAL_TOOLS = {"look", "move_to", "pick_up", "drop", "give", "talk_to"}
-_SPECIAL = {"GoalPlan", "ConversationMove", "ConversationMeaning"}
+_SPECIAL = {"GoalPlan"}
 
 
 class Model(ScriptedLLM):
@@ -72,25 +67,14 @@ def dispatched(monkeypatch):
     monkeypatch.setattr(capabilities, "web_search", search)
     monkeypatch.setattr(capabilities, "read_webpage", read)
     monkeypatch.setattr(capabilities, "run_python", python)
-    original = WorldTools.execute
-
-    def execute(self, name, arguments, task_id=None):
-        calls.append(name)
-        return original(self, name, arguments, task_id)
-
-    monkeypatch.setattr(WorldTools, "execute", execute)
     return calls
 
 
-def physical(calls):
-    return [name for name in calls if name in PHYSICAL_TOOLS]
-
-
-def session_with(model, world=LEGACY_WORLD, settings=None):
-    engine, bus = WorldEngine(world), EventBus()
-    settings = settings or Settings(direct_initial_delegation=True)
-    manager = TaskManager(model, WorldTools(engine, bus), bus, settings)
-    session = ChatSession(model, bus, manager, engine, settings, store=MemoryStore(":memory:"))
+def session_with(model, settings=None):
+    bus = EventBus()
+    settings = settings or Settings()
+    manager = TaskManager(model, bus, settings)
+    session = ChatSession(model, bus, manager, settings, store=MemoryStore(":memory:"))
     session.attach()
     return session, manager, bus
 
@@ -116,22 +100,12 @@ def answer_from(tool_name):
 
 # ── the registry ────────────────────────────────────────────────────────────────
 def test_every_executable_tool_has_a_registered_effect():
-    assert set(WorldTools.schemas()) | set(ACTION_SCHEMAS) == set(TOOL_EFFECTS)
-    assert READ_ONLY.isdisjoint({NAVIGATION, MANIPULATION, COMMUNICATION})
+    assert set(ACTION_SCHEMAS) == set(TOOL_EFFECTS)
+    assert set(TOOL_EFFECTS.values()) == EVERYTHING == {DIGITAL_LOOKUP, CALCULATION, REPLY}
     assert Grant(effects=sorted(READ_ONLY)).deny("teleport", {}) == "teleport is not a registered tool"
 
 
-# ── the four review reproductions, judged by what ran ──────────────────────────
-@pytest.mark.asyncio
-async def test_a_location_question_never_starts_a_physical_search(dispatched):
-    session, manager, _ = session_with(Model([said("I don't know offhand.", task="Search for the medicine")]))
-    session.submit("Where is the medicine?")
-    await settle(session, manager)
-    assert manager.active() is None and not physical(dispatched)
-    assert session.pending_offer == "Search for the medicine"  # offered once, not done
-    await finish(session, manager)
-
-
+# ── review reproductions, judged by what ran ──────────────────────────
 @pytest.mark.asyncio
 async def test_a_python_prohibition_stops_python_and_the_reply_is_told_about_it(dispatched):
     model = Model([said("42.", task="Calculate 6 times 7 using Python")])
@@ -189,67 +163,7 @@ async def test_search_the_web_and_tell_me_the_weather_is_a_plain_lookup(dispatch
     await settle(session, manager)
     await manager.runner
     assert next(iter(manager.tasks.values())).status == "completed"
-    assert not physical(dispatched)
-    await finish(session, manager)
-
-
-@pytest.mark.asyncio
-async def test_a_question_whose_plan_contacts_someone_stops_and_offers_once(dispatched):
-    model = Model([said("Let me see.", task="Search the web for the weather and tell Paul"),
-                   said("Fair enough."), said("Sure.", task="Search the web for the weather and tell Paul")],
-                  conditions=[{"kind": "answer", "required_tools": ["web_search"]},
-                              {"kind": "notify", "person": "paul", "message": "the weather"}])
-    session, manager, _ = session_with(model, world=None)
-    session.submit("What's the weather like for Paul?")
-    await settle(session, manager)
-    await manager.runner
-    assert dispatched == ["get_status", "get_map"]  # stopped after planning: nothing looked up, nobody told
-    assert next(iter(manager.tasks.values())).status == "cancelled"
-    assert "talking to someone else" in session.history()[-1]["text"]
-    assert session.pending_offer == "Search the web for the weather and tell Paul"
-    session.submit("No thanks.")
-    await settle(session, manager)
-    session.submit("What's the weather like for Paul?")  # asked again: not offered again
-    await settle(session, manager)
-    assert session.pending_offer is None and len(manager.tasks) == 1
-    await finish(session, manager)
-
-
-@pytest.mark.asyncio
-async def test_an_explicit_message_to_a_third_party_is_delivered(dispatched):
-    model = Model([said("Will do.", task="Tell Neave dinner is ready.")], task=[
-        tool("look"), tool("move_to", room="bedroom"), tool("look"),
-        tool("talk_to", person="neave", message="Dinner is ready."),
-        {"action": "report", "summary": "Message delivered."}, complete,
-        {"approved": True, "summary": "Notification evidenced."}])
-    session, manager, _ = session_with(model, settings=Settings())
-    model.left += 1  # the Coordinator's first decision
-    model.replies = iter([{"action": "delegate", "summary": "Notify.", "task": "Tell Neave dinner is ready."},
-                          *list(model.replies)])
-    session.submit("Please tell Neave dinner is ready.")
-    await settle(session, manager)
-    await manager.runner
-    assert next(iter(manager.tasks.values())).status == "completed"
-    assert "talk_to" in dispatched
-    await finish(session, manager)
-
-
-@pytest.mark.asyncio
-async def test_where_are_my_keys_does_not_move_the_robot(dispatched):
-    session, manager, _ = session_with(Model([said("Not sure.", task="Find the keys")]))
-    session.submit("Where are my keys?")
-    await settle(session, manager)
-    assert manager.active() is None and not physical(dispatched)
-    await finish(session, manager)
-
-
-@pytest.mark.asyncio
-async def test_find_my_keys_is_an_authorized_physical_request(dispatched):
-    session, manager, _ = session_with(Model([said("On it.", task="Find the keys")]))
-    session.submit("Find my keys")
-    await settle(session, manager)
-    assert manager.active()["grant"]["source"] == "request"
-    assert "look" in dispatched  # it really goes and looks
+    assert set(dispatched) == {"web_search"}
     await finish(session, manager)
 
 
@@ -265,39 +179,9 @@ async def test_dont_use_python_calculate_runs_no_python(dispatched):
 
 
 @pytest.mark.asyncio
-async def test_a_prohibited_room_is_never_entered_or_routed_through(dispatched):
-    session, manager, _ = session_with(Model([said("Looking now.", task="Find the keys")]))
-    session.submit("Don't go to the kitchen; find my keys")
-    await settle(session, manager)
-    task = manager.tasks[manager.active_id]
-    result = manager.call_tool(task, "move_to", {"room": "kitchen"})  # as if the Explorer chose it
-    assert result["refused"] and "kitchen" in result["error"]
-    assert "move_to" not in dispatched
-    assert task._find_path("hall", "kitchen") == [] and task._find_path("hall", "study") == ["study"]
-    assert "kitchen" not in task.compact()["known_but_unobserved_rooms"]
-    await finish(session, manager)
-
-
-@pytest.mark.asyncio
-async def test_a_web_lookup_cannot_turn_into_physical_exploration(dispatched):
-    model = Model([said("Checking.", task="Search the web for the AQI")],
-                  conditions=[{"kind": "answer", "required_tools": ["web_search"]}])
-    session, manager, _ = session_with(model)
-    session.submit("What's the AQI today?")
-    await settle(session, manager)
-    task = manager.tasks[manager.active_id]
-    for name, arguments in [("look", {}), ("move_to", {"room": "kitchen"}), ("pick_up", {"object": "keys"}),
-                            ("talk_to", {"person": "neave", "message": "hi"})]:
-        assert manager.call_tool(task, name, arguments)["refused"]
-    assert not physical(dispatched)
-    await finish(session, manager)
-
-
-@pytest.mark.asyncio
 async def test_a_task_cannot_run_tools_beyond_its_grant_even_in_a_batch(dispatched):
     from app.tasks.models import TaskContext
-    engine, bus = WorldEngine(LEGACY_WORLD), EventBus()
-    manager = TaskManager(Model(), WorldTools(engine, bus), bus, Settings())
+    manager = TaskManager(Model(), EventBus(), Settings())
     manager.restrictions.update("Don't run Python")
     # Exercise dispatch directly, without a competing planner terminating the run.
     task = TaskContext(goal="Look something up", grant=Grant.read_only("What is it?"))
@@ -306,26 +190,25 @@ async def test_a_task_cannot_run_tools_beyond_its_grant_even_in_a_batch(dispatch
         {"tool": "run_python", "arguments": {"code": "6 * 7"}}])
     assert [r["success"] for r in results] == [True, False]
     assert dispatched.count("web_search") == 1 and "run_python" not in dispatched
-    assert manager.call_tool(task, "give", {"object": "keys", "person": "neave"})["refused"]
     await manager.close()
 
 
 @pytest.mark.asyncio
 async def test_a_queued_errand_is_revalidated_when_it_runs(dispatched):
-    model = Model([said("After this one.", task="Find the keys"), said("Noted.")])
+    model = Model([said("After this one.", task="Search the web for the AQI"), said("Noted.")])
     session, manager, _ = session_with(model)
     manager.start("Busy with something else")
-    session.submit("Then find my keys")
+    session.submit("Then search the web for the AQI")  # an explicit tool request: queued as said
     await settle(session, manager)
-    assert list(session.pending_goals) == ["Find the keys"]
-    session.submit("Actually, don't go into the kitchen.")  # said after it was queued
+    assert list(session.pending_goals) == ["Then search the web for the AQI"]
+    session.submit("Actually, don't use the internet.")  # said after it was queued
     await settle(session, manager)
     await manager.cancel(manager.active_id)
     await asyncio.sleep(0.1)  # the queue starts the next errand
     task = manager.tasks[manager.active_id]
-    assert task.goal == "Find the keys" and task.grant.source == "request"
-    assert manager.call_tool(task, "move_to", {"room": "kitchen"})["refused"]
-    assert "move_to" not in dispatched
+    assert task.goal == "Then search the web for the AQI" and task.grant.source == "request"
+    assert (await manager.call_capability(task, "web_search", {"query": "AQI"}))["refused"]
+    assert "web_search" not in dispatched
     await finish(session, manager)
 
 
@@ -339,70 +222,39 @@ async def test_a_lookup_kip_starts_on_his_own_is_read_only_and_obeys_a_later_pro
     task = manager.tasks[manager.active_id]
     assert task.goal == "Search the web for the AQI" and task.grant.source == "question"  # no yes needed
     assert session.pending_offer is None
-    assert manager.call_tool(task, "move_to", {"room": "kitchen"})["refused"]  # read-only, whatever happens
     session.submit("Don't use the internet.")
     await settle(session, manager)
     for name, arguments in (("web_search", {"query": "AQI"}), ("read_webpage", {"url": "https://example.com"})):
         assert (await manager.call_capability(task, name, arguments))["refused"]
-    assert not {"web_search", "read_webpage", "move_to"} & set(dispatched)
-    await finish(session, manager)
-
-
-@pytest.mark.asyncio
-async def test_an_accepted_house_offer_still_obeys_a_prohibition_made_after_it(dispatched):
-    model = Model([said("I could check the kitchen.", offer="Check the kitchen"), said("Starting.")])
-    session, manager, _ = session_with(model)
-    session.submit("It smells odd in here.")
-    await settle(session, manager)
-    assert session.pending_offer == "Check the kitchen" and not manager.tasks  # physical: needs a yes
-    manager.restrictions.update("Don't go into the kitchen.", {"kitchen": "Kitchen"})  # said elsewhere
-    session.submit("yes")
-    await settle(session, manager)
-    task = manager.tasks[manager.active_id]
-    assert task.grant.source == "offer" and task.goal == "Check the kitchen"
-    assert manager.call_tool(task, "move_to", {"room": "kitchen"})["refused"]
-    assert "move_to" not in dispatched
+    assert not {"web_search", "read_webpage"} & set(dispatched)
     await finish(session, manager)
 
 
 def test_prohibitions_can_be_lifted_and_ordinary_phrases_impose_none():
     restrictions = Restrictions()
     for text in ("No, use Python.", "No, go into the kitchen.", "I don't know if the web is down.", "Never mind."):
-        restrictions.update(text, {"kitchen": "Kitchen"})
+        restrictions.update(text)
     assert not restrictions
-    restrictions.update("Don't use Python", {})
+    restrictions.update("Don't use Python")
     assert restrictions.forbids_tool("run_python")
-    restrictions.update("OK, you can use Python again", {})
+    restrictions.update("OK, you can use Python again")
     assert not restrictions
 
 
-@pytest.mark.asyncio
-async def test_consequential_handling_needs_the_item_named_by_whoever_authorized_it(dispatched):
-    engine, bus = WorldEngine(), EventBus()  # the house: medicine is marked sensitive
-    manager = TaskManager(Model(), WorldTools(engine, bus), bus, Settings())
-    task = manager.start("Check on everyone", Grant.full("autonomy"))
-    assert "needs someone to ask me for it by name" in manager.call_tool(task, "pick_up", {"object": "medicine"})["error"]
-    await manager.close()
-    task = manager.start("Bring the medicine to Paul", Grant.full("request", "Please bring the medicine to Paul"))
-    result = manager.call_tool(task, "pick_up", {"object": "medicine"})
-    assert not result.get("refused")  # permitted; the world may still say it isn't here
-    assert dispatched.count("pick_up") == 1
-    await manager.close()
-
-
-def test_a_read_only_grant_reports_what_a_physical_plan_would_need():
+def test_a_narrow_grant_reports_what_a_plan_would_need():
     from app.agents.schemas import GoalCondition
-    plan = [GoalCondition(kind="notify", person="paul", message="the weather")]
-    assert COMMUNICATION in Grant.read_only("?").uncovered(plan)
+    plan = [GoalCondition(kind="answer", required_tools=["web_search", "run_python"])]
+    assert Grant(effects=[DIGITAL_LOOKUP, REPLY]).uncovered(plan) == {CALCULATION}
+    assert not Grant.read_only("?").uncovered(plan)
     assert not Grant.full("request").uncovered(plan)
     assert set(Grant.full("request").effects) == EVERYTHING
 
 
 @pytest.mark.asyncio
 async def test_clarifying_a_permission_offer_preserves_its_effects(dispatched):
-    model = Model([said("I mean I can look for them."), said("On my way.")])
+    model = Model([said("I mean I can look it up."), said("On my way.")])
     session, manager, _ = session_with(model)
-    session._needs_permission({"goal": "Find the keys", "needs": [NAVIGATION, "physical_observation"]})
+    session._needs_permission({"goal": "Search the web for the AQI", "needs": [DIGITAL_LOOKUP]})
     effects = session.offer.effects
     session.submit("Huh?")
     await settle(session, manager)
@@ -411,8 +263,6 @@ async def test_clarifying_a_permission_offer_preserves_its_effects(dispatched):
     await settle(session, manager)
     task = manager.tasks[manager.active_id]
     assert set(task.grant.effects) == effects
-    assert manager.call_tool(task, "pick_up", {"object": "keys"})["refused"]
-    assert not {"pick_up", "talk_to"} & set(dispatched)
     await finish(session, manager)
 
 
@@ -434,24 +284,22 @@ def test_task_api_applies_restrictions_from_the_authorizing_goal(dispatched):
     from fastapi.testclient import TestClient
     from app.main import create_app
     from tests.fakes import WaitingLLM
-    app = create_app(client=WaitingLLM(), settings=Settings(world_file=LEGACY_WORLD,
-                                                          idle_reflection_enabled=False))
+    app = create_app(client=WaitingLLM(), settings=Settings())
     with TestClient(app) as client:
-        response = client.post("/api/tasks", json={"goal": "Find my keys; don't go into the kitchen; don't use Python"})
+        response = client.post("/api/tasks", json={"goal": "Work out 6 times 7; don't use Python"})
         assert response.status_code == 202
         manager = app.state.manager
         task = manager.tasks[response.json()["id"]]
-        assert "kitchen" in manager.restrictions.rooms
         assert manager.restrictions.forbids_tool("run_python")
-        assert manager.call_tool(task, "move_to", {"room": "kitchen"})["refused"]
-        assert manager.tools._engine.get_status()["room"] == "hall"
-        assert "move_to" not in dispatched
+        assert task.restricted == {"tools": ["run_python"]}
+        assert not task.permits("run_python", {"code": "6 * 7"})
+        assert "run_python" not in dispatched
 
 
 @pytest.mark.asyncio
 async def test_model_written_goals_do_not_change_standing_restrictions():
     session, manager, _ = session_with(Model())
-    manager.start("Don't use Python", Grant.full("request", "Find my keys"))
+    manager.start("Don't use Python", Grant.full("request", "Look up the AQI"))
     assert not manager.restrictions
     await finish(session, manager)
 

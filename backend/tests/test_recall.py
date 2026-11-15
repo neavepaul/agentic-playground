@@ -1,7 +1,6 @@
 """The searchable memory store: hybrid recall, merging, filters and task memories."""
 import asyncio
 import math
-from pathlib import Path
 
 import pytest
 
@@ -11,11 +10,7 @@ from app.events.bus import EventBus
 from app.memory.recall import MemoryStore, task_memories
 from app.tasks.manager import TaskManager
 from app.tasks.models import TaskContext
-from app.world.engine import WorldEngine
-from app.world.tools import WorldTools
 from tests.fakes import WaitingLLM
-
-LEGACY_WORLD = Path(__file__).parent / "fixtures" / "legacy_house.json"
 
 # Words that mean the same thing share a dimension, so this fake behaves like a
 # real embedding model on these sentences without downloading one.
@@ -111,29 +106,37 @@ async def test_database_file_is_created_only_when_used(tmp_path):
     store.close()
 
 
-def test_finished_delivery_forms_episode_and_skill_memories():
-    context = TaskContext(goal="Bring the charger to Neave")
-    context.conditions = [GoalCondition(kind="deliver", object="charger", person="neave")]
-    context.status, context.summary = "completed", "Delivered."
-    for tool, observation in [("move_to", {"room": "office"}), ("pick_up", {"object": "charger", "room": "office"}),
-                              ("move_to", {"room": "bedroom"}), ("give", {"object": "charger", "person": "neave", "room": "bedroom"})]:
-        context.action_history.append({"tool": tool, "success": True, "observation": observation, "arguments": {}})
+def test_finished_lookup_forms_episode_and_answer_memories():
+    context = TaskContext(goal="Look up the AQI in Mumbai")
+    context.conditions = [GoalCondition(kind="answer", required_tools=["web_search"])]
+    context.status, context.summary = "completed", "Answered."
+    context.record("web_search", {"query": "AQI Mumbai"}, {"success": True, "evidence_id": "s1", "observation": {
+        "query": "AQI Mumbai", "results": [{"url": "https://aqi.example/mumbai", "title": "AQI"}]}})
+    context.record("finish_answer", {}, {"success": True, "evidence_id": "a1", "observation": {
+        "answer": "The AQI is 150.", "sources": [{"url": "https://aqi.example/mumbai"}]}})
     memories = {m["kind"]: m for m in task_memories(context, "cheerful")}
-    assert "I felt cheerful" in memories["episode"]["text"]
-    skill = memories["skill"]["text"]
-    assert "found the charger in the office" in skill and "neave was in the bedroom" in skill
-    assert "office → bedroom" in skill and memories["skill"]["about"] == ["neave", "charger"]
+    assert set(memories) == {"episode", "fact"}
+    assert memories["episode"]["text"] == "Finished: Look up the AQI in Mumbai. Answered. I felt cheerful."
+    assert memories["fact"]["text"] == "Q: Look up the AQI in Mumbai → A: The AQI is 150."
+    assert memories["fact"]["meta"] == {"sources": ["https://aqi.example/mumbai"]}
+    assert memories["episode"]["about"] == memories["fact"]["about"] == []
+
+
+def test_a_failed_task_forms_only_an_episode():
+    context = TaskContext(goal="Look up the AQI", status="failed", summary="No source.")
+    [memory] = task_memories(context)
+    assert memory["kind"] == "episode" and memory["text"] == "Could not finish: Look up the AQI. No source."
+    assert memory["importance"] == 0.7
 
 
 @pytest.mark.asyncio
-async def test_next_task_recalls_relevant_skills(store):
-    await store.add("skill", "For 'Bring the charger to Neave': found the charger in the office.", ["charger"])
-    engine, bus = WorldEngine(LEGACY_WORLD), EventBus()
-    manager = TaskManager(WaitingLLM(), WorldTools(engine, bus), bus, Settings(), memory_store=store)
+async def test_next_task_recalls_relevant_memories(store):
+    await store.add("fact", "Q: Where does Neave keep the charger cable? → A: In the office.", [])
+    manager = TaskManager(WaitingLLM(), EventBus(), Settings(), memory_store=store)
     context = manager.start("Neave needs the charger again")
     await asyncio.sleep(0.05)
     items = context.long_term_memory["relevant_memories"]["items"]
-    assert "found the charger in the office" in items[0]["text"]
+    assert "In the office" in items[0]["text"]
     await manager.cancel(context.id)
 
 

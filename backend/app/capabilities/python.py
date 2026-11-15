@@ -33,4 +33,4 @@ async def run_python(code: str, data: dict, seconds: float = 3) -> dict:
             value = await session.feed_run(code, inputs={"data": data}, print_callback=capture)
     result = repr(value)
     return {"stdout": "".join(output), "result": result[:8000], "result_truncated": len(result) > 8000,
-            "runtime": "Monty restricted Python (no files, network, shell or robot access)"}
+            "runtime": "Monty restricted Python (no files, network or shell access)"}

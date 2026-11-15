@@ -5,19 +5,18 @@ from typing import Callable
 from .appraisal import appraise
 from .cues import read_cues
 from .profile import BASELINE, DRIFT, TONES, VOICE, identity
-from .state import Episode, Followup, ObjectNote, PersonaState, Relationship, SkillRecord
+from .state import Episode, Followup, PersonaState, Relationship, SkillRecord
 
-MOOD_HALF_LIFE = 1800.0          # simulated seconds
+MOOD_HALF_LIFE = 1800.0          # seconds
 CONCERN_HALF_LIFE = 6 * 3600.0
 RESTING = {"valence": 0.1, "energy": 0.6, "confidence": 0.6, "frustration": 0.0, "intrigue": 0.2}
-FOLLOWUP_DELAY = 2 * 3600.0      # check in a couple of simulated hours later
+FOLLOWUP_DELAY = 2 * 3600.0      # check in a couple of hours later
 FOLLOWUP_LIFETIME = 24 * 3600.0
 QUIET_SECONDS = 8 * 3600.0       # how long "leave me alone" is honoured
 TOOL_FAILURE_DIPS_PER_TASK = 5
 VIEW_LIMIT = 1600                # characters of JSON in any prompt view
 VOICE_VIEW_LIMIT = 4200          # the voice view also carries the fixed identity and voice
 CONCERNED, WELL_KNOWN, STRANGER = 0.35, 0.3, 0.1
-INITIATIVE_TRAITS = ("initiative", "curiosity", "caution", "empathy", "loyalty")
 # Kip's own words that actually ask after someone.
 _CHECK_IN = re.compile(r"\b(how are you|how're you|how are things|how (?:are|is) (?:it|the \w+) going|"
                        r"feeling (?:any |a bit )?better|how (?:are|do) you feel|how'?s the \w+|"
@@ -29,10 +28,6 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
-def _goal_key(goal: str) -> str:
-    return " ".join(goal.casefold().split())
-
-
 class Persona:
     """Deterministic personality state driven by existing bus events.
 
@@ -42,15 +37,13 @@ class Persona:
     """
 
     def __init__(self, state: PersonaState | None = None, name: str = "Kip",
-                 now: Callable[[], float] | None = None, helpfulness_baseline: float = 0.8, maker: str = "") -> None:
+                 now: Callable[[], float] | None = None, maker: str = "") -> None:
         self.state = state if state is not None else PersonaState()
         self.name = name
         self.identity = identity(maker)  # who built him: known only when configured
         self._now = now
         self._last_now: float | None = None
-        self._helpfulness_baseline = helpfulness_baseline
         self._failure_dips: dict[str, int] = {}
-        self._self_initiated: set[str] = set()
         self._bus = None
         self.dirty = False
 
@@ -63,7 +56,7 @@ class Persona:
         if self._now is not None:
             current = self._now()
             if self._last_now is not None:
-                # Clock resets (world reload, restart) never move the persona backwards.
+                # A clock change (restart, the system clock set back) never moves the persona backwards.
                 self.state.age_seconds += max(0.0, current - self._last_now)
             self._last_now = current
         mood = self.state.mood
@@ -83,24 +76,16 @@ class Persona:
         kind, data = event["type"], event.get("data", {})
         if kind.startswith("persona_"):
             return
-        if kind == "agent_intention":
-            self._self_initiated.add(_goal_key(data.get("summary", "")))
-            return
         if kind == "chat_message" and (data.get("turn") or {}).get("role") != "user":
             self._settle_after_reply(data.get("turn") or {})
             return
-        self_initiated = False
-        if kind in {"task_completed", "task_failed"}:
-            key = _goal_key((data.get("task") or {}).get("goal", ""))
-            self_initiated = key in self._self_initiated
-            self._self_initiated.discard(key)
         if kind == "tool_failed":
             task = data.get("task_id") or ""
             self._failure_dips[task] = self._failure_dips.get(task, 0) + 1
             if self._failure_dips[task] > TOOL_FAILURE_DIPS_PER_TASK:
                 return
         now = self._advance()
-        appraisal = appraise(event, self.state, self_initiated)
+        appraisal = appraise(event, self.state)
         if appraisal is None:
             return
         self._apply(appraisal, now)
@@ -122,7 +107,6 @@ class Persona:
             record.attempts += 1
             record.successes += appraisal.succeeded
             record.streak = (max(record.streak, 0) + 1) if appraisal.succeeded else (min(record.streak, 0) - 1)
-        self._note_sightings(appraisal.seen_objects, now)
         feeling = self.mood_label()
         person = appraisal.person
         if person:
@@ -161,7 +145,7 @@ class Persona:
 
     def _settle_after_reply(self, turn: dict) -> None:
         """Kip replied to this person. A due check-in is settled only if he actually checked in;
-        otherwise it stays for the idle mind, and the conversation is not prompted again."""
+        otherwise it stays due, and the conversation is not prompted again."""
         person = turn.get("to")
         if not person or turn.get("source"):
             return
@@ -175,22 +159,6 @@ class Persona:
             for followup in due:
                 followup.suggested_at = followup.suggested_at or now
         self.dirty = True
-
-    def _note_sightings(self, seen: dict[str, str], now: float) -> None:
-        for key, room in seen.items():
-            note = self.state.seen_objects.get(key)
-            if note is None:
-                self.state.seen_objects[key] = ObjectNote(first_room=room, last_room=room, rooms=[room])
-                continue
-            if note.last_room != room:
-                note.moves += 1
-                note.last_room = room
-                if room not in note.rooms:
-                    note.rooms = (note.rooms + [room])[-5:]
-                if note.moves == 2:
-                    self._remember(f"Noticed the {key.replace('_', ' ')} keeps turning up in different "
-                                   f"places ({', '.join(r.replace('_', ' ') for r in note.rooms)}).",
-                                   self.mood_label(), None, now)
 
     def reinforce(self, trait: str, amount: float) -> None:
         base, limit = BASELINE[trait], DRIFT[trait]
@@ -227,21 +195,6 @@ class Persona:
         now = self._advance() if now is None else now
         return bool(bond and bond.quiet_until and bond.quiet_until > now)
 
-    def helpfulness(self) -> float:
-        """Replaces the fixed drive_helpfulness: empathy and mood move it."""
-        self._advance()
-        shift = (self.trait("empathy") - BASELINE["empathy"]) + 0.1 * self.state.mood.valence
-        return round(_clamp(self._helpfulness_baseline + shift, 0, 1), 3)
-
-    def intention_threshold(self, base: float) -> float:
-        """Initiative and empathy lower the bar for acting unasked; a low mood or recent
-        setbacks raise it. Only the bar moves: permission to act is never granted here."""
-        self._advance()
-        mood = self.state.mood
-        adjusted = (base - 0.15 * (self.trait("initiative") - 0.5) - 0.1 * (self.trait("empathy") - 0.5)
-                    + 0.1 * max(0.0, -mood.valence) + 0.1 * mood.frustration)
-        return round(_clamp(adjusted, 0.3, 0.95), 3)
-
     def due_followups(self) -> list[Followup]:
         now = self._advance()
         return [f for f in self.state.followups
@@ -250,12 +203,6 @@ class Persona:
     def track_record(self, limit: int = 5) -> dict[str, str]:
         skills = sorted(self.state.skills.items(), key=lambda item: -item[1].attempts)
         return {name: f"{r.successes} of {r.attempts} succeeded" for name, r in skills[:limit] if r.attempts}
-
-    def suspicions(self, limit: int = 3) -> list[str]:
-        """Patterns Kip has noticed himself. Suspicions, not facts."""
-        moving = sorted(((k, n) for k, n in self.state.seen_objects.items() if n.moves >= 2),
-                        key=lambda item: -item[1].moves)
-        return [f"the {k.replace('_', ' ')} moves around (seen in {len(n.rooms)} places)" for k, n in moving[:limit]]
 
     # ── how to pitch a reply ────────────────────────────────────────────────
     def stance(self, speaker: str | None = None, message: str = "") -> str:
@@ -271,9 +218,9 @@ class Persona:
         if speaker is None:
             parts.append("You don't know who is speaking: don't assume, and don't attach what they say to anyone.")
         elif bond is None or bond.familiarity < WELL_KNOWN:
-            # Anyone Kip can identify lives here: a housemate, not a stranger, even before
-            # much shared history. Familiarity deepens the shorthand; it doesn't unlock warmth.
-            parts.append("You live with them: at ease and warm, without much shared history to lean on yet.")
+            # Anyone Kip can identify is a friend, not a stranger, even before much shared
+            # history. Familiarity deepens the shorthand; it doesn't unlock warmth.
+            parts.append("A friend: at ease and warm, without much shared history to lean on yet.")
         elif bond.familiarity >= WELL_KNOWN:
             parts.append("You know them well: a real friend; relaxed, the shorthand of shared history.")
         label = self.mood_label()
@@ -291,7 +238,7 @@ class Persona:
         elif cues.humour_unwanted:
             parts.append("They don't want jokes right now: plain and sincere.")
         else:
-            # Housemates get his humour from the start; how they react tunes it per person.
+            # Friends get his humour from the start; how they react tunes it per person.
             # Only an unidentified speaker gets the reserved version. Teasing is still earned.
             reception = (0.5 + (bond.humour_reception if bond else 0.5)) if speaker else 0.8
             mood_factor = {"tired": 0.6, "concerned": 0.4, "determined": 0.7}.get(label, 1.0)
@@ -300,7 +247,7 @@ class Persona:
                          and self.trait("mischief") >= 0.5)
             if score >= 0.8:
                 parts.append("Humour suits this: a literal, blunt or earnestly serious take on something "
-                             "real here (the hour, the room, what just happened). Not every line, never at "
+                             "real here (the hour, what they said, what just happened). Not every line, never at "
                              "their expense" + ("; gentle teasing suits them." if tease else "."))
             elif score >= 0.5:
                 parts.append("At most one light, literal aside, if any.")
@@ -367,19 +314,6 @@ class Persona:
             view["relationships"] = {p: self._bond(p, detail=True) for p in known[:3]}
         return self._bounded(view, ["relationships", "track_record", "identity"], VOICE_VIEW_LIMIT)
 
-    def mind_view(self) -> dict:
-        """For idle initiative: traits, mood, closest people, due check-ins, open questions."""
-        due = self.due_followups()
-        bonds = self.state.relationships
-        closest = sorted(bonds, key=lambda p: -(bonds[p].warmth + bonds[p].familiarity))
-        view = {"name": self.name, "mood": self.mood_label(),
-                "traits": {t: round(self.trait(t), 2) for t in INITIATIVE_TRAITS},
-                "relationships": {p: self._bond(p, detail=True) for p in closest[:4]},
-                "due_followups": [{"person": f.person, "reason": f.reason} for f in due[:3]],
-                "noticed": self.suspicions(),
-                "recent_moments": [e.summary for e in self.state.episodes[-3:]]}
-        return self._bounded(view, ["recent_moments", "noticed", "relationships"])
-
     def public(self) -> dict:
         label, mood = self.mood_label(), self.state.mood
         bonds = sorted(self.state.relationships.items(), key=lambda item: -(item[1].warmth + item[1].familiarity))
@@ -392,6 +326,5 @@ class Persona:
                                       "concern": round(b.concern, 2)}
                                   for p, b in bonds[:8]},
                 "track_record": self.track_record(limit=10),
-                "noticed": self.suspicions(),
                 "moments": [e.model_dump() for e in self.state.episodes[-5:]],
                 "followups": [f.model_dump() for f in self.state.followups]}

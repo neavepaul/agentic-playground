@@ -2,81 +2,85 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#f4f5f1" />
-    <title>House simulation · agentic_friend</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f7f7f4" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#121215" />
+    <meta name="description" content="Kip, a companion that remembers you and can look things up." />
+    <title>Kip</title>
   </head>
   <body>
-    <div id="app">
+    <a class="skip-link" href="#chat-input">Skip to message box</a>
+    <div class="app">
       <header class="topbar">
-        <div class="identity"><span class="app-mark" aria-hidden="true">⌂</span><span>House simulation <span class="version">V1</span></span></div>
-        <div class="connection"><span id="connection-dot" class="dot"></span><span id="connection">Connecting</span></div>
+        <div class="identity">
+          <div class="monogram" aria-hidden="true"><span id="kip-monogram">K</span></div>
+          <div class="identity-text">
+            <h1 id="kip-name">Kip</h1>
+            <p class="mood" id="kip-mood"><span class="mood-dot" aria-hidden="true"></span><span id="kip-mood-text">Your companion</span></p>
+          </div>
+        </div>
+        <div class="status-group">
+          <span class="status-pill" id="model-pill" data-state="pending" title="Language model">
+            <span class="dot" aria-hidden="true"></span><span id="model-status">Checking model…</span>
+          </span>
+          <span class="status-pill" id="connection-pill" data-state="pending" role="status">
+            <span class="dot" aria-hidden="true"></span><span id="connection">Connecting…</span>
+          </span>
+          <button id="panel-toggle" class="icon-button" type="button" aria-controls="side-panel" aria-expanded="true" aria-label="Toggle side panel" title="Toggle side panel">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="3" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M14.5 4.5v15" stroke="currentColor" stroke-width="1.6"/></svg>
+          </button>
+        </div>
       </header>
-      <main class="layout">
-        <section class="world-panel" aria-label="3D house simulation">
-          <div class="world-heading"><span class="eyebrow">YOUR HOUSE / SIMULATION</span><h1>A small world.<br>A goal to explore.</h1><p>One avatar. Three collaborating agents.</p></div>
-          <div id="scene" aria-label="Interactive 3D house. Drag to orbit, scroll to zoom."></div>
-          <div class="world-toolbar"><button id="view-reset" class="quiet">↗ Reset view</button><span>Drag to orbit · Scroll to zoom</span></div>
-          <div class="legend"><span><i class="swatch robot"></i>Avatar</span><span><i class="swatch person"></i>People</span><span><i class="swatch item"></i>Objects</span><span class="legend-note">Observer view � robot sees locally</span></div>
-        </section>
-        <aside class="sidebar">
-          <section class="mission-panel chat-panel">
-            <div class="section-title"><h2>Talk to <span id="chat-name">Kip</span></h2><span class="small-tag">LOCAL INFERENCE</span></div>
-            <div id="chat-log" class="chat-log" role="log" aria-live="polite"><p id="chat-empty" class="subtle">Say hello, ask a question, or ask for help around the house.</p></div>
-            <form id="chat-form" class="chat-form">
-              <label class="sr-only" for="chat-input">Message to Kip</label>
-              <textarea id="chat-input" rows="2" maxlength="1000" placeholder="Say something to Kip…"></textarea>
-              <button id="chat-send" class="primary" type="submit">Send <span>↗</span></button>
-            </form>
-            <div class="examples"><span>Try</span><button type="button" data-say="Hi Kip, how are you today?">Say hi</button><button type="button" data-say="Could you find the keys for me?">Find the keys</button><button type="button" data-say="What do you remember about Neave?">Ask about Neave</button></div>
-            <details class="direct-task">
-            <summary>Run a task directly</summary>
-            <form id="goal-form">
-              <label class="sr-only" for="goal">Goal or question</label>
-              <textarea id="goal" rows="3" maxlength="1000" required>Neave needs the charger. Find it and bring it to him.</textarea>
-              <div class="examples"><span>Try</span><button type="button" data-goal="Find the missing keys.">Find the keys</button><button type="button" data-goal="Find Neave and tell him dinner is ready.">Dinner is ready</button></div>
-              <div class="actions"><button id="run" class="primary" type="submit">Run goal <span>↗</span></button><button id="cancel" type="button" hidden>Cancel</button><button id="reset" type="button" title="Cancel current task and restore the initial world">Reset</button></div>
-            </form>
-            </details>
-            <p id="error" class="error" role="alert" hidden></p>
-            <div id="model-status" class="model-status">Checking local model…</div>
-          </section>
-          <section class="state-panel" aria-label="Current task">
-            <div class="section-title"><h2>Current state</h2><div class="section-actions"><button id="memory-open" class="memory-button" type="button" title="Open live task memory" aria-haspopup="dialog">Memory</button><span id="task-status" class="status">Idle</span></div></div>
-            <p id="task-summary" aria-live="polite">Ready when you are.</p>
-            <div class="state-grid"><div><span class="eyebrow">AVATAR LOCATION</span><strong id="robot-room">—</strong></div><div><span class="eyebrow">INVENTORY</span><strong id="inventory">Empty</strong></div></div>
-            <div class="agent-strip"><span data-agent="coordinator">Coordinator</span><span data-agent="explorer">Explorer</span><span data-agent="critic">Critic</span></div>
-            <p id="budget" class="budget">0 cycles · 0 tool calls</p>
-          </section>
-          <section id="answer-panel" class="answer-panel" aria-label="Answer" hidden>
-            <h2>Answer</h2>
-            <div id="answer-text"></div>
-            <div id="answer-sources"></div>
-          </section>
-          <section class="activity-panel" aria-label="Agent activity">
-            <div class="section-title">
-              <div class="activity-tabs" role="tablist">
-                <button type="button" class="tab-btn active" id="tab-activity" role="tab" aria-selected="true" aria-controls="feed">Activity</button>
-                <button type="button" class="tab-btn" id="tab-beliefs" role="tab" aria-selected="false" aria-controls="beliefs-panel">Beliefs</button>
-                <button type="button" class="tab-btn" id="tab-persona" role="tab" aria-selected="false" aria-controls="persona-panel">Personality</button>
-                <button type="button" class="tab-btn" id="tab-memories" role="tab" aria-selected="false" aria-controls="memories-panel">Memories</button>
+
+      <div class="shell">
+        <main class="conversation" aria-label="Conversation with Kip">
+          <div id="chat-scroll" class="chat-scroll">
+            <section id="chat-empty" class="empty-state" aria-labelledby="empty-title">
+              <div class="empty-monogram" aria-hidden="true"><span>K</span></div>
+              <h2 id="empty-title">Hi, I’m <span class="kip-name">Kip</span>.</h2>
+              <p>I remember what you tell me, and I can look things up on the web or work something out in Python.</p>
+              <div class="suggestions" aria-label="Suggestions">
+                <button type="button" class="suggestion" data-say="Hi Kip, how are you?">Hi Kip, how are you?</button>
+                <button type="button" class="suggestion" data-say="What do you remember about me?">What do you remember about me?</button>
+                <button type="button" class="suggestion" data-say="What's the latest cricket score?">What’s the latest cricket score?</button>
               </div>
-              <span id="event-count" class="subtle">0 events</span>
+            </section>
+            <div id="chat-log" class="chat-log" role="log" aria-live="polite" aria-relevant="additions" aria-label="Messages"></div>
+          </div>
+          <button id="jump-latest" class="jump-latest" type="button" hidden>
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 5v14m0 0-6-6m6 6 6-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            New messages
+          </button>
+          <div class="composer-wrap">
+            <p id="error" class="composer-note" role="alert" hidden></p>
+            <form id="chat-form" class="composer">
+              <label class="sr-only" for="chat-input">Message <span class="kip-name">Kip</span></label>
+              <textarea id="chat-input" rows="1" maxlength="1000" placeholder="Message Kip…" autocomplete="off" enterkeyhint="send"></textarea>
+              <button id="chat-send" class="send-button" type="submit" aria-label="Send message" title="Send">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+            </form>
+            <p class="composer-hint"><kbd>Enter</kbd> to send · <kbd>Shift</kbd> + <kbd>Enter</kbd> for a new line</p>
+          </div>
+        </main>
+
+        <aside id="side-panel" class="side-panel" aria-label="Details">
+          <div class="panel-head">
+            <div class="tabs" role="tablist" aria-label="Details">
+              <button type="button" class="tab" id="tab-memories" role="tab" aria-selected="true" aria-controls="memories-panel">About you</button>
+              <button type="button" class="tab" id="tab-persona" role="tab" aria-selected="false" aria-controls="persona-panel" tabindex="-1"><span class="kip-name">Kip</span></button>
+              <button type="button" class="tab" id="tab-activity" role="tab" aria-selected="false" aria-controls="activity-panel" tabindex="-1">Activity</button>
             </div>
-            <div id="feed" role="log" aria-live="polite"><div id="feed-empty" class="empty-feed"><span class="empty-icon">↳</span><p>The next move starts here.</p><span>Submit a goal to see actions and discoveries.</span></div></div>
-            <div id="beliefs-panel" class="beliefs-panel" role="tabpanel" hidden></div>
-            <div id="persona-panel" class="persona-panel" role="tabpanel" hidden></div>
-            <div id="memories-panel" class="memories-panel" role="tabpanel" hidden></div>
-          </section>
-          <footer>Local model on your machine <span>·</span> No cloud models</footer>
+            <button id="panel-close" class="icon-button panel-close" type="button" aria-label="Close panel" title="Close">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+          <div id="memories-panel" class="panel-body" role="tabpanel" aria-labelledby="tab-memories" tabindex="0"></div>
+          <div id="persona-panel" class="panel-body" role="tabpanel" aria-labelledby="tab-persona" tabindex="0" hidden></div>
+          <div id="activity-panel" class="panel-body" role="tabpanel" aria-labelledby="tab-activity" tabindex="0" hidden></div>
         </aside>
-      </main>
-      <div id="memory-overlay" class="memory-overlay" hidden>
-        <section class="memory-dialog" role="dialog" aria-modal="true" aria-labelledby="memory-title">
-          <div class="section-title"><div><span class="eyebrow">TASK STATE</span><h2 id="memory-title">Live memory</h2></div><button id="memory-close" class="icon-button" type="button" title="Close memory">×</button></div>
-          <p class="subtle">Durable observations retained for this task. Recent transcript entries are not shown here.</p>
-          <pre id="memory-content" class="memory-content">No task memory yet.</pre>
-        </section>
+        <div id="scrim" class="scrim" hidden></div>
       </div>
     </div>
     <script type="module" src="/src/main.js"></script>

@@ -16,9 +16,9 @@ from app.persona import Persona
 from app.persona.cues import read_cues
 from app.persona.profile import BASELINE, DRIFT, IDENTITY, PREVIOUS_BASELINES, TONES, VOICE, identity
 from app.persona.state import CHARACTER_VERSION, PersonaState
-from tests.fakes import ScriptedLLM, complete, tool
+from tests.fakes import ScriptedLLM, tool
 from tests.test_character import said
-from tests.test_persona import Clock, _manager, given
+from tests.test_persona import Clock, _answer, _manager, check_in_later, web  # noqa: F401 (web is a fixture)
 
 
 # ── who he is ─────────────────────────────────────────────────────────────────
@@ -39,56 +39,46 @@ def test_every_spoken_view_carries_the_same_character_even_when_trimmed():
     clock = Clock()
     persona = Persona(now=clock)
     for index in range(5):
-        persona.observe(given(person=f"person_{index}", thing="a very long object name " * 3))
-    # Speech during an errand, a written answer, and conversation: one character.
+        said(persona, "I'm stressed about a very long list of things " * 3, speaker=f"person_{index}")
+    # A written answer about people, conversation, and a bare answer: one character.
     speech = persona.voice_view([f"person_{i}" for i in range(5)])
     chat = persona.voice_view(speaker="person_0", message="I only slept four hours. I passed my exam! "
                                                           "Thanks. Going to bed.")
     for view in (speech, chat, persona.voice_view()):
         assert view["identity"] == identity() and view["voice"] == VOICE
-    system = build_messages("Kip", chat, [], {"room": "hall"}, [], "hi")[0]["content"]
+    system = build_messages("Kip", chat, [], {"talking_with": "Person 0"}, [], "hi")[0]["content"]
     assert IDENTITY in system and VOICE in system and "never an impersonal help desk" in system
 
 
 # ── his voice is for people, never for machinery ────────────────────────────────
 def test_the_voice_is_scoped_to_words_for_people():
-    assert "command_id, IDs, summary and every other field stay plain" in prompts.PERSONA_SPEECH
-    assert "word for word" in prompts.PERSONA_SPEECH
     assert "tool arguments" in prompts.PERSONA_ANSWER and "citation labels" in prompts.PERSONA_ANSWER
     assert "plain standard English, not your voice" in CHAT_SYSTEM
-    for name in ("COORDINATOR", "CRITIC", "GOAL_PLANNER", "EXPLORER", "CAPABILITY_EXPLORER", "COMMON"):
+    for name in ("COORDINATOR", "CRITIC", "GOAL_PLANNER", "CAPABILITY_EXPLORER", "COMMON"):
         text = getattr(prompts, name)
         assert "Rocky" not in text and "question?" not in text, name
 
 
 @pytest.mark.asyncio
-async def test_rocky_speech_reaches_people_while_planning_calls_never_see_the_character():
+async def test_rocky_answers_reach_people_while_planning_calls_never_see_the_character(web):
     persona = Persona(now=Clock())
-    styled = "Neave. Dinner is ready. Food is hot. Good, good."
-    fake = ScriptedLLM([
-        {"action": "delegate", "summary": "Notify.", "task": "Tell Neave dinner is ready."},
-        tool("look"), tool("move_to", room="bedroom"), tool("look"),
-        tool("talk_to", person="neave", message=styled),
-        {"action": "report", "summary": "Message delivered."}, complete,
-        {"approved": True, "summary": "Notification evidenced."},
-    ])
-    mgr, bus = _manager(fake, persona)
-    spoken = []
-    bus.add_listener(lambda e: spoken.append(e) if e["type"] == "person_spoken_to" else None)
-    task = mgr.start("Tell Neave dinner is ready.")
+    styled = "Sunny. 31 degrees. Hot, hot. Water good idea."
+    fake = ScriptedLLM([tool("web_search", query="weather today"), _answer(styled)])
+    mgr, _ = _manager(fake, persona)
+    task = mgr.start("Search the web for today's weather")
     await mgr.runner
     assert task.status == "completed", task.summary
     carrying = [sent for sent, _ in fake.calls if "persona" in json.loads(sent[1]["content"])]
-    assert carrying, "the speech decision carries the character"
+    assert carrying, "the answer-writing decision carries the character"
     for sent in carrying:
         # The character is a system instruction; the input carries only mood and people.
         assert IDENTITY in sent[0]["content"] and VOICE in sent[0]["content"]
         assert "identity" not in json.loads(sent[1]["content"])["persona"]
-        assert "every other field stay plain" in sent[0]["content"]
+        assert "tool arguments" in sent[0]["content"] and "stay plain and exact" in sent[0]["content"]
     for sent, _ in fake.calls:
         if "persona" not in json.loads(sent[1]["content"]):
             assert IDENTITY not in sent[0]["content"] and IDENTITY not in sent[1]["content"]
-    assert spoken and spoken[-1]["data"]["arguments"] == {"person": "neave", "message": styled}
+    assert task.answer["answer"] == styled
 
 
 # ── care is practical, and still yields to a request for space ─────────────────
@@ -104,14 +94,15 @@ def test_short_rest_or_food_is_named_once_and_left_to_their_choice():
 def test_leave_me_alone_still_wins_over_care_and_celebration():
     clock = Clock()
     persona = Persona(now=clock)
-    persona.observe(given())  # a care delivery that would normally earn a check-in
+    said(persona, "Morning.")
+    check_in_later(persona)  # a check-in that would normally come due
     said(persona, "Leave me alone. I was up all night and I passed my exam.")
     stance = persona.stance("neave", "Leave me alone. I was up all night and I passed my exam.")
     assert "want space" in stance and "not control" in stance
     assert "rest or food" not in stance and "celebrate" not in stance
     # Code still enforces it, whatever the character would like to do.
     assert persona.state.followups == [] and persona.wants_space("neave")
-    assert persona.mind_view()["relationships"]["neave"]["do_not_disturb"] is True
+    assert persona.voice_view(["neave"])["relationships"]["neave"]["do_not_disturb"] is True
     assert "rest or food" not in persona.stance("neave", "Skipped lunch.")  # the quiet period holds
 
 
@@ -145,7 +136,7 @@ def test_a_state_saved_by_the_previous_character_keeps_its_earned_drift():
              "traits": {**previous, "sarcasm": previous["sarcasm"] + 0.05, "caution": previous["caution"] - 0.02,
                         "curiosity": previous["curiosity"] + 0.5},  # out of range: clamped to the new limit
              "legacy_traits": {"enthusiasm": 0.71},
-             "relationships": {"neave": {"familiarity": 0.4, "warmth": 0.7, "interactions": 9}},
+             "relationships": {"neave": {"familiarity": 0.4, "warmth": 0.7, "interactions": 9, "chats": 4}},
              "age_seconds": 500.0}
     state = PersonaState.model_validate(saved)
     assert state.character_version == CHARACTER_VERSION == 3

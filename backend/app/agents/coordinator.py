@@ -1,75 +1,33 @@
-import re
-
-from app.llm.base import LLMClient, ModelError, structured
+from app.llm.base import LLMClient, structured
 from app.tasks.models import TaskContext
-from .prompts import COORDINATOR, GOAL_PLANNER
-from .schemas import CoordinatorDecision, GoalCondition, GoalPlan
+from .prompts import COORDINATOR, GOAL_PLANNER, PYTHON_PROGRAM
+from .schemas import CoordinatorDecision, GoalCondition, GoalPlan, InitialCapability, PythonProgram
 
 
 class Coordinator:
-    def __init__(self, client: LLMClient, digital_enabled: bool = False,
-                 hosted=None, hosted_calls: int = 0) -> None:
+    def __init__(self, client: LLMClient, hosted=None, hosted_calls: int = 0) -> None:
         self.client = client
-        self.digital_enabled = digital_enabled
         # Goal planning is one high-value call per errand: worth a hosted model when
-        # one is configured. It sees only the goal and room names, never memory.
+        # one is configured. It sees only the goal, never memory.
         self.hosted, self.hosted_calls = hosted, hosted_calls
 
     async def decide(self, context: TaskContext) -> CoordinatorDecision:
         return await structured(self.client, CoordinatorDecision, COORDINATOR, context.compact(),
                                 metrics=context.metrics, role="coordinator")
 
-    @staticmethod
-    def _requires_recipient_discovery(goal: str) -> bool:
-        return bool(re.search(
-            r"\b(?:find(?:\s+out)?|determine|discover|identify)\s+who\s+needs\b|\bwhoever\s+needs\b",
-            goal,
-            re.I,
-        ))
-
-    async def define_goal(self, goal: str, floor_plan: dict | None = None, metrics=None) -> GoalPlan:
-        prompt = GOAL_PLANNER
-        if self.digital_enabled:
-            from .prompts import DIGITAL_GOAL_PLANNER
-            prompt += DIGITAL_GOAL_PLANNER
-        # Goal interpretation needs room names/IDs, not renderer geometry or routes.
-        # Keep the original observed map intact for navigation and the frontend.
-        room_names = {room_id: room.get("name", room_id)
-                      for room_id, room in (floor_plan or {}).get("rooms", {}).items()}
-        unknown_recipient = self._requires_recipient_discovery(goal)
-        # A narrow consistency check for an explicit delivery clause. This rejects
-        # prerequisite-only plans without hardcoding an object, recipient or route.
-        explicit_delivery = re.search(r"(?:^\s*(?:please\s+)?|\b(?:and|then)\s+)deliver\b", goal, re.I)
-        planner = self.client
+    def _planner(self):
         if self.hosted is not None and self.hosted_calls:
             from app.llm.groq import HostedFirst
-            planner = HostedFirst(self.hosted, self.client, self.hosted_calls, "goal planning")
-        for attempt in range(2):
-            plan = await structured(planner, GoalPlan, prompt,
-                                    {"goal": goal, "floor_plan": {"rooms": room_names}},
-                                    role="coordinator", metrics=metrics, compact_schema=self.digital_enabled)
-            if unknown_recipient:
-                plan = plan.model_copy(update={
-                    "conditions": [
-                        condition.model_copy(update={"person": ""})
-                        if condition.kind == "deliver" else condition
-                        for condition in plan.conditions
-                    ]
-                })
-            prerequisite_only = all(c.kind in {"find_object", "find_person", "identify_recipient", "visit_room"}
-                                    for c in plan.conditions)
-            if not (explicit_delivery and prerequisite_only):
-                return plan
-            prompt += "\nYour prior plan omitted DELIVERY. Define the FINAL outcome for the ENTIRE goal: " \
-                      "a deliver condition for the requested object, not just finding it or identifying its recipient."
-        object_id = next((condition.object for condition in plan.conditions if condition.object), None)
-        if explicit_delivery and object_id:
-            person = (
-                "" if unknown_recipient
-                else next((condition.person for condition in plan.conditions if condition.person), "")
-            )
-            return plan.model_copy(update={
-                "summary": plan.summary + " Delivery is required and will be verified after a successful handoff.",
-                "conditions": [*plan.conditions, GoalCondition(kind="deliver", object=object_id, person=person)],
-            })
-        raise ModelError("Could not define complete goal conditions: the delivery requirement was omitted.")
+            return HostedFirst(self.hosted, self.client, self.hosted_calls, "goal planning")
+        return self.client
+
+    async def define_goal(self, goal: str, metrics=None) -> GoalPlan:
+        return await structured(self._planner(), GoalPlan, GOAL_PLANNER, {"goal": goal},
+                                role="coordinator", metrics=metrics, compact_schema=True)
+
+    async def python_plan(self, goal: str, metrics=None) -> GoalPlan:
+        """A request that only asks for Python: the plan is known, the model writes just the code."""
+        program = await structured(self._planner(), PythonProgram, PYTHON_PROGRAM, {"request": goal},
+                                   role="coordinator", metrics=metrics, compact_schema=True)
+        return GoalPlan(summary="Run the program.", conditions=[GoalCondition(kind="answer", required_tools=["run_python"])],
+                        initial_actions=[InitialCapability(tool="run_python", arguments={"code": program.code})])

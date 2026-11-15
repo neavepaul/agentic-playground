@@ -1,28 +1,22 @@
 """Conversation with Kip: streaming, hidden action trailers, errands and memory."""
 import asyncio
 import json
-from pathlib import Path
-
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from app.chat import ChatSession
-from app.chat.prompt import TrailerSplitter, build_messages, parse_action
+from app.chat.prompt import TrailerSplitter, build_messages
 from app.config import Settings
 from app.events.bus import EventBus
 from app.llm.base import ModelError
 from app.llm.colibri import ColibriClient
 from app.llm.ollama import OllamaClient
 from app.memory.recall import MemoryStore
-from app.mind.agent import AgentMind
 from app.persona import Persona
+from app.persona.state import Relationship
 from app.tasks.manager import TaskManager
-from app.world.engine import WorldEngine
-from app.world.tools import WorldTools
 from tests.fakes import WaitingLLM
-
-LEGACY_WORLD = Path(__file__).parent / "fixtures" / "legacy_house.json"
 
 
 class StreamingModel(WaitingLLM):
@@ -44,12 +38,11 @@ class StreamingModel(WaitingLLM):
 
 
 def make_session(replies, store=None):
-    engine, bus = WorldEngine(LEGACY_WORLD), EventBus()
+    bus = EventBus()
     model = StreamingModel(replies)
-    manager = TaskManager(model, WorldTools(engine, bus), bus, Settings())
+    manager = TaskManager(model, bus, Settings())
     persona = Persona()
-    session = ChatSession(model, bus, manager, engine, Settings(), store=store or MemoryStore(":memory:"),
-                          persona=persona)
+    session = ChatSession(model, bus, manager, Settings(), store=store or MemoryStore(":memory:"), persona=persona)
     session.attach()
     events = []
     bus.add_listener(events.append)
@@ -125,6 +118,7 @@ async def test_remembered_facts_are_recalled_in_later_turns():
     store = MemoryStore(":memory:")
     session, model, _, _ = make_session([reply("Noted!", remember=["Neave prefers green tea after 6pm"]),
                                          reply("Green tea, after six.")], store)
+    session.persona.state.relationships["neave"] = Relationship()  # someone Kip knows
     session.submit("Remember that Neave prefers green tea after 6pm")
     await session.drain()
     facts = store.recent(10, "preference")  # likes/prefers are filed as preferences
@@ -157,12 +151,57 @@ async def test_model_errors_become_a_friendly_reply():
     assert not session.busy
 
 
+@pytest.mark.asyncio
+async def test_an_explicit_tool_request_starts_at_once_without_a_chat_reply():
+    """Live: "Use Python to…" waited 914 s for a chat reply on the local model, then the errand
+    itself took 2.7 s. Like a live lookup, the errand's answer is the reply."""
+    session, model, manager, _ = make_session([])  # no chat reply scripted: none may be asked for
+    session.submit("Use Python to calculate the average of 12, 18, 21 and 29.")
+    await session.drain()
+    assert manager.active()["goal"] == "Use Python to calculate the average of 12, 18, 21 and 29."
+    assert model.prompts == []
+    await manager.cancel(manager.active_id)
+    await session.close()
+    await manager.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("said", ["Offer to use Python to add 2 and 2, but wait for my ok.",
+                                  "Don't use Python. Use Python to add 2 and 2."])
+async def test_a_tool_request_that_needs_a_word_first_still_gets_a_chat_reply(said):
+    session, model, manager, _ = make_session([reply("Hm.")])
+    session.submit(said)
+    await session.drain()
+    assert len(model.prompts) == 1 and manager.active_id is None
+    await session.close()
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_a_requested_errand_still_starts_when_the_chat_model_fails():
+    """Live: the chat model never answered, so no errand started and the request was lost. Here
+    the person says yes to Kip's offer while the chat model is down."""
+    offer = "Ok.\n###\n" + json.dumps({"offer": "Find the missing keys.", "remember": []})
+    session, _, manager, _ = make_session([offer, ModelError("offline")])
+    session.submit("I can't find my keys anywhere.")
+    await session.drain()
+    assert session.pending_offer == "Find the missing keys." and manager.active_id is None
+    session.submit("Yes, please.")
+    await session.drain()
+    assert manager.active()["goal"] == "Find the missing keys."
+    reply = session.history()[-1]["text"]
+    assert "language model not answer" in reply and "errand" in reply.casefold()
+    await manager.cancel(manager.active_id)
+    await session.close()
+    await manager.close()
+
+
 def test_chat_prompt_stays_small():
     memories = [{"kind": "fact", "text": "x" * 1000}] * 6
     turns = [{"role": "user" if i % 2 else "kip", "text": "y" * 1000} for i in range(30)]
     # Includes Kip's identity and the per-reply stance line (the character's whole runtime cost).
     voice = Persona().voice_view(speaker=None, message="z" * 2000)
-    messages = build_messages("Kip", voice, memories, {"room": "hall", "inventory": []}, turns, "z" * 2000)
+    messages = build_messages("Kip", voice, memories, {"now": "Sunday 1 November 2026", "current_errand": "none"}, turns, "z" * 2000)
     from app.chat.context import message_tokens
     assert message_tokens(messages) <= 6000
     # History is selected by budget, not an arbitrary turn count or character slice.
@@ -259,9 +298,9 @@ async def test_close_cancels_generation_and_pending_messages_without_starting_wo
 @pytest.mark.asyncio
 async def test_reset_discards_old_pending_work_and_accepts_new_chat():
     session, _, manager, _ = make_session([reply("Hello again.")])
-    session.pending_goals.append("Old world errand")
+    session.pending_goals.append("Old errand")
     await session.reset_pending()
-    session.submit("New world")
+    session.submit("Fresh start")
     await session.drain()
     assert session.history()[-1]["text"] == "Hello again."
     assert not session.pending_goals and manager.active_id is None
@@ -269,21 +308,11 @@ async def test_reset_discards_old_pending_work_and_accepts_new_chat():
 
 def test_memory_tags_match_names_and_ids_without_substring_collisions():
     session, _, _, _ = make_session([])
-    session.engine = WorldEngine()
+    for person in ("neave", "paul", "minu"):
+        session.persona.state.relationships[person] = Relationship()
     assert "minu" not in session._mentioned("Calculate the minutes; minimum effort.")
     assert "paul" not in session._mentioned("Pauline likes tea.")
     assert set(session._mentioned("MINU, could you ask Neave's friend Paul?")) == {"neave", "paul", "minu"}
-
-
-@pytest.mark.asyncio
-async def test_idle_mind_waits_while_a_conversation_is_active():
-    session, model, manager, _ = make_session([reply("Hi!")])
-    mind = AgentMind(model, manager, manager.tools._engine, manager.bus, Settings(), chat=session)
-    assert not mind._in_conversation()
-    session.submit("Hello")
-    assert mind._in_conversation()
-    await session.drain()
-    assert mind._in_conversation()  # still within the quiet period
 
 
 @pytest.mark.asyncio
@@ -342,8 +371,127 @@ async def test_ollama_streams_ndjson():
     client = OllamaClient(Settings())
     client.http = httpx.AsyncClient(transport=httpx.MockTransport(respond), base_url="http://ollama")
     assert "".join([chunk async for chunk in client.stream_text([{"role": "user", "content": "hi"}])]) == "Hi there"
-    assert seen["stream"] is True and "format" not in seen
+    assert seen["stream"] is True and "format" not in seen and "keep_alive" not in seen
     await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("setting,sent", [("-1", -1), ("30m", "30m")])
+async def test_ollama_keeps_the_model_loaded_when_asked(setting, sent):
+    """On a Pi, reloading a model from a microSD card after Ollama's 5 idle minutes takes tens of seconds."""
+    bodies = []
+
+    def respond(request):
+        bodies.append(json.loads(request.content))
+        if bodies[-1]["stream"]:
+            return httpx.Response(200, text=json.dumps({"message": {"content": "Hi"}, "done": True}))
+        return httpx.Response(200, json={"message": {"content": "{}"}})
+    client = OllamaClient(Settings(ollama_keep_alive=setting))
+    client.http = httpx.AsyncClient(transport=httpx.MockTransport(respond), base_url="http://ollama")
+    assert "".join([chunk async for chunk in client.stream_text([{"role": "user", "content": "hi"}])]) == "Hi"
+    await client.generate([{"role": "user", "content": "JSON"}], {"title": "GoalPlan"})
+    assert [body["keep_alive"] for body in bodies] == [sent, sent]
+    await client.close()
+
+
+def test_the_compact_prompt_keeps_the_character_and_contract_in_a_third_of_the_size():
+    voice = Persona().voice_view(speaker=None, message="hi")
+    status = {"now": "Saturday 14 November 2026, 12:31", "talking_with": "Neave", "current_errand": "none",
+              "my_tools": "available: search the web, read webpages, run Python",
+              "recent_errands": [{"goal": "one"}, {"goal": "two"}], "queued_errands": []}
+    memories = [{"kind": "fact", "text": "Neave's favourite fruit is mango."}, {"kind": "fact", "text": "x" * 301},
+                {"kind": "fact", "text": "Neave supports McLaren."}, {"kind": "fact", "text": "Neave has a cat."}]
+    turns = [{"id": str(i), "role": "user" if i % 2 == 0 else "kip", "text": "words " * 40} for i in range(20)]
+    full = build_messages("Kip", voice, memories, status, turns, "What's my favourite fruit?")
+    compact = build_messages("Kip", voice, memories, status, turns, "What's my favourite fruit?",
+                             compact=True, history_tokens=200)
+    system, latest = compact[0]["content"], compact[-1]["content"]
+    assert len(system) * 3 < len(full[0]["content"]) and "Rocky" in system and "', question?'" in system
+    assert '{"task": "", "offer": "", "remember": [], "forget": []}' in system  # the same action line
+    # Two whole memories at most; one too long to keep whole is left out, never cut.
+    assert "mango" in latest and "McLaren" in latest and "cat" not in latest and "x" * 50 not in latest
+    assert '"recent_errands":[{"goal":"two"}]' in latest and "queued_errands" not in latest
+    assert len(compact) - 2 < len(full) - 2  # less history
+    # The system message is the same every reply, so a local server can keep it cached.
+    again = build_messages("Kip", Persona().voice_view(speaker="neave", message="other"), [], status, [],
+                           "Hello", compact=True)
+    assert again[0]["content"] == system
+
+
+def test_a_long_message_is_never_refused_by_the_compact_history_budget():
+    long = "Please read this carefully. " * 300
+    messages = build_messages("Kip", Persona().voice_view(speaker=None, message=long), [], {"now": "x"},
+                              [], long, compact=True, history_tokens=0)
+    assert messages[-1]["content"].count("Please read this carefully.") == 300
+
+
+class GroqAnswered(StreamingModel):
+    """Replies as HostedChat reports them when Groq wrote them."""
+
+    async def stream_text(self, messages, max_tokens=300, temperature=None):
+        async for chunk in super().stream_text(messages, max_tokens, temperature):
+            yield chunk
+        self.last_metrics = {**self.last_metrics, "provider": "groq"}
+
+
+def session_with_settings(model, **overrides):
+    bus, settings = EventBus(), Settings(**overrides)
+    manager, store = TaskManager(model, bus, settings), MemoryStore(":memory:")
+    session = ChatSession(model, bus, manager, settings, store=store, persona=Persona())
+    session.attach()
+    return session, manager, store
+
+
+@pytest.mark.asyncio
+async def test_a_small_local_models_errands_are_ignored_but_its_memories_kept():
+    """Live, Groq off: the 2B model put task "What is your favorite thing?" after "remember mango";
+    it became an offer, and the next ten minutes of questions counted as answers to it."""
+    model = StreamingModel([reply("Mango. Good.", task="What is your favorite thing?",
+                                  remember=["Neave's favourite fruit is mango."])])
+    session, manager, store = session_with_settings(model, local_chat_errands=False)
+    session.submit("Remember that my favourite fruit is mango.")
+    await session.drain()
+    assert manager.active_id is None and session.pending_offer is None
+    assert any("mango" in memory["text"] for memory in store.recent(10))
+    await session.close()
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_groq_written_errands_still_start_when_local_ones_are_ignored():
+    model = GroqAnswered([reply("Keys. I look.", task="Find the missing keys.")])
+    session, manager, _ = session_with_settings(model, local_chat_errands=False)
+    session.submit("Could you find my keys?")
+    await session.drain()
+    assert manager.active()["goal"] == "Find the missing keys."
+    await manager.cancel(manager.active_id)
+    await session.close()
+    await manager.close()
+
+
+def test_one_bad_memory_does_not_lose_the_rest_of_the_action_line():
+    from app.chat.prompt import parse_reply
+    parsed = parse_reply("Ok.\n###\n" + json.dumps({"task": "Find the keys.", "remember": [
+        {"text": "x", "context": "a feeling"}, {"text": "Neave likes mango."}]}))
+    assert parsed.action.task == "Find the keys."
+    assert [item.text for item in parsed.action.remember] == ["Neave likes mango."]
+
+
+@pytest.mark.asyncio
+async def test_a_compact_session_sends_the_compact_prompt_and_still_acts_on_the_action_line():
+    bus, settings = EventBus(), Settings(prompt_profile="compact")
+    model = StreamingModel([reply("Kiwi. Good taste.", remember=["Neave likes kiwi."])])
+    manager, store = TaskManager(model, bus, settings), MemoryStore(":memory:")
+    session = ChatSession(model, bus, manager, settings, store=store, persona=Persona())
+    session.attach()
+    session.submit("I like kiwi.")
+    await session.drain()
+    system = model.prompts[0][0]["content"]
+    assert system.startswith("You are Kip") and len(system) < 2200
+    assert session.history()[-1]["text"] == "Kiwi. Good taste."
+    assert any("kiwi" in memory["text"] for memory in store.recent(10))
+    await session.close()
+    await manager.close()
 
 
 def test_chat_and_memories_api():
@@ -419,50 +567,15 @@ async def test_corrections_retract_the_wrong_memory_only():
     assert active() == ["Paul is allergic to peanuts."]
 
 
-LIVE_KEYS_TASK = {"goal": "Find the keys", "summary": "Checking goal completion against tool evidence.",
-                  "task_memory": {"visited_rooms": ["kitchen"], "observed_rooms": {"kitchen": {}},
-                                  "people": {"moira": {"name": "Moira", "location": "hall"}},
-                                  "objects": {"keys": {"name": "Keys", "location": {"kind": "room", "id": "kitchen"}}},
-                                  "completed_outcomes": [{"kind": "find_object", "object": "keys", "satisfied": True}]}}
-
-
-def test_status_reports_real_errand_progress_and_known_people():
-    from app.chat.session import errand_progress, known_people
-    from app.memory.store import PersistentMemory, PersonMemory
-    progress = errand_progress(LIVE_KEYS_TASK)
-    assert progress["rooms_looked_in"] == ["kitchen"]
-    assert progress["objects_found"] == {"Keys": "in the kitchen"}
-    assert progress["people_seen"] == {"Moira": "in the hall"}
-    memory = PersistentMemory(people={"paul": PersonMemory(name="Paul", last_seen_room="office"),
-                                      "minu": PersonMemory(name="Minu")})
-    assert known_people(memory) == {"Paul": "last seen in the office", "Minu": ""}
-    status_prompt = build_messages("Kip", None, [], {"current_errand": progress, "people_i_know": known_people(memory)},
-                                   [], "Who lives here?")[-1]["content"]
-    assert "Paul" in status_prompt and "in the kitchen" in status_prompt
-
-
-@pytest.mark.asyncio
-async def test_finished_errands_describe_what_was_seen_without_stock_openers():
-    session, model, manager, _ = make_session([])
-    manager.bus.emit("task_completed", task=LIVE_KEYS_TASK, summary="The goal is satisfied.")
-    text = session.history()[-1]["text"]
-    # Each room with what was actually in it; people seen elsewhere are reported separately.
-    assert text == "I looked in the kitchen (the keys). I saw Moira in the hall."
-    assert "All done" not in text and "goal" not in text
-
-
-def test_checking_a_room_requires_looking_at_it():
-    from app.agents.schemas import GoalCondition
-    from app.tasks.goals import check_conditions
-    from app.tasks.models import TaskContext
-    context = TaskContext(goal="Check the kitchen")
-    context.conditions = [GoalCondition(kind="visit_room", room="kitchen")]
-    context.record("move_to", {"room": "kitchen"},
-                   {"success": True, "observation": {"from_room": "hall", "room": "kitchen"}, "evidence_id": "m"})
-    assert not check_conditions(context)[0]["satisfied"]
-    context.record("look", {}, {"success": True, "evidence_id": "l", "observation": {
-        "room": "kitchen", "connections": ["hall"], "people": [], "objects": [], "held_objects": []}})
-    assert check_conditions(context)[0]["satisfied"]
+def test_status_reports_real_errand_progress():
+    from app.chat.session import errand_progress
+    task = {"goal": "Look up the library's opening hours", "summary": "Checking the answer against its source.",
+            "conditions": [{"kind": "answer", "satisfied": True}, {"kind": "answer", "satisfied": False}]}
+    progress = errand_progress(task)
+    assert progress == {"goal": "Look up the library's opening hours", "outcomes_done": ["answer"],
+                        "latest": "Checking the answer against its source."}
+    status_prompt = build_messages("Kip", None, [], {"current_errand": progress}, [], "How's it going?")[-1]["content"]
+    assert "opening hours" in status_prompt and "Checking the answer" in status_prompt
 
 
 # ── pass 1: consent is enforced in code ──────────────────────────────────────

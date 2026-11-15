@@ -20,9 +20,15 @@ class Settings(BaseSettings):
     # web-research tasks). Free-tier limits are per model, so several are listed and
     # the first with quota left is used. Without a key, everything stays on Colibri.
     groq_api_key: SecretStr | None = None
+    # CricketData.org (CricAPI): cricket results, live scores and fixtures for a week or more either
+    # side, 100 requests a day free. Unset: ESPN's scoreboard (no key, unofficial, a few days) only.
+    cricketdata_api_key: SecretStr | None = None
     groq_base_url: str = "https://api.groq.com/openai/v1"
     groq_models: str = "openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b"
     groq_timeout_seconds: float = Field(default=60, gt=0)
+    # When every Groq model is rate-limited and one frees within this long, a task call waits
+    # for it (once) instead of falling back to the local model, which can take minutes.
+    groq_max_wait_seconds: float = Field(default=20, ge=0, le=120)
     groq_max_output_tokens: int = Field(default=4096, ge=256, le=32768)
     # Hard caps: Groq calls per goal plan, and per web-research task. Past a cap, or
     # whenever Groq cannot serve a call, Colibri carries on.
@@ -34,47 +40,35 @@ class Settings(BaseSettings):
     # How hard Groq's browser search thinks. Each extra step re-reads every page read so far.
     groq_search_reasoning: Literal["low", "medium", "high"] = "low"
     groq_chat_models: str = "qwen/qwen3.8-27b,openai/gpt-oss-20b"
-    world_file: Path | None = None
     # Legacy JSON stores: imported into memory_db_file once, then never read or written.
     memory_file: Path = _BACKEND_DIR / "memory" / "persistent.json"
     graph_file: Path = _BACKEND_DIR / "memory" / "beliefs.json"
+    # How long Ollama keeps the model loaded after a call ("-1": always, "30m", ...). Empty: Ollama's
+    # default (5 minutes). On a Pi, reloading a model from a microSD card takes tens of seconds.
+    ollama_keep_alive: str = ""
     llm_timeout_seconds: float = Field(default=120, gt=0)
     task_timeout_seconds: float = Field(default=1800, gt=0)
     temperature: float = Field(default=0.1, ge=0, le=1)
     context_tokens: int = Field(default=8192, ge=2048, le=32768)
     decision_thinking: bool = False
-    direct_initial_delegation: bool = False
     digital_tools_enabled: bool = True
     decision_output_tokens: int = Field(default=4096, ge=1024, le=16384)
     max_coordinator_cycles: int = Field(default=20, ge=1, le=100)
     # A hard safety ceiling, not the normal way a delegation ends. Healthy work
-    # stops on completion, blockage or semantic stall long before this.
+    # stops on completion or blockage long before this.
     max_explorer_actions: int = Field(default=40, ge=1, le=200)
     max_tool_calls: int = Field(default=80, ge=1, le=400)
     max_critic_reviews: int = Field(default=8, ge=1, le=20)
-    # Physical actions yielding no semantic progress before the strategy is replanned.
-    max_semantic_stall: int = Field(default=3, ge=1, le=20)
     # Reasoning budgets. They stop loops that make no progress; long tasks that keep
     # producing new evidence are bounded only by the wall-clock timeout.
     max_task_llm_calls: int = Field(default=60, ge=5, le=500)
     max_consecutive_rejections: int = Field(default=6, ge=2, le=50)
     max_cycles_without_progress: int = Field(default=5, ge=2, le=50)
     max_critic_disagreements: int = Field(default=3, ge=1, le=20)
-    # Actions after which a room scan is treated as stale and worth repeating.
-    search_stale_after: int = Field(default=12, ge=1, le=200)
     log_level: str = "INFO"
-    # The house clock. device: the machine's own local time (the real Kip). realtime: a
-    # simulated day at clock_speed from clock_start_hour. action_driven: advances per action.
-    simulation_mode: Literal["device", "realtime", "action_driven"] = "device"
-    clock_speed: float = Field(default=60.0, gt=0)   # 1 real second = 1 simulated minute
-    clock_start_hour: float = Field(default=8.0, ge=0, lt=24)
-    action_seconds: float = Field(default=60.0, gt=0)  # simulated seconds per action
-    # Idle autonomous loop
-    idle_reflection_enabled: bool = True
-    idle_tick_seconds: float = Field(default=5.0, gt=0)
-    idle_reflection_interval: float = Field(default=120.0, gt=0)
-    intention_threshold: float = Field(default=0.6, ge=0, le=1)
-    drive_helpfulness: float = Field(default=0.8, ge=0, le=1)
+    # Every time Kip says or reasons with is in this zone, whatever the device's clock is set to
+    # (a Raspberry Pi often runs on UTC). An IANA name.
+    timezone: str = "Asia/Kolkata"
     # Conversation with Kip. Leave chat_* unset to chat with the main model; set e.g.
     # CHAT_PROVIDER=ollama CHAT_MODEL=qwen3:4b for a fast, separate chat model.
     chat_provider: Literal["colibri", "ollama"] | None = None
@@ -82,26 +76,32 @@ class Settings(BaseSettings):
     chat_base_url: str | None = None
     # Brevity comes from the prompt, not a 300-token ceiling on complex answers.
     chat_max_tokens: int = Field(default=1200, ge=50, le=16384)
-    # Stable legacy household conversation. Separate IDs at the ChatSession boundary
-    # isolate transcripts; they are not user authentication or independent robots.
+    # One ongoing conversation. Separate IDs at the ChatSession boundary isolate
+    # transcripts; they are not user authentication.
     chat_session_id: str = Field(default="home", min_length=1, max_length=100)
     chat_context_tokens: int = Field(default=6000, ge=1024, le=32768)
+    # full: the whole character sheet and rules (~2,000+ tokens a reply). compact: the same character,
+    # rules and action line in a few hundred tokens, at most 2 memories and a short history, for small
+    # local models (a Raspberry Pi reads a prompt at ~5-25 tokens/s). Groq gets the same prompt either way.
+    prompt_profile: Literal["full", "compact"] = "full"
+    # false: a reply written by the local model keeps its memories, but its task and offer are dropped;
+    # errands then start only from the person's own words (tool requests, live questions, a yes to an
+    # offer). For small local models, whose errands can be nonsense. Groq-written replies are unaffected.
+    local_chat_errands: bool = True
+    # Earlier turns the compact prompt carries. A long message itself is never refused for it.
+    compact_history_tokens: int = Field(default=600, ge=0, le=8192)
     chat_temperature: float = Field(default=0.6, ge=0, le=1.5)
     # confirm: errands start only when asked or after a yes to Kip's offer.
     # act: any errand the chat model proposes starts immediately (less safe).
     chat_autonomy: Literal["confirm", "act"] = "confirm"
-    # Seconds after the last chat activity before the idle mind may use the model again.
-    chat_quiet_seconds: float = Field(default=90.0, ge=0)
     # How long an offer Kip made can still be accepted with a plain "yes".
     chat_offer_seconds: float = Field(default=600.0, gt=0)
-    # Person id assumed to be talking when the UI does not say (empty = unknown speaker).
+    # Who is talking when nobody has said (e.g. "neave"); empty = unknown until they give a name.
     chat_default_speaker: str = ""
     # Local intent router (app/chat/router.py). shadow: it reads every message and records what
     # it would have done next to what the usual path did, changing nothing. on: it decides which
     # live-information questions go straight to the web lookup, and resolves follow-ups.
     intent_router: Literal["off", "shadow", "on"] = "on"
-    # Idle initiative: may the idle mind start errands on its own?
-    autonomous_errands: bool = True
     # Kip's durable store: searchable memories (FTS5 + sqlite-vec) and structured state
     memory_db_file: Path = _BACKEND_DIR / "memory" / "kip.db"
     embeddings_enabled: bool = True

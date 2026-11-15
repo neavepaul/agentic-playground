@@ -6,29 +6,23 @@ touches stores outside the test sandbox.
 """
 import asyncio
 import json
-from pathlib import Path
 
 import pytest
 
-from app.chat.evidence import capabilities, contradicted_presence, last_seen
+from app.chat.evidence import capabilities
 from app.chat.intent import read_intent
 from app.chat.prompt import CHAT_SYSTEM
-from app.chat.session import ChatSession, describe_findings
+from app.chat.session import ChatSession
 from app.config import Settings
 from app.events.bus import EventBus
 from app.llm.priority import ConversationFirst
 from app.memory.recall import MemoryStore
-from app.memory.store import PersistentMemory, PersonMemory
 from app.persona import Persona
+from app.persona.state import Relationship
 from app.persona.profile import IDENTITY
 from app.tasks.manager import TaskManager
 from app.tasks.models import TaskContext
-from app.tasks.permissions import Grant
-from app.world.engine import WorldEngine
-from app.world.tools import WorldTools
-from tests.test_permissions import LEGACY_WORLD, Model, physical, said, settle
-
-HOUSE_WORLD = Path(__file__).resolve().parents[1] / "worlds" / "house.json"
+from tests.test_permissions import Model, said, settle
 
 
 class PlanningModel(Model):
@@ -44,6 +38,9 @@ class PlanningModel(Model):
         if title == "GoalPlan" and self.initial:
             return json.dumps({"summary": "Planned.", "conditions": self.conditions or [{"kind": "answer"}],
                                "initial_actions": self.initial})
+        program = next((a["arguments"]["code"] for a in self.initial if a["tool"] == "run_python"), None)
+        if title == "PythonProgram" and program:
+            return json.dumps({"code": program})  # a Python-only request: just the code
         return await super().generate(messages, response_schema)
 
 
@@ -69,21 +66,14 @@ def ran(monkeypatch):
     monkeypatch.setattr(capabilities_module, "web_search", search)
     monkeypatch.setattr(capabilities_module, "read_webpage", read)
     monkeypatch.setattr(capabilities_module, "run_python", python)
-    original = WorldTools.execute
-
-    def execute(self, name, arguments, task_id=None):
-        calls.append(name)
-        return original(self, name, arguments, task_id)
-
-    monkeypatch.setattr(WorldTools, "execute", execute)
     return calls
 
 
-def session_with(model, world=LEGACY_WORLD, persistent=None, persona=None, settings=None):
-    engine, bus = WorldEngine(world), EventBus()
-    settings = settings or Settings(direct_initial_delegation=True)
-    manager = TaskManager(model, WorldTools(engine, bus), bus, settings, persistent, persona=persona)
-    session = ChatSession(model, bus, manager, engine, settings, store=MemoryStore(":memory:"), persona=persona)
+def session_with(model, persistent=None, persona=None, settings=None):
+    bus = EventBus()
+    settings = settings or Settings()
+    manager = TaskManager(model, bus, settings, persistent, persona=persona)
+    session = ChatSession(model, bus, manager, settings, store=MemoryStore(":memory:"), persona=persona)
     session.attach()
     return session, manager
 
@@ -101,25 +91,32 @@ def latest_prompt(model):
     return model.prompts[-1][-1]["content"]
 
 
+def knowing(*people):
+    """Kip's persona, already acquainted with these people."""
+    persona = Persona()
+    for person in people:
+        persona.state.relationships[person] = Relationship()
+    return persona
+
+
 # ── 1. execution truthfulness ──────────────────────────────────────────────────
 @pytest.mark.asyncio
-async def test_asking_to_run_python_runs_it_and_fabricated_output_is_corrected(ran):
+async def test_asking_to_run_python_runs_it_with_no_chat_reply_to_fabricate_output(ran):
     fabricated = "Here it is:\n```python\nprint(3 * 60 * 60)\n```\nOutput: 10800"
     model = PlanningModel([said(fabricated)], conditions=[{"kind": "answer", "required_tools": ["run_python"]}],
                           initial=[{"tool": "run_python", "arguments": {"code": "print(3 * 60 * 60)"}}])
     session, manager = session_with(model)
     session.submit("Please actually run Python for 3 * 60 * 60 and show me the code and output.")
     await settle(session, manager)
-    assert "Never write its result" in latest_prompt(model)  # told before replying
-    correction = kip_lines(session, "correction")
-    assert correction and "no Python has run for that" in correction[0] and "running now" in correction[0]
+    # An explicit tool request goes straight to the errand: no chat reply, so no output to invent.
+    assert model.prompts == [] and not kip_lines(session, "correction")
     await manager.runner
     task = next(iter(manager.tasks.values()))
     assert task.requested_tools == ["run_python"] and task.status == "completed"
     assert ran.count("run_python") == 1
     assert task.answer["answer"] == "Ran the numbers: 10800."  # said aloud: the result, not the code
     assert kip_lines(session, "narration")[-1] == task.answer["answer"]
-    assert model.titles.count("GoalPlan") == 1 and len(model.titles) == 1  # no extra model call to restate it
+    assert model.titles == ["PythonProgram"]  # one narrow call; no extra model call to restate it
     await done(session, manager)
 
 
@@ -187,7 +184,8 @@ async def test_a_failed_run_is_never_claimed_as_a_success(ran, monkeypatch):
     session, manager = session_with(model)
     session.submit("Run Python for 2 + 2 please.")
     await settle(session, manager)
-    assert any("no Python has run for that" in line for line in kip_lines(session, "correction"))
+    assert model.prompts == []  # no chat reply, so no "I ran it and the output was 4"
+    assert not any("output was 4" in t["text"] for t in session.history())
     task = next(iter(manager.tasks.values()))
     assert not any(e["tool"] == "run_python" and e["success"] for e in task.action_history)
     assert task.answer is None
@@ -199,22 +197,60 @@ async def test_a_failed_run_is_never_claimed_as_a_success(ran, monkeypatch):
 async def test_kip_knows_his_working_tools_and_corrects_a_false_denial(ran):
     model = PlanningModel([said("I don't have access to external websites, so I can't check.")])
     session, manager = session_with(model)
-    session.submit("What is on https://example.com, with a short summary passed along to Paul?")
+    # Names no tool, so it gets a chat reply (an explicit URL would start the read at once).
+    session.submit("Can you look up what example.com is for, and pass a summary to Paul?")
     await settle(session, manager)
     assert "available: search the web, read webpages, run Python" in latest_prompt(model)
     assert "I can search the web and read webpages" in kip_lines(session, "correction")[0]
+    await done(session, manager)
+
+
+@pytest.mark.asyncio
+async def test_a_python_request_needs_one_narrow_call_for_the_code(ran):
+    """Live, Groq off: the 2B model's plan and ten more calls never produced working code. Asked
+    only for the code, a small model has one job."""
+    model = PlanningModel([], task=[{"code": "print((12 + 18 + 21 + 29) / 4)"}])
+    session, manager = session_with(model)
+    session.submit("Use Python to calculate the average of 12, 18, 21 and 29.")
+    await settle(session, manager)
+    await asyncio.wait_for(asyncio.shield(manager.runner), 5)  # an unscripted model call waits forever
+    task = next(iter(manager.tasks.values()))
+    assert task.status == "completed" and "20.0" in task.answer["answer"]
+    assert model.titles == ["PythonProgram"] and ran == ["run_python"]
+    await done(session, manager)
+
+
+@pytest.mark.asyncio
+async def test_reading_a_named_page_needs_no_planning_call(ran):
+    """A small local model takes minutes per call: a read of one named page has a known plan."""
+    model = PlanningModel([], task=[json.dumps({"action": "answer", "answer": "Example Domain: for docs.",
+                                               "evidence": ["e1"]})])
+    session, manager = session_with(model)
+    session.submit("Read https://example.com and tell me what it says.")
+    await settle(session, manager)
+    assert "read_webpage" in ran and "GoalPlan" not in model.titles
+    assert next(iter(manager.tasks.values())).requested_tools == ["read_webpage"]
+    await done(session, manager)
+
+
+@pytest.mark.asyncio
+async def test_a_question_naming_a_page_reads_it_at_once_and_read_only(ran):
+    model = PlanningModel([])
+    session, manager = session_with(model)
+    session.submit("What is on https://example.com, with a short summary passed along to Paul?")
+    await settle(session, manager)
     task = next(iter(manager.tasks.values()))  # the page read was started from their own words
     assert task.grant.source == "question" and task.requested_tools == ["read_webpage"]
+    assert model.prompts == []
     await done(session, manager)
 
 
 def test_the_tool_line_reflects_restrictions_switches_and_failures():
-    engine, bus = WorldEngine(LEGACY_WORLD), EventBus()
-    manager = TaskManager(Model(), WorldTools(engine, bus), bus, Settings())
-    assert capabilities(manager, Settings()).startswith("available: search the web, read webpages, run Python")
-    manager.restrictions.update("Don't read any webpages, and don't go into the kitchen", {"kitchen": "Kitchen"})
+    manager = TaskManager(Model(), EventBus(), Settings())
+    assert capabilities(manager, Settings()) == "available: search the web, read webpages, run Python"
+    manager.restrictions.update("Don't read any webpages")
     line = capabilities(manager, Settings())
-    assert "you asked me not to: read webpages" in line and "(not the kitchen)" in line
+    assert "you asked me not to: read webpages" in line and "available: search the web, run Python" in line
     task = TaskContext(goal="x")
     task.action_history.append({"tool": "web_search", "success": False, "error": "Search provider unavailable"})
     manager.tasks[task.id] = task
@@ -237,7 +273,7 @@ async def test_lifting_a_restriction_and_declining_replays_nothing(ran):
     session.submit("No thanks. You can use Python again.")
     await settle(session, manager)
     assert "Acknowledge in a word or two" in latest_prompt(model)
-    assert not manager.tasks and not ran                       # no replayed calculation, no trip
+    assert not manager.tasks and not ran                       # no replayed calculation, no errand
     assert session.pending_offer is None and not manager.restrictions
     assert any("no Python has run for that" in line for line in kip_lines(session, "correction"))
     await done(session, manager)
@@ -278,67 +314,11 @@ async def test_asking_for_an_offer_with_wait_for_me_registers_the_offer(ran):
     await done(session, manager)
 
 
-# ── 4. claims grounded in evidence ─────────────────────────────────────────────
-def _office_checked(manager):
-    """Kip really looked in the office (an empty room), as in the live run."""
-    task = TaskContext(goal="Check the office for current items", status="completed")
-    task.action_history.append({"tool": "look", "success": True, "observed_at": "06:04", "evidence_id": "e1",
-                                "observation": {"room": "office", "connections": ["entrance"], "people": [],
-                                                "objects": [], "held_objects": []}})
-    manager.tasks[task.id] = task
-
-
-@pytest.mark.asyncio
-async def test_an_empty_office_cannot_support_a_claim_that_paul_was_there(ran):
-    memory = PersistentMemory(people={"paul": PersonMemory(name="Paul", last_seen_room="office")})
-    model = PlanningModel([said("I didn't speak to Paul. He was in the office, but I kept my distance.")])
-    session, manager = session_with(model, world=HOUSE_WORLD, persistent=memory)
-    _office_checked(manager)
-    world = manager.tools._engine.snapshot()
-    assert last_seen(manager, world)["Paul"] == ("older record only: last seen in the office; "
-                                                 "not there when I looked at 06:04")
-    session.submit("What did you actually do today, and did you speak to Paul?")
-    await settle(session, manager)
-    prompt = latest_prompt(model)
-    assert "not there when I looked at 06:04" in prompt and "the office: nobody there" in prompt
-    correction = kip_lines(session, "correction")[0]
-    assert "when I looked in the office at 06:04, Paul wasn't there" in correction
-    await done(session, manager)
-
-
-def test_hedged_or_supported_presence_is_not_flagged():
-    engine, bus = WorldEngine(HOUSE_WORLD), EventBus()
-    manager = TaskManager(Model(), WorldTools(engine, bus), bus, Settings())
-    _office_checked(manager)
-    world = engine.snapshot()
-    for reply in ("Paul is usually in the office.", "My older record has Paul in the office.",
-                  "Paul might be in the kitchen.", "I checked the office."):
-        assert contradicted_presence(reply, manager, world) == [], reply
-    assert contradicted_presence("Paul was in the office.", manager, world) == [("paul", "office")]
-
-
-# ── 5. goal completeness ────────────────────────────────────────────────────────
-@pytest.mark.asyncio
-async def test_a_room_check_reports_what_was_actually_in_the_room(ran):
-    engine, bus = WorldEngine(LEGACY_WORLD), EventBus()
-    manager = TaskManager(Model(), WorldTools(engine, bus), bus, Settings())
-    task = manager.start("Look around the hall and tell me what is there", Grant.full("api", "x"))
-    observation = manager.call_tool(task, "look", {})["observation"]
-    text = describe_findings(task.public())
-    names = [p["name"] for p in observation["people"]] + [o["name"].lower() for o in observation["objects"]]
-    assert text.startswith("I looked in the hall (")
-    for name in names:
-        assert name in text
-    if not names:
-        assert "(empty)" in text
-    await manager.close()
-
-
-# ── 6. persona through conversation and tool handoffs ──────────────────────────
+# ── 4. persona through conversation and tool handoffs ──────────────────────────
 @pytest.mark.asyncio
 async def test_persona_reaches_the_conversation_and_an_introduction_names_the_speaker(ran):
-    model = PlanningModel([said("Neave. The house is still standing.")])
-    session, manager = session_with(model, persona=Persona())
+    model = PlanningModel([said("Neave. Everything is still standing.")])
+    session, manager = session_with(model, persona=knowing("neave"))
     session.submit("Hi Kip, it's Neave. How are you doing today?")
     await settle(session, manager)
     system, latest = model.prompts[-1][0]["content"], latest_prompt(model)
@@ -367,7 +347,7 @@ async def test_the_same_character_writes_the_answer_after_a_tool_handoff(ran):
     await done(session, manager)
 
 
-# ── 7. no errand-pushing in small talk ─────────────────────────────────────────
+# ── 5. no errand-pushing in small talk ─────────────────────────────────────────
 @pytest.mark.asyncio
 async def test_small_talk_does_not_keep_proposing_errands(ran):
     model = PlanningModel([said("Nice.", offer="Check the kitchen"), said("Mm.", offer="Tidy the study"),
@@ -380,12 +360,12 @@ async def test_small_talk_does_not_keep_proposing_errands(ran):
         offers.append(session.pending_offer)
     assert offers[0] == "Check the kitchen"
     assert offers[1:] == ["Check the kitchen"] * 3  # nothing piled on top; the same one never re-offered
-    assert "Small talk: no suggestions to do things around the house." in latest_prompt(model)
-    assert not manager.tasks and not physical(ran)
+    assert "Small talk: just talk; don't suggest errands." in latest_prompt(model)
+    assert not manager.tasks and not ran
     await done(session, manager)
 
 
-# ── 8. performance: a waiting person goes first ────────────────────────────────
+# ── 6. performance: a waiting person goes first ────────────────────────────────
 @pytest.mark.asyncio
 async def test_errand_model_calls_wait_while_someone_waits_for_a_reply():
     order = []
@@ -407,7 +387,7 @@ async def test_errand_model_calls_wait_while_someone_waits_for_a_reply():
     assert order == ["reply", "errand"] and gate.last_metrics == {}
 
 
-# ── 9. free to use the web and Python on his own ───────────────────────────────
+# ── 7. free to use the web and Python on his own ───────────────────────────────
 @pytest.mark.asyncio
 async def test_kip_runs_python_on_his_own_when_he_decides_it_helps(ran):
     model = PlanningModel([said("Let me count properly.", task="Use Python to calculate 366 * 24")],
@@ -425,7 +405,7 @@ async def test_kip_runs_python_on_his_own_when_he_decides_it_helps(ran):
 
 
 @pytest.mark.asyncio
-async def test_kip_looks_things_up_unasked_but_house_errands_still_wait_for_a_yes(ran):
+async def test_kip_looks_things_up_unasked_but_other_errands_still_wait_for_a_yes(ran):
     model = PlanningModel([said("Let me check.", offer="Search the web for today's weather in Mumbai"),
                            said("I could take a look.", offer="Check the kitchen")],
                           conditions=[{"kind": "answer", "required_tools": ["web_search"]}])
@@ -439,19 +419,18 @@ async def test_kip_looks_things_up_unasked_but_house_errands_still_wait_for_a_ye
     session.submit("Something smells odd downstairs.")
     await settle(session, manager)
     assert session.pending_offer == "Check the kitchen" and len(manager.tasks) == 1
-    assert not physical(ran)
     await done(session, manager)
 
 
-# ── 10. greetings: fresh each time, in his own voice ───────────────────────────
+# ── 8. greetings: fresh each time, in his own voice ───────────────────────────
 @pytest.mark.asyncio
 async def test_a_repeated_greeting_never_shows_kip_his_old_reply(ran):
-    old = "Better than yesterday, Neave. I'm just here in the hall. How is your morning going?"
-    model = PlanningModel([said(old), said("Still here. The hall hasn't moved either.")])
-    session, manager = session_with(model, world=HOUSE_WORLD, persona=Persona())
+    old = "Better than yesterday, Neave. Quiet morning so far. How is yours going?"
+    model = PlanningModel([said(old), said("Still here. The morning hasn't moved either.")])
+    session, manager = session_with(model, persona=knowing("neave"))
     session.submit("Hi Kip, it's Neave. How are you doing today?")
     await settle(session, manager)
-    again = ChatSession(model, session.bus, manager, session.engine, session.settings, store=session.store,
+    again = ChatSession(model, session.bus, manager, session.settings, store=session.store,
                         persona=session.persona)  # the next test run: same memory, new conversation
     again.attach()
     again.submit("Hi Kip, it's Neave. How are you doing today?")
@@ -464,19 +443,19 @@ async def test_a_repeated_greeting_never_shows_kip_his_old_reply(ran):
 
 
 @pytest.mark.asyncio
-async def test_a_housemates_greeting_invites_his_own_voice(ran):
+async def test_a_friends_greeting_invites_his_own_voice(ran):
     model = PlanningModel([said("Neave. Still upright.")])
-    session, manager = session_with(model, world=HOUSE_WORLD, persona=Persona())
+    session, manager = session_with(model, persona=knowing("neave"))
     session.submit("Hi Kip, it's Neave. How are you doing today?")
     await settle(session, manager)
     prompt = latest_prompt(model)
-    assert "You live with them" in prompt and "Humour suits this" in prompt
+    assert "A friend:" in prompt and "Humour suits this" in prompt
     assert "A greeting:" in prompt and "Don't ask them back unless you want to know" in prompt
     assert "barely know" not in prompt and "reserved" not in prompt
     await done(session, manager)
 
 
-# ── 11. a voice companion: live facts looked up, everything said aloud ─────────
+# ── 9. a voice companion: live facts looked up, everything said aloud ─────────
 @pytest.mark.asyncio
 async def test_live_facts_go_straight_to_the_lookup_and_its_answer_is_the_reply(ran):
     def answer(payload):
@@ -492,7 +471,7 @@ async def test_live_facts_go_straight_to_the_lookup_and_its_answer_is_the_reply(
     assert model.prompts == []
     task = next(iter(manager.tasks.values()))
     assert task.grant.source == "question" and task.status == "completed"
-    assert ran[:1] == ["web_search"] and "get_status" not in ran  # a web lookup never reads the house
+    assert ran[:1] == ["web_search"]
     assert "GoalPlan" not in model.titles  # the plan was known: no planning call
     lines = [t for t in session.history() if t["role"] == "kip"]
     assert [t["text"] for t in lines] == ["31°C and muggy, says the forecast. Umbrella optional."]
@@ -559,24 +538,16 @@ async def test_a_sports_question_after_small_talk_about_someone_is_still_looked_
         return {"summary": "Ready.", "action": {"tool": "finish_answer", "evidence_ids": ids,
                                                 "answer": "Next race is Sunday, says the calendar."}}
     model = PlanningModel([said("I check the web.")], task=[answer])
-    session, manager = session_with(model, world=HOUSE_WORLD)
+    session, manager = session_with(model, persona=knowing("moira"))
     session.submit("Ha, good to hear. Let Moira enjoy her book. Hey, when's the next F1 race? "
                    "And who's leading the championship right now?")
     await settle(session, manager)
-    assert session.offer is None  # not held for a yes: a lookup changes nothing in the house
+    assert session.offer is None  # not held for a yes: a lookup changes nothing
     await manager.runner
     task = next(iter(manager.tasks.values()))
     assert task.grant.source == "question" and task.status == "completed"
-    assert ran[:1] == ["web_search"] and "get_status" not in ran  # a web lookup never reads the house
+    assert ran[:1] == ["web_search"]
     await done(session, manager)
-
-
-def test_house_mentions_that_ask_for_something_still_make_a_lookup_house_work():
-    session, _ = session_with(PlanningModel([]), world=HOUSE_WORLD)
-    assert not session._involves_the_house("Let Moira enjoy her book. When's the next F1 race?")
-    assert session._involves_the_house("Tell Paul. When's the next F1 race?")
-    assert session._involves_the_house("When's the next F1 race? Then let Paul know.")
-    assert session._involves_the_house("What's the weather like for Moira's walk?")
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 /**
- * Personality panel — the robot's evolving traits, mood, relationships and
- * memorable moments, as reported by GET /api/persona.
+ * "Kip" tab — Kip's evolving mood, traits, track record, the people it knows and
+ * memorable moments, as reported by GET /api/persona and persona_updated events.
  */
 
 function el(tag, className, text) {
@@ -10,88 +10,124 @@ function el(tag, className, text) {
   return node;
 }
 
-function bar(label, value, baseline) {
-  const row = el('div', 'persona-bar');
-  row.append(el('span', 'persona-bar-label', label));
-  const track = el('span', 'persona-bar-track');
-  const fill = el('span', 'persona-bar-fill');
-  fill.style.width = `${Math.round(value * 100)}%`;
+const number = (value, fallback = 0) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
+const clamp = (value) => Math.max(0, Math.min(1, number(value)));
+const label = (name) => String(name).replace(/_/g, ' ');
+
+function meter(name, value, baseline) {
+  const row = el('div', 'meter');
+  row.append(el('span', 'meter-label', label(name)));
+  const track = el('span', 'meter-track');
+  track.setAttribute('role', 'meter');
+  track.setAttribute('aria-label', label(name));
+  track.setAttribute('aria-valuemin', '0');
+  track.setAttribute('aria-valuemax', '1');
+  track.setAttribute('aria-valuenow', clamp(value).toFixed(2));
+  const fill = el('span', 'meter-fill');
+  fill.style.width = `${Math.round(clamp(value) * 100)}%`;
   track.append(fill);
   if (baseline !== undefined) {
-    const mark = el('span', 'persona-bar-baseline');
-    mark.style.left = `${Math.round(baseline * 100)}%`;
-    mark.title = `Baseline ${baseline.toFixed(2)}`;
+    const mark = el('span', 'meter-baseline');
+    mark.style.left = `${Math.round(clamp(baseline) * 100)}%`;
+    mark.title = `Where Kip started: ${number(baseline).toFixed(2)}`;
     track.append(mark);
   }
-  row.append(track, el('span', 'persona-bar-value', value.toFixed(2)));
+  row.append(track, el('span', 'meter-value', number(value).toFixed(2)));
   return row;
 }
 
-function section(title) {
-  const wrap = el('section', 'persona-section');
-  wrap.append(el('span', 'eyebrow', title));
+function section(title, hint) {
+  const wrap = el('section', 'card-section');
+  const head = el('div', 'section-head');
+  head.append(el('h3', '', title));
+  if (hint) head.append(el('span', 'section-hint', hint));
+  wrap.append(head);
   return wrap;
 }
+
+function empty(text) { return el('p', 'section-empty', text); }
 
 export function renderPersona(panel, data) {
   panel.replaceChildren();
   if (!data || data.enabled === false) {
-    panel.append(el('p', 'beliefs-empty', 'The personality layer is turned off.'));
+    const box = el('div', 'panel-empty');
+    box.append(el('strong', '', 'Personality is off'), el('span', '', 'Kip is running without its personality layer.'));
+    panel.append(box);
     return;
   }
-  const head = el('div', 'persona-head');
-  head.append(el('strong', 'persona-name', data.name),
-              el('span', `persona-mood ${data.mood}`, data.mood),
-              el('span', 'subtle', data.tone));
-  panel.append(head);
 
-  const traits = section('TRAITS · drift from experience');
-  for (const [name, value] of Object.entries(data.traits)) {
-    traits.append(bar(name.replace('_', ' '), value, data.baseline[name]));
+  const hero = el('div', 'persona-hero');
+  hero.dataset.mood = data.mood || '';
+  const heading = el('div', 'persona-hero-text');
+  heading.append(el('span', 'persona-mood', data.mood ? `Feeling ${data.mood}` : 'Mood unknown'));
+  if (data.tone) heading.append(el('p', 'persona-tone', data.tone));
+  hero.append(heading);
+  panel.append(hero);
+
+  const now = section('Right now');
+  now.append(meter('mood', (number(data.valence) + 1) / 2), meter('energy', data.energy));
+  for (const [name, value] of Object.entries(data.affect || {})) now.append(meter(name, value));
+  panel.append(now);
+
+  const traits = Object.entries(data.traits || {});
+  if (traits.length) {
+    const block = section('Personality', 'drifts with experience');
+    for (const [name, value] of traits) block.append(meter(name, value, data.baseline?.[name]));
+    panel.append(block);
   }
-  panel.append(traits);
-
-  const affect = section('RIGHT NOW');
-  affect.append(bar('mood', (data.valence + 1) / 2), bar('energy', data.energy));
-  for (const [name, value] of Object.entries(data.affect || {})) affect.append(bar(name, value));
-  panel.append(affect);
 
   const record = Object.entries(data.track_record || {});
   if (record.length) {
-    const skills = section('TRACK RECORD');
-    for (const [skill, result] of record) skills.append(el('p', 'persona-moment', `${skill}: ${result}`));
-    panel.append(skills);
+    const block = section('Track record');
+    const list = el('ul', 'plain-list');
+    for (const [skill, result] of record) {
+      const item = el('li');
+      item.append(el('strong', '', label(skill)), el('span', '', String(result)));
+      list.append(item);
+    }
+    block.append(list);
+    panel.append(block);
   }
 
-  const people = section('RELATIONSHIPS');
-  const entries = Object.entries(data.relationships);
-  if (!entries.length) people.append(el('p', 'persona-empty', 'No one met yet.'));
-  for (const [person, bond] of entries) {
-    const card = el('div', 'persona-person');
-    const details = [`warmth ${bond.warmth.toFixed(2)}`, `familiarity ${bond.familiarity.toFixed(2)}`,
-                     `helped ${bond.times_helped}×`];
-    if (bond.chats) details.push(`${bond.chats} chats`);
-    if (bond.humour_reception !== undefined) details.push(`humour ${bond.humour_reception.toFixed(2)}`);
-    card.append(el('strong', '', person), el('span', 'subtle', details.join(' · ')));
-    if (bond.concern > 0.05) card.append(el('span', 'persona-moment', `concern ${bond.concern.toFixed(2)}`));
-    if (bond.do_not_disturb) card.append(el('span', 'persona-moment', 'asked for space'));
-    if (bond.moments.length) card.append(el('span', 'persona-moment', bond.moments.join(' · ')));
-    people.append(card);
+  const people = Object.entries(data.relationships || {});
+  const bonds = section('People Kip knows');
+  if (!people.length) bonds.append(empty('No one yet — say hello.'));
+  for (const [person, bond] of people) {
+    const card = el('div', 'person-card');
+    const top = el('div', 'person-top');
+    top.append(el('span', 'person-initial', String(person).charAt(0).toUpperCase()), el('strong', '', person));
+    const facts = [];
+    if (bond.chats) facts.push(`${bond.chats} chat${bond.chats === 1 ? '' : 's'}`);
+    if (bond.times_helped) facts.push(`helped ${bond.times_helped}×`);
+    if (bond.do_not_disturb) facts.push('asked for space');
+    if (facts.length) top.append(el('span', 'person-facts', facts.join(' · ')));
+    card.append(top, meter('warmth', bond.warmth), meter('familiarity', bond.familiarity));
+    if (number(bond.concern) > 0.05) card.append(meter('concern', bond.concern));
+    for (const moment of bond.moments || []) card.append(el('p', 'person-moment', moment));
+    bonds.append(card);
   }
-  panel.append(people);
+  panel.append(bonds);
 
-  const moments = section('MEMORABLE MOMENTS');
-  if (!data.moments.length) moments.append(el('p', 'persona-empty', 'Nothing memorable yet.'));
-  for (const moment of [...data.moments].reverse()) {
-    moments.append(el('p', 'persona-moment', `${moment.summary} (${moment.feeling})`));
-  }
-  if (data.noticed?.length) {
-    moments.append(el('span', 'eyebrow', 'NOTICED · unconfirmed'));
-    for (const note of data.noticed) moments.append(el('p', 'persona-moment', note));
-  }
-  if (data.followups.length) {
-    moments.append(el('span', 'eyebrow', 'PLANNED CHECK-INS'));
-    for (const followup of data.followups) moments.append(el('p', 'persona-moment', followup.reason));
+  const moments = section('Memorable moments');
+  const list = data.moments || [];
+  if (!list.length) moments.append(empty('Nothing memorable yet.'));
+  else {
+    const items = el('ul', 'moment-list');
+    for (const moment of [...list].reverse()) {
+      const item = el('li');
+      item.append(el('span', '', moment.summary));
+      if (moment.feeling) item.append(el('span', 'moment-feeling', moment.feeling));
+      items.append(item);
+    }
+    moments.append(items);
   }
   panel.append(moments);
+
+  if (data.followups?.length) {
+    const block = section('Planned check-ins');
+    const items = el('ul', 'moment-list');
+    for (const followup of data.followups) items.append(el('li', '', followup.reason));
+    block.append(items);
+    panel.append(block);
+  }
 }

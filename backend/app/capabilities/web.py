@@ -1,6 +1,7 @@
 """Bounded public-web access. Each connection is pinned to a checked DNS address."""
 import asyncio
 import ipaddress
+import logging
 import socket
 from urllib.parse import urljoin, urlsplit
 
@@ -109,20 +110,34 @@ def extract_page(body: str, url: str, start_char: int, html: bool = True) -> dic
             "untrusted_content": True}
 
 
+# Tried one at a time until one has results. Engines break independently: on some networks
+# DuckDuckGo answers with a bot check and Brave/Mojeek pages parse to nothing while Yahoo works.
+# Yahoo serves about a third of fresh sessions a page layout ddgs cannot read, independently
+# each time, so it gets three tries.
+SEARCH_BACKENDS = ("duckduckgo", "yahoo", "brave", "yahoo", "mojeek", "yahoo")
+
+
 def web_search(query: str) -> dict:
     # No API key required. Provider throttling is reported as a tool failure;
     # search snippets are never presented as pages we actually read.
     from ddgs import DDGS
 
-    results = DDGS(timeout=12).text(query, max_results=5, backend="duckduckgo,bing")
-    items = []
-    for item in results:
+    for backend in SEARCH_BACKENDS:
         try:
-            url = str(public_url(item.get("href", "")))
-        except (ValueError, httpx.InvalidURL):
+            # A fresh session each try: a retry on the same cookies gets the same page layout.
+            results = DDGS(timeout=12).text(query, max_results=5, backend=backend)
+        except Exception as exc:  # blocked, throttled or empty: the next engine may answer
+            logging.getLogger("agentic_friend.capabilities").info("search engine %s failed: %s",
+                                                                  backend, type(exc).__name__)
             continue
-        items.append({"title": item.get("title", "")[:250], "url": url,
-                      "snippet": item.get("body", "")[:600]})
-    if not items:
-        raise ValueError("Search returned no results. Try a more specific query or read a known public URL.")
-    return {"query": query, "results": items, "untrusted_content": True}
+        items = []
+        for item in results:
+            try:
+                url = str(public_url(item.get("href", "")))
+            except (ValueError, httpx.InvalidURL):
+                continue
+            items.append({"title": item.get("title", "")[:250], "url": url,
+                          "snippet": item.get("body", "")[:600]})
+        if items:
+            return {"query": query, "results": items, "untrusted_content": True}
+    raise ValueError("Search returned no results. Try a more specific query or read a known public URL.")

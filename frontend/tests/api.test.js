@@ -16,17 +16,17 @@ test('a JSON error detail is shown as written', async () => {
   await assert.rejects(api('/chat', { message: 'hi' }), /Conversation is shutting down\./);
 });
 
-test('validation errors get a neutral message (not "household goal" for chat)', async () => {
+test('validation errors get a neutral message (not a task-specific one for chat)', async () => {
   respond(422, JSON.stringify({ detail: [{ msg: 'String should have at least 1 character' }] }));
   await assert.rejects(api('/chat', { message: ' ' }), /check what you entered/);
 });
 
 test('a successful response that is not JSON is reported, not returned as garbage', async () => {
   respond(200, '<html>proxy page</html>');
-  await assert.rejects(api('/world'), /could not be read/);
+  await assert.rejects(api('/state'), /could not be read/);
 });
 
 test('a normal JSON response is returned', async () => {
   respond(200, JSON.stringify({ ok: true }));
-  assert.deepEqual(await api('/world'), { ok: true });
+  assert.deepEqual(await api('/state'), { ok: true });
 });

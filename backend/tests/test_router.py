@@ -31,8 +31,8 @@ def conversation(router, *messages):
     return route
 
 
-def allowed(route, text, web=True, house=False, **flags):
-    return fast_path(route, read_intent(text, **flags), web_allowed=web, involves_house=house)
+def allowed(route, text, web=True, **flags):
+    return fast_path(route, read_intent(text, **flags), web_allowed=web)
 
 
 # ── what a message means ───────────────────────────────────────────────────────
@@ -45,6 +45,17 @@ def test_where_did_lando_qualify_asks_for_a_grid_position_not_a_place(router):
     assert route.query == "Lando Norris qualifying position Mexico Grand Prix Formula 1 2026"
     assert "where" not in route.query.casefold()
     assert "a position, not a place" in route.meaning and "2026" in route.meaning
+
+
+def test_the_latest_race_is_searched_with_this_month_unless_an_event_is_named(router):
+    """Live: "who won the most recent F1 race" searched "... Formula 1 2026" and got October
+    reports, while the São Paulo race was on 8 November."""
+    route = router.route("who won the most recent f1 race?", today=date(2026, 11, 14))
+    assert route.time == "latest completed" and route.query.endswith("Formula 1 November 2026")
+    assert "the latest completed one before 14 November 2026" in route.meaning
+    # A named event's latest running may be in another month: just the year.
+    named = router.route("where did lando qualify in mexico?", today=date(2026, 11, 14))
+    assert named.query.endswith("Mexico Grand Prix Formula 1 2026")
     assert allowed(route, "where did lando qualify in mexico?")
 
 
@@ -132,11 +143,10 @@ def test_follow_ups_and_asides_are_not_corrections(router, text):
 
 
 # ── the gates the router never gets around ─────────────────────────────────────
-def test_cancellations_permissions_offers_tools_and_the_house_come_first(router):
+def test_cancellations_permissions_offers_and_tools_come_first(router):
     route = router.route("where did lando qualify?", today=TODAY)
     assert allowed(route, "where did lando qualify?")
     assert not allowed(route, "where did lando qualify?", web=False)       # web search ruled out
-    assert not allowed(route, "where did lando qualify?", house=True)      # mixed with a house errand
     # "Don't read webpages; where did...": the question still stands, the search is still allowed.
     assert allowed(route, "where did lando qualify?", revoked=["read_webpage"])
     assert not allowed(route, "where did lando qualify?", web=False, revoked=["web_search"])
@@ -195,8 +205,7 @@ def answering(text):
 @pytest.mark.asyncio
 async def test_shadow_mode_records_the_router_and_changes_nothing(ran):
     model = PlanningModel([said("Not sure. I check.")])
-    session, manager = session_with(model, settings=Settings(direct_initial_delegation=True,
-                                                             intent_router="shadow"))
+    session, manager = session_with(model, settings=Settings(intent_router="shadow"))
     session.submit("where did russell end up?")  # no live-fact word: the usual path replies first
     await settle(session, manager)
     assert len(model.prompts) == 1 and not manager.tasks
@@ -208,7 +217,7 @@ async def test_shadow_mode_records_the_router_and_changes_nothing(ran):
 @pytest.mark.asyncio
 async def test_on_the_router_sends_a_live_question_straight_to_a_lookup_of_what_it_means(ran):
     model = PlanningModel([], task=[answering("P6. Not his best day."), answering("Max P2.")])
-    session, manager = session_with(model, settings=Settings(direct_initial_delegation=True, intent_router="on"))
+    session, manager = session_with(model, settings=Settings(intent_router="on"))
     session.submit("where did russell end up?")
     await settle(session, manager)
     await manager.runner
@@ -239,7 +248,7 @@ async def test_on_a_pronoun_with_nobody_named_gets_a_question_back_without_a_mod
 @pytest.mark.asyncio
 async def test_on_a_correction_is_recorded_and_the_corrected_question_looked_up(ran):
     model = PlanningModel([], task=[answering("Lando P3."), answering("Lando P6 on grid.")])
-    session, manager = session_with(model, settings=Settings(direct_initial_delegation=True, intent_router="on"))
+    session, manager = session_with(model, settings=Settings(intent_router="on"))
     session.submit("where did lando qualify?")
     await settle(session, manager)
     await manager.runner
@@ -303,7 +312,7 @@ def test_bare_follow_ups_inherit_the_match_and_real_questions_stand_alone(router
 def test_kip_never_asks_permission_for_a_web_lookup():
     from app.chat.prompt import CHAT_SYSTEM
     from app.persona.profile import VOICE
-    assert "never ask whether to" in CHAT_SYSTEM and "offer to check" in CHAT_SYSTEM  # the house still asks
+    assert "never ask whether to" in CHAT_SYSTEM
     assert "look it up, question" not in VOICE
 
 
@@ -311,7 +320,7 @@ def test_kip_never_asks_permission_for_a_web_lookup():
 async def test_the_router_is_on_by_default_and_answers_the_match_and_its_follow_up(ran):
     assert Settings().intent_router == "on"
     model = PlanningModel([said("Twelve thirty. Hamilton.")], task=[answering("Twelve thirty today. Hamilton.")])
-    session, manager = session_with(model, settings=Settings(direct_initial_delegation=True))
+    session, manager = session_with(model, settings=Settings())
     session.submit("when is the india new zealand game starting")
     await settle(session, manager)
     await manager.runner
@@ -340,14 +349,17 @@ def test_other_time_questions_are_not_the_clock(text):
 
 
 @pytest.mark.asyncio
-async def test_the_clock_answers_the_time_but_what_time_after_a_match_question_means_the_match(ran):
-    from app.world.clock import WorldClock
+async def test_the_clock_answers_the_time_but_what_time_after_a_match_question_means_the_match(ran, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    import app.chat.session as session_module
+    from app.clock import spoken_time
+    moment = datetime(2026, 11, 1, 13, 15, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    monkeypatch.setattr(session_module, "spoken_time", lambda: spoken_time(moment))  # the device clock, fixed
     model = PlanningModel([said("Twelve thirty.")], task=[answering("Twelve thirty today. Hamilton.")])
-    session, manager = session_with(model, settings=Settings(direct_initial_delegation=True))
-    session.engine._clock = WorldClock(speed=0, start_hour=13.25)
+    session, manager = session_with(model, settings=Settings())
     session.submit("what time is it?")
     await settle(session, manager)
-    assert session.history()[-1]["text"] == "1:15 afternoon." and model.prompts == [] and not manager.tasks
+    assert session.history()[-1]["text"] == "1:15 afternoon. Sunday." and model.prompts == [] and not manager.tasks
     session.submit("when is the india new zealand game starting")
     await settle(session, manager)
     await manager.runner
@@ -377,7 +389,7 @@ def test_who_is_playing_is_answered_from_the_topic_when_both_sides_are_known(rou
 @pytest.mark.asyncio
 async def test_the_teams_a_lookup_found_answer_who_is_playing_without_a_search(ran):
     model = PlanningModel([], task=[answering("Today. New Zealand vs India, Hamilton.")])
-    session, manager = session_with(model, settings=Settings(direct_initial_delegation=True))
+    session, manager = session_with(model, settings=Settings())
     session.submit("when is the india cricket game today?")
     await settle(session, manager)
     await manager.runner
@@ -391,7 +403,7 @@ async def test_the_teams_a_lookup_found_answer_who_is_playing_without_a_search(r
 @pytest.mark.asyncio
 async def test_a_follow_up_lookup_carries_kips_last_answer(ran):
     model = PlanningModel([], task=[answering("Today. New Zealand vs India."), answering("Sony Sports.")])
-    session, manager = session_with(model, settings=Settings(direct_initial_delegation=True))
+    session, manager = session_with(model, settings=Settings())
     session.submit("when is the india cricket game today?")
     await settle(session, manager)
     await manager.runner
@@ -406,7 +418,7 @@ async def test_a_follow_up_lookup_carries_kips_last_answer(ran):
 
 # ── after a lookup: follow-ups answered from its source, disputes checked against it ──
 async def _scored(model):
-    session, manager = session_with(model, settings=Settings(direct_initial_delegation=True))
+    session, manager = session_with(model, settings=Settings())
     session.submit("whats the score of the india vs new zealand game")
     await settle(session, manager)
     await manager.runner

@@ -1,108 +1,95 @@
-const $ = (id) => document.getElementById(id);
-let task = null;
-let connected = false;
-let eventCount = 0;
-const seen = new Set();
+/**
+ * App chrome: header status pills, Kip's mood line, the side panel and its tabs.
+ */
+import { modelStatus, moodPhrase } from './format.js';
 
-export function showError(message = '') { $('error').hidden = !message; $('error').textContent = message; }
-export function setConnection(value) {
-  connected = value;
-  $('connection').textContent = value ? 'Live connection' : 'Reconnecting…';
-  $('connection-dot').classList.toggle('online', value);
-  $('run').disabled = !value || task?.status === 'running';
+const $ = (id) => document.getElementById(id);
+const NARROW = '(max-width: 1023px)';
+
+export function setConnection(online) {
+  $('connection-pill').dataset.state = online ? 'ready' : 'offline';
+  $('connection').textContent = online ? 'Connected' : 'Reconnecting…';
 }
-export function setWorld(world) {
-  $('robot-room').textContent = world.robot.room;
-  $('inventory').textContent = world.robot.inventory.join(', ') || 'Empty';
+
+export function setModel(llm) {
+  const status = modelStatus(llm);
+  $('model-pill').dataset.state = status.state;
+  $('model-status').textContent = status.label;
+  $('model-pill').title = status.detail ? `${status.label} — ${status.detail}` : `Language model: ${status.label}`;
 }
-export function setTask(next) {
-  task = next;
-  const running = task?.status === 'running';
-  $('task-status').textContent = task?.status || 'Idle';
-  $('task-status').className = `status ${task?.status || ''}`;
-  $('task-summary').textContent = task?.summary || 'Ready when you are.';
-  const reflex = (task?.metrics?.reflex_actions || 0) + (task?.metrics?.route_actions || 0);
-  $('budget').textContent = `${task?.cycle_count || 0} cycles · ${task?.tool_count || 0} tool calls · `
-    + `${task?.metrics?.llm_calls || 0} model calls · ${reflex} deterministic`;
-  $('run').disabled = running || !connected;
-  $('cancel').hidden = !running;
-  renderMemory(task?.task_memory);
-  $('answer-panel').hidden = !task?.answer;
-  $('answer-text').textContent = task?.answer?.answer || '';
-  $('answer-sources').replaceChildren();
-  for (const source of task?.answer?.sources || []) {
-    try {
-      const url = new URL(source.url);
-      if (!['http:', 'https:'].includes(url.protocol)) continue;
-      const link = document.createElement('a');
-      link.href = url.href; link.textContent = source.title || source.url;
-      link.target = '_blank'; link.rel = 'noopener noreferrer';
-      $('answer-sources').append(link);
-    } catch { /* Ignore malformed source URLs. */ }
-  }
-  if (!running) setAgent(null);
+
+export function setMood(persona) {
+  const text = persona && persona.enabled !== false ? moodPhrase(persona.mood) : '';
+  $('kip-mood').dataset.mood = persona?.mood || '';
+  $('kip-mood-text').textContent = text || 'Your companion';
 }
-export function getTask() { return task; }
-function renderMemory(memory) {
-  $('memory-content').textContent = memory
-    ? JSON.stringify(memory, null, 2)
-    : 'No task memory yet.';
+
+/** Tabs with arrow-key navigation; `onShow(name)` runs when a tab becomes visible. */
+export function initTabs(names, onShow) {
+  let active = names[0];
+  const select = (name, focus = false) => {
+    active = name;
+    for (const other of names) {
+      const tab = $(`tab-${other}`);
+      const selected = other === name;
+      tab.setAttribute('aria-selected', String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+      $(`${other}-panel`).hidden = !selected;
+    }
+    $(`tab-${name}`).classList.remove('has-update');
+    if (focus) $(`tab-${name}`).focus();
+    onShow(name);
+  };
+  names.forEach((name, index) => {
+    const tab = $(`tab-${name}`);
+    tab.addEventListener('click', () => { if (active !== name) select(name); });
+    tab.addEventListener('keydown', (event) => {
+      const step = { ArrowRight: 1, ArrowLeft: -1 }[event.key];
+      if (step) { event.preventDefault(); select(names[(index + step + names.length) % names.length], true); }
+      if (event.key === 'Home') { event.preventDefault(); select(names[0], true); }
+      if (event.key === 'End') { event.preventDefault(); select(names[names.length - 1], true); }
+    });
+  });
+  return {
+    active: () => active,
+    flag(name) { if (name !== active || !panelVisible()) $(`tab-${name}`).classList.add('has-update'); },
+  };
 }
-export function setMemoryOpen(open) {
-  const overlay = $('memory-overlay');
-  overlay.hidden = !open;
-  if (open) $('memory-close').focus();
+
+function panelVisible() {
+  return matchMedia(NARROW).matches
+    ? document.body.classList.contains('panel-open')
+    : !document.body.classList.contains('panel-collapsed');
 }
-export function setAgent(name) {
-  document.querySelectorAll('[data-agent]').forEach(el => el.classList.toggle('active', el.dataset.agent === name));
-}
-export function clearFeed() {
-  $('feed').replaceChildren();
-  seen.clear();
-  eventCount = 0;
-  $('event-count').textContent = '0 events';
-}
-function eventText(event) {
-  const d = event.data;
-  const o = d?.observation;
-  if (event.type === 'room_observed') return `In ${o.room}: ${[...o.people.map(p => p.name), ...o.objects.map(x => x.name)].join(', ') || 'no people or objects'}. Exits: ${o.connections.join(', ')}.`;
-  if (event.type === 'robot_moved') return `Moved from ${o.from_room} to ${o.room}.`;
-  if (event.type === 'presence_noticed') return `Noticed: ${d.summary}`;
-  if (event.type === 'person_spoken_to') return `${o.person}: “${o.response}”`;
-  if (event.type === 'object_picked_up') return `Picked up ${o.object}.`;
-  if (event.type === 'object_dropped') return `Dropped ${o.object} in ${o.room}.`;
-  if (event.type === 'object_given') return `Gave ${o.object} to ${o.person}.`;
-  if (event.type === 'tool_failed') return `${d.tool}: ${d.error}`;
-  if (event.type === 'capability_observed') {
-    if (d.tool === 'web_search') return `Searched for “${o.query}”: ${o.results.length} results.`;
-    if (d.tool === 'read_webpage') return `Read ${o.title}: ${o.url}`;
-    if (d.tool === 'run_python') return `Python result: ${o.stdout || o.result}`;
-    if (d.tool === 'finish_answer') return 'Answer prepared from the task’s tool results.';
-  }
-  if (event.type === 'critic_review') return `${d.approved ? 'Approved' : 'Needs work'}: ${d.summary}${d.suggestion ? ' ' + d.suggestion : ''}`;
-  if (['agent_message', 'task_started', 'task_completed', 'task_failed', 'task_cancelled', 'world_reset'].includes(event.type)) return d.summary;
-  return null;
-}
-export function addEvent(event) {
-  if (seen.has(event.id)) return;
-  const text = eventText(event);
-  if (!text) return;
-  seen.add(event.id);
-  if (seen.size > 600) seen.delete(seen.values().next().value);
-  $('feed-empty')?.remove();
-  const entry = document.createElement('article');
-  entry.className = `feed-entry ${event.agent} ${event.data?.observation ? 'evidence' : ''} ${event.type.includes('failed') ? 'error-event' : ''}`;
-  const top = document.createElement('div'); top.className = 'feed-top';
-  const role = document.createElement('span'); role.className = 'feed-role';
-  role.textContent = event.type === 'person_spoken_to' ? event.data.observation.person : event.agent;
-  const time = document.createElement('span'); time.className = 'feed-time';
-  time.textContent = new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const paragraph = document.createElement('p'); paragraph.textContent = text;
-  top.append(role, time); entry.append(top, paragraph);
-  const feed = $('feed');
-  const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 70;
-  feed.append(entry);
-  while (feed.children.length > 200) feed.firstElementChild.remove();
-  if (atBottom) feed.scrollTop = feed.scrollHeight;
-  $('event-count').textContent = `${++eventCount} events`;
+
+/** Side panel: a column on wide screens (collapsible), a drawer on narrow ones. */
+export function initPanel() {
+  const toggle = $('panel-toggle');
+  const scrim = $('scrim');
+  const sync = () => {
+    const narrow = matchMedia(NARROW).matches;
+    const open = panelVisible();
+    toggle.setAttribute('aria-expanded', String(open));
+    scrim.hidden = !(narrow && open);
+    $('side-panel').inert = !open;
+  };
+  const setOpen = (open) => {
+    if (matchMedia(NARROW).matches) document.body.classList.toggle('panel-open', open);
+    else {
+      document.body.classList.toggle('panel-collapsed', !open);
+      try { localStorage.setItem('kip.panel.collapsed', open ? '0' : '1'); } catch { /* private mode */ }
+    }
+    sync();
+    if (open && matchMedia(NARROW).matches) document.querySelector('#side-panel [aria-selected="true"]')?.focus();
+  };
+  try { document.body.classList.toggle('panel-collapsed', localStorage.getItem('kip.panel.collapsed') === '1'); }
+  catch { /* private mode */ }
+  toggle.addEventListener('click', () => setOpen(!panelVisible()));
+  $('panel-close').addEventListener('click', () => { setOpen(false); toggle.focus(); });
+  scrim.addEventListener('click', () => setOpen(false));
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && matchMedia(NARROW).matches && panelVisible()) { setOpen(false); toggle.focus(); }
+  });
+  matchMedia(NARROW).addEventListener('change', () => { document.body.classList.remove('panel-open'); sync(); });
+  sync();
 }

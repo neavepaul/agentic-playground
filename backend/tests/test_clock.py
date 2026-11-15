@@ -1,237 +1,60 @@
-import json
+"""The real device clock: how Kip states the date and says the time."""
+from datetime import datetime, timedelta, timezone
 
 import pytest
-from pydantic import ValidationError
 
-from app.world.clock import WorldClock
-from app.world.engine import WorldEngine, _in_range
-from app.world.models import World
+from app.clock import date_str, now, spoken_time
 
-
-# ── WorldClock unit tests ──────────────────────────────────────────────────────
-
-def test_reset_restores_json_and_clock_until_next_schedule_boundary(monkeypatch):
-    now = [100.0]
-    monkeypatch.setattr("app.world.clock.time.monotonic", lambda: now[0])
-    clock = WorldClock(speed=60, start_hour=8)
-    engine = WorldEngine(clock=clock)
-    now[0] += 600
-    engine.move_to("kitchen")
-    engine.pick_up("keys")
-    engine.reset()
-    assert engine.snapshot() == WorldEngine().snapshot()
-    assert clock.time_str() == "08:00"
-    now[0] += 30
-    assert engine.snapshot()["people"]["paul"]["room"] == "office"
-    now[0] += 570
-    assert clock.time_str() == "18:00"
-    assert engine.snapshot()["people"]["paul"]["room"] == "kitchen"
-    assert engine.snapshot()["people"]["moira"]["room"] == "master_bedroom"
+IST = timezone(timedelta(hours=5, minutes=30), "India Standard Time")
+NEWFOUNDLAND = timezone(timedelta(hours=-3, minutes=-30), "NDT")
 
 
-def test_failed_reset_preserves_clock_and_world(monkeypatch, tmp_path):
-    from app.world.engine import _DEFAULT_WORLD
-    now = [100.0]
-    monkeypatch.setattr("app.world.clock.time.monotonic", lambda: now[0])
-    path = tmp_path / "house.json"
-    path.write_text(_DEFAULT_WORLD.read_text())
-    clock = WorldClock(speed=60, start_hour=8)
-    engine = WorldEngine(path, clock)
-    now[0] += 300
-    before = engine.snapshot()
-    path.write_text('{}')
-    with pytest.raises(ValueError):
-        engine.reset()
-    assert engine.snapshot() == before
-    assert clock.time_str() == "13:00"
-
-def test_clock_starts_at_configured_hour():
-    clock = WorldClock(speed=0, start_hour=14.5)
-    assert abs(clock.hour() - 14.5) < 0.01
+def test_now_is_timezone_aware():
+    assert now().tzinfo is not None
 
 
-def test_clock_time_str_format():
-    clock = WorldClock(speed=0, start_hour=9.0)
-    assert clock.time_str() == "09:00"
-
-    clock2 = WorldClock(speed=0, start_hour=13.5)
-    assert clock2.time_str() == "13:30"
+def test_date_str_in_a_non_utc_timezone():
+    moment = datetime(2026, 11, 1, 17, 29, tzinfo=IST)
+    assert date_str(moment) == "Sunday 1 November 2026, 17:29 India Standard Time (UTC+05:30)"
 
 
-def test_clock_wraps_at_midnight():
-    clock = WorldClock(speed=0, start_hour=23.5)
-    # hour() is in [0, 24) — 23.5 is well-defined
-    assert 23.0 <= clock.hour() < 24.0
+def test_date_str_with_a_negative_offset():
+    moment = datetime(2026, 7, 4, 9, 5, tzinfo=NEWFOUNDLAND)
+    assert date_str(moment) == "Saturday 4 July 2026, 09:05 NDT (UTC-03:30)"
 
 
-# ── _in_range helper ────────────────────────────────────────────────────────────
+def test_date_str_in_utc():
+    moment = datetime(2026, 1, 2, 0, 0, tzinfo=timezone.utc)
+    assert date_str(moment) == "Friday 2 January 2026, 00:00 UTC (UTC+00:00)"
 
-@pytest.mark.parametrize("from_h,to_h,hour,expected", [
-    (9, 17, 12, True),    # midday is inside office hours
-    (9, 17, 9,  True),    # from is inclusive
-    (9, 17, 17, False),   # to is exclusive
-    (9, 17, 8,  False),   # before range
-    (9, 17, 20, False),   # after range
-    (22, 6, 23, True),    # midnight-spanning: evening side
-    (22, 6, 3,  True),    # midnight-spanning: early morning side
-    (22, 6, 22, True),    # midnight-spanning: from is inclusive
-    (22, 6, 6,  False),   # midnight-spanning: to is exclusive
-    (22, 6, 10, False),   # outside midnight-spanning range
+
+def test_date_str_defaults_to_now():
+    assert str(now().year) in date_str()
+
+
+def test_spoken_time_uses_twelve_hour_clock_and_weekday():
+    assert spoken_time(datetime(2026, 11, 1, 17, 29, tzinfo=IST)) == "5:29 evening. Sunday."
+    assert spoken_time(datetime(2026, 11, 1, 6, 7, tzinfo=IST)) == "6:07 morning. Sunday."
+    assert spoken_time(datetime(2026, 11, 2, 0, 0, tzinfo=IST)) == "12:00 night. Monday."
+    assert spoken_time(datetime(2026, 11, 2, 12, 0, tzinfo=IST)) == "12:00 afternoon. Monday."
+
+
+@pytest.mark.parametrize("hour, minute, part", [
+    (0, 0, "night"),
+    (4, 59, "night"),
+    (5, 0, "morning"),
+    (11, 59, "morning"),
+    (12, 0, "afternoon"),
+    (16, 59, "afternoon"),
+    (17, 0, "evening"),
+    (20, 59, "evening"),
+    (21, 0, "night"),
+    (23, 59, "night"),
 ])
-def test_in_range(from_h, to_h, hour, expected):
-    assert _in_range(from_h, to_h, hour) == expected
+def test_spoken_time_part_of_day_boundaries(hour, minute, part):
+    moment = datetime(2026, 11, 1, hour, minute, tzinfo=IST)
+    assert spoken_time(moment) == f"{hour % 12 or 12}:{minute:02d} {part}. Sunday."
 
 
-# ── Schedule-driven NPC positions ──────────────────────────────────────────────
-
-def _engine_at_hour(hour: float, world_file=None) -> WorldEngine:
-    clock = WorldClock(speed=0, start_hour=hour)
-    return WorldEngine(world_file, clock=clock)
-
-
-def test_scheduled_paul_is_in_office_during_work_hours():
-    engine = _engine_at_hour(10.0)
-    engine.move_to("entrance")
-    engine.move_to("office")
-    view = engine.look()
-    assert any(p["id"] == "paul" for p in view["people"])
-
-
-def test_scheduled_paul_is_in_kitchen_in_evening():
-    engine = _engine_at_hour(19.0)
-    engine.move_to("entrance")
-    engine.move_to("hall")
-    engine.move_to("kitchen")
-    view = engine.look()
-    assert any(p["id"] == "paul" for p in view["people"])
-
-
-def test_scheduled_paul_is_in_master_bedroom_at_night():
-    engine = _engine_at_hour(23.0)
-    engine.move_to("bedroom_corridor")
-    engine.move_to("master_bedroom")
-    view = engine.look()
-    assert any(p["id"] == "paul" for p in view["people"])
-
-
-def test_paul_not_in_office_outside_work_hours():
-    engine = _engine_at_hour(23.0)
-    engine.move_to("entrance")
-    engine.move_to("office")
-    view = engine.look()
-    assert not any(p["id"] == "paul" for p in view["people"])
-
-
-def test_midnight_spanning_schedule_wraps_correctly():
-    """Paul's master_bedroom schedule spans 22:00-09:00; verify at 02:00."""
-    engine = _engine_at_hour(2.0)
-    engine.move_to("bedroom_corridor")
-    engine.move_to("master_bedroom")
-    view = engine.look()
-    assert any(p["id"] == "paul" for p in view["people"])
-
-
-def test_engine_without_clock_uses_static_rooms():
-    """Without a clock, everyone stays in their static room from world.json."""
-    engine = WorldEngine()  # no clock
-    engine.move_to("entrance")
-    engine.move_to("office")
-    view = engine.look()
-    assert any(p["id"] == "paul" for p in view["people"])
-
-
-def test_talk_to_respects_schedule(tmp_path):
-    data = {
-        "name": "Clock test", "robot": {"room": "entry"},
-        "rooms": {
-            "entry": {"id": "entry", "name": "Entry", "connections": ["lounge"]},
-            "lounge": {"id": "lounge", "name": "Lounge", "connections": ["entry"]},
-        },
-        "people": {
-            "alice": {
-                "id": "alice", "name": "Alice", "room": "lounge",
-                "dialogue": [{"topics": ["hello"], "response": "Hi there!"}],
-                "schedule": [
-                    {"from_hour": 9, "to_hour": 18, "room": "lounge"},
-                    {"from_hour": 18, "to_hour": 9, "room": "entry"},
-                ],
-            }
-        },
-        "objects": {},
-    }
-    path = tmp_path / "world.json"
-    path.write_text(json.dumps(data))
-
-    daytime = WorldEngine(path, WorldClock(speed=0, start_hour=12))
-    daytime.move_to("lounge")
-    result = daytime.talk_to("alice", "hello")
-    assert result["response"] == "Hi there!"
-
-    nighttime = WorldEngine(path, WorldClock(speed=0, start_hour=20))
-    # alice is in entry at night, not lounge
-    with pytest.raises(Exception, match="alice is not in the current room"):
-        nighttime.move_to("lounge")
-        nighttime.talk_to("alice", "hello")
-
-
-def test_get_status_includes_time_when_clock_present():
-    engine = WorldEngine(clock=WorldClock(speed=0, start_hour=14.0))
-    status = engine.get_status()
-    assert status["time"] == "14:00"
-
-
-def test_get_status_has_no_time_without_clock():
-    engine = WorldEngine()
-    assert "time" not in engine.get_status()
-
-
-# ── Schedule model validation ───────────────────────────────────────────────────
-
-def test_schedule_with_invalid_room_fails_validation(tmp_path):
-    data = {
-        "name": "Bad schedule", "robot": {"room": "entry"},
-        "rooms": {"entry": {"id": "entry", "name": "Entry", "connections": []}},
-        "people": {
-            "bob": {
-                "id": "bob", "name": "Bob", "room": "entry",
-                "schedule": [{"from_hour": 9, "to_hour": 17, "room": "nonexistent"}],
-            }
-        },
-        "objects": {},
-    }
-    with pytest.raises(ValidationError, match="unknown room"):
-        World.model_validate(data)
-
-
-def test_schedule_with_equal_hours_fails_validation():
-    from app.world.models import ScheduleEntry
-    with pytest.raises(ValidationError, match="must differ"):
-        ScheduleEntry(from_hour=9, to_hour=9, room="office")
-
-
-# ── device mode: the real Kip runs on the machine's own clock ──────────────────
-def test_device_mode_follows_the_machine_clock_and_knows_the_date():
-    from datetime import datetime
-    from app.world.clock import spoken_time
-    clock = WorldClock(speed=60, start_hour=8, mode="device")  # speed and start hour are ignored
-    now = datetime.now()
-    assert clock.time_str() == now.strftime("%H:%M") or clock.time_str() == datetime.now().strftime("%H:%M")
-    assert abs(clock.hour() - (now.hour + now.minute / 60 + now.second / 3600)) < 0.01
-    assert clock.now().tzinfo is not None and now.strftime("%B %Y") in clock.date_str()
-    assert clock.date_str().split(",")[0] == f"{now.strftime('%A')} {now.day} {now.strftime('%B %Y')}"
-    assert "UTC" in clock.date_str()
-    before = clock.simulated_seconds()
-    clock.advance(10)  # actions never move a real clock
-    assert clock.simulated_seconds() - before < 1
-    assert spoken_time(clock).endswith(f" {now.strftime('%A')}.")
-
-
-def test_a_simulated_clock_has_no_date_and_device_mode_is_the_default():
-    from app.config import Settings
-    from app.world.clock import spoken_time
-    assert WorldClock(speed=0, start_hour=13.5).now() is None
-    assert spoken_time(WorldClock(speed=0, start_hour=13.5)) == "1:30 afternoon."
-    assert spoken_time(WorldClock(speed=0, start_hour=0.25)) == "12:15 night."
-    assert Settings().simulation_mode == "device"
-    engine = WorldEngine(clock=WorldClock(mode="device"))
-    assert "today" in engine.get_status() and "today" not in WorldEngine(clock=WorldClock(speed=0)).get_status()
+def test_spoken_time_defaults_to_now():
+    assert spoken_time().endswith(f"{now().strftime('%A')}.")

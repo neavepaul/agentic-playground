@@ -9,7 +9,7 @@ the domain, never from the question word. The previous information request fills
 a short follow-up leaves out ("What about Max?", "And yesterday?").
 
 The router only describes the message. session.py decides what runs, after cancellation,
-permissions, consent and the house checks, none of which the router can override.
+permissions and consent, none of which the router can override.
 """
 import hashlib
 import json
@@ -21,12 +21,10 @@ from pathlib import Path
 
 import numpy as np
 
+from app import clock
 from .intent import is_live_fact, read_intent
 
 DATA = Path(__file__).parent / "router_data" / "intents.tsv"
-LABELS = ("conversation.casual", "conversation.emotional", "information.sports", "information.weather",
-          "information.finance", "information.news", "information.general", "memory.recall", "memory.update",
-          "action.request", "reasoning.complex")
 # Answers that change by the hour: always looked up, never recited from a model's memory.
 LIVE = frozenset({"information.sports", "information.weather", "information.finance", "information.news"})
 THRESHOLD = 0.55           # below this the router has no opinion and the usual path decides
@@ -398,7 +396,7 @@ class Route:
     entities: list[str] = field(default_factory=list)
     place: str | None = None
     time: str | None = None
-    capability: str | None = None    # web_search | memory | house | None
+    capability: str | None = None    # web_search | memory | task | None
     query: str = ""                  # what to search for: the resolved meaning, not the raw words
     meaning: str = ""                # one line for the model answering it
     source: str = "classifier"       # classifier | context | correction
@@ -481,7 +479,7 @@ class IntentRouter:
         return scores
 
     def route(self, text: str, frame: Frame | None = None, turn: int = 0, today: date | None = None) -> Route:
-        today = today or date.today()
+        today = today or clock.now().date()
         # "Don't read any webpages; what's the AQI?": the permission is handled elsewhere,
         # so the clause that asks something is what gets read.
         text = asking_clause(text)
@@ -659,7 +657,7 @@ def _capability(route: Route) -> str | None:
         return "web_search" if route.live_confidence >= THRESHOLD else None
     if route.confidence < THRESHOLD or not route.intent:
         return None
-    return {"memory.recall": "memory", "memory.update": "memory", "action.request": "house"}.get(route.intent)
+    return {"memory.recall": "memory", "memory.update": "memory", "action.request": "task"}.get(route.intent)
 
 
 def _query(route: Route, said: str, today: date) -> tuple[str, str]:
@@ -669,7 +667,7 @@ def _query(route: Route, said: str, today: date) -> tuple[str, str]:
     joiner = " vs " if route.domain in SPORTS - {"f1", "motogp"} and len(route.entities) == 2 else ", "
     who = joiner.join(route.entities)
     day = today.strftime("%d %B %Y").lstrip("0")
-    when = {"latest completed": f"the latest completed one ({today.year})", "next upcoming": "the next one",
+    when = {"latest completed": f"the latest completed one before {day}", "next upcoming": "the next one",
             "now": f"right now ({day})", "upcoming": "the coming hours",
             "today or next": f"the match on today ({day}), or else the next one",
             "today or latest": f"the match on today ({day}), or else the most recent one"}.get(route.time or "",
@@ -681,8 +679,11 @@ def _query(route: Route, said: str, today: date) -> tuple[str, str]:
         aspect = route.focus or (f"“{route.asked}”" if route.asked else "result")
         timed = route.focus in _SEARCH_WORDS or route.time in ("now", "today", "today or next", "today or latest")
         searched = _SEARCH_WORDS.get(route.focus) or route.focus or route.asked or "result"
+        # The latest of a series: this month brings this month's reports up first (live, the year alone
+        # found October's). A named event's latest running may be in another month: the year.
+        latest = route.time == "latest completed" and not route.place
         query = " ".join(filter(None, [who, searched, event.strip(), domain,
-                                       day if timed else str(today.year)
+                                       day if timed else today.strftime("%B %Y") if latest else str(today.year)
                                        if route.time in ("latest completed", "next upcoming", None) else route.time]))
         place_note = " (a position, not a place)" if route.focus and "position" in route.focus else ""
         place_note = {"start time": " (a clock time and day: just that, not the whole series)",
@@ -716,16 +717,16 @@ def frame_of(route: Route, said: str, turn: int) -> Frame | None:
                  place=route.place, time=route.time, said=said, turn=turn)
 
 
-def fast_path(route: Route, intent, *, web_allowed: bool, involves_house: bool) -> bool:
+def fast_path(route: Route, intent, *, web_allowed: bool) -> bool:
     """Whether a live-information question may go straight to the web lookup. Every gate the
-    usual path has comes first: stop, permissions, offers, requested tools and the house."""
+    usual path has comes first: stop, permissions, offers and requested tools."""
     if intent.cancel or intent.wants_offer or intent.needs_tools:
         return False
     # Only a permission change or a refusal, with nothing asked: no lookup. "No, I meant the
     # race" is a correction, not a refusal; ruled-out tools are checked by the caller.
     if intent.changes_state_only and not (route.correction and not (intent.granted or intent.revoked)):
         return False
-    if not web_allowed or involves_house or intent.about_past:
+    if not web_allowed or intent.about_past:
         return False
     if not (intent.question or intent.request or route.followup or route.correction or route.lookup_phrase
             or route.asks):

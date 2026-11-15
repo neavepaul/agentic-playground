@@ -3,7 +3,7 @@
 Every memory is one row (episode, fact, preference, skill, conversation, ...) with free
 text, loose tags and an importance score. FTS5 finds exact words such as names;
 sqlite-vec finds memories with similar meaning. Recall blends both with recency and
-importance. Everything is advisory: the robot still verifies the world by observation.
+importance. Everything is advisory: memories can be stale or wrong.
 
 The state table holds whole structured documents by key (Kip's tallies, self-model and
 persona), written in one transaction so they can never be half-saved.
@@ -14,7 +14,6 @@ import asyncio
 import hashlib
 import json
 import logging
-import math
 import re
 import sqlite3
 import threading
@@ -586,37 +585,16 @@ def prompt_memories(memories: list[dict]) -> list[dict]:
 
 # ── deterministic memory formation from finished tasks ─────────────────────
 def task_memories(context, feeling: str | None = None) -> list[dict]:
-    """Episode, skill and fact memories derived from a finished task. No model calls."""
-    people = sorted({c.person for c in context.conditions if c.person})
-    objects = sorted({c.object for c in context.conditions if c.object})
-    about = people + objects
+    """Episode and fact memories derived from a finished task. No model calls."""
     outcome = "Finished" if context.status == "completed" else "Could not finish"
     episode = f"{outcome}: {context.goal}. {context.summary}"
     if feeling:
         episode += f" I felt {feeling}."
     importance = 0.6 if context.status == "completed" else 0.7
-    memories = [{"kind": "episode", "text": episode, "about": about, "importance": importance}]
-    if context.status == "completed":
-        steps = []
-        for entry in context.action_history:
-            if not entry.get("success"):
-                continue
-            observation = entry.get("observation") or {}
-            if entry["tool"] == "pick_up":
-                steps.append(f"found the {observation.get('object')} in the {observation.get('room')}")
-            elif entry["tool"] == "give":
-                steps.append(f"{observation.get('person')} was in the {observation.get('room')}")
-            elif entry["tool"] == "talk_to":
-                steps.append(f"spoke with {observation.get('person')}")
-        rooms = [entry["observation"]["room"] for entry in context.action_history
-                 if entry.get("success") and entry["tool"] == "move_to"]
-        if steps:
-            route = f" Route: {' → '.join(dict.fromkeys(rooms))}." if rooms else ""
-            memories.append({"kind": "skill", "importance": 0.6, "about": about,
-                             "text": f"For '{context.goal}': {'; '.join(dict.fromkeys(steps))}.{route}"})
-        if context.answer:
-            sources = [s.get("url") for s in context.answer.get("sources", [])][:3]
-            memories.append({"kind": "fact", "importance": 0.5, "about": about,
-                             "text": f"Q: {context.goal} → A: {context.answer.get('answer', '')[:300]}",
-                             "meta": {"sources": sources}})
+    memories = [{"kind": "episode", "text": episode, "about": [], "importance": importance}]
+    if context.status == "completed" and context.answer:
+        sources = [s.get("url") for s in context.answer.get("sources", [])][:3]
+        memories.append({"kind": "fact", "importance": 0.5, "about": [],
+                         "text": f"Q: {context.goal} → A: {context.answer.get('answer', '')[:300]}",
+                         "meta": {"sources": sources}})
     return memories

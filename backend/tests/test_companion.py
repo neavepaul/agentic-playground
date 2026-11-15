@@ -1,10 +1,10 @@
 """Kip as a companion: honest about himself, sure of the facts that matter, and with
 something of his own to say. Built from a live conversation where he denied his maker,
 forgot the speaker's name and answered "Yes. Good." to most things."""
-import json
 
 import pytest
 
+from app.chat import ChatSession
 from app.chat.intent import given_name, introduced_as
 from app.chat.prompt import CHAT_SYSTEM
 from app.chat.router import default_router, fast_path, frame_of
@@ -51,7 +51,7 @@ def test_a_name_given_outright_is_recognised(text, name):
     assert given_name(text) == name
 
 
-def test_my_name_is_introduces_someone_who_lives_in_the_house():
+def test_my_name_is_introduces_someone_kip_knows():
     assert introduced_as("hi kip, my name is neave", {"neave": {"name": "Neave"}}) == "neave"
 
 
@@ -87,7 +87,7 @@ async def test_a_name_and_job_outlive_the_conversation_window_and_a_relevance_co
         await session.drain()
     latest = model.prompts[-1][-1]["content"]
     assert "The person talking is called Neave" in latest and "data engineer" in latest  # pinned, not recalled
-    assert '"talking_with":"Neave"' in latest  # she lives here: "my name is neave" introduces her
+    assert '"talking_with":"Neave"' in latest  # "my name is neave" introduces her
     rows = {m["text"]: m["importance"] for m in session.store.recent(10)}
     assert rows["The person talking is called Neave"] == CORE_IMPORTANCE
     assert rows["The person talking likes milk chocolate"] == 0.7
@@ -99,25 +99,32 @@ def test_btw_whats_the_score_and_a_no_not_this_correction_both_look_up():
     router = default_router()
     first = "btw whats the score ofthe india cricket match"
     route = router.route(first)
-    assert route.asks and fast_path(route, read_intent(first), web_allowed=True, involves_house=False)
+    assert route.asks and fast_path(route, read_intent(first), web_allowed=True)
     second = "no not this india new zealand"
     corrected = router.route(second, frame_of(route, first, 0), 1)
     assert corrected.correction and corrected.entities == ["India", "New Zealand"]
     assert corrected.query.startswith("India vs New Zealand live score cricket")
-    assert fast_path(corrected, read_intent(second), web_allowed=True, involves_house=False)
+    assert fast_path(corrected, read_intent(second), web_allowed=True)
     for text in ("no thanks", "no", "whats up?"):
-        assert not fast_path(router.route(text), read_intent(text), web_allowed=True, involves_house=False), text
+        assert not fast_path(router.route(text), read_intent(text), web_allowed=True), text
 
 
 @pytest.mark.asyncio
-async def test_a_name_from_someone_outside_the_house_is_who_kip_is_talking_to():
-    session, model, _, _ = make_session([reply("Sam. Hello."), reply("Sam. Still you.")])
+async def test_a_name_they_give_is_who_kip_is_talking_to_and_is_kept():
+    session, model, _, _ = make_session([reply("Sam. Hello."), reply("Sam. Still you."), reply("Sam. Back.")])
     session.submit("hi kip, call me sam")
     await session.drain()
     session.submit("who am i?")
     await session.drain()
-    assert '"talking_with":"Sam (the name they gave you)"' in model.prompts[-1][-1]["content"]
+    assert '"talking_with":"Sam"' in model.prompts[-1][-1]["content"]
     await session.close()
+    restarted = ChatSession(model, session.bus, session.manager, session.settings, store=session.store,
+                            persona=session.persona)  # the next run: same memory, new conversation
+    restarted.attach()
+    restarted.submit("who am i?")
+    await restarted.drain()
+    assert '"talking_with":"Sam"' in model.prompts[-1][-1]["content"]  # still known after a restart
+    await restarted.close()
 
 
 @pytest.mark.asyncio

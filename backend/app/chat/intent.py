@@ -31,7 +31,7 @@ _LIVE_FACT = re.compile(r"\b(weather|forecast|temperature|raining|humidity|aqi|a
 _GREETING = re.compile(r"^\W*(?:hi|hello|hey|hiya|morning|evening|howdy|good (?:morning|afternoon|evening))\b"
                        r"|\bhow are you\b|\bhow'?s it going\b|\bhow'?s your (?:day|morning|evening)\b")
 _INTRODUCES = re.compile(r"\b(?:it'?s|this is|i'?m|i am|me,|my name is|my name'?s|call me)\s+([a-z][a-z'-]+)\b")
-# "My name is Neave", "call me Sam": a name given outright, whether or not they live in the house.
+# "My name is Neave", "call me Sam": a name given outright.
 _GIVES_NAME = re.compile(r"\b(?:my name is|my name'?s|call me)\s+([a-z][a-z'-]{1,30})\b")
 
 

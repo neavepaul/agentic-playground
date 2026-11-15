@@ -17,3 +17,19 @@ os.environ["EMBEDDINGS_ENABLED"] = "false"
 from app.config import Settings  # noqa: E402  (after the environment is set)
 
 Settings.model_config["env_file"] = None
+
+
+import httpx  # noqa: E402
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_results_feeds(monkeypatch):
+    """No test reaches the live F1 or cricket feeds: a lookup falls back as when they are down.
+    A test that wants a feed patches app.capabilities.feeds.fetch itself."""
+    from app.capabilities import feeds
+
+    async def offline(url):
+        raise httpx.ConnectError("results feeds are offline in tests")
+    monkeypatch.setattr(feeds, "fetch", offline)
+    feeds._CACHE.clear()  # no test sees another's cached scoreboard

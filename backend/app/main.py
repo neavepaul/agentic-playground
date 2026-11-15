@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -11,20 +12,17 @@ from app.chat import ChatSession
 from app.llm.factory import create_chat_client, create_client, create_hosted_client
 from app.llm.priority import ConversationFirst
 from app.memory.recall import Embedder, MemoryStore
-from app.memory.beliefs import derive_beliefs
 from app.memory.store import open_persistent
-from app.mind.agent import AgentMind
 from app.persona import Persona
 from app.tasks.manager import TaskBusy, TaskManager
-from app.world.clock import WorldClock
-from app.world.engine import WorldEngine
-from app.world.tools import WorldTools
+
+_log = logging.getLogger("agentic_friend")
 
 
 class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     message: str = Field(min_length=1, max_length=1000)
-    # Who is talking (a person id from the world), so "I"/"my" facts are filed under them.
+    # Who is talking (a name), so "I"/"my" facts are filed under them.
     speaker: str | None = Field(default=None, max_length=40)
 
 
@@ -40,9 +38,7 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
     # Never enable HTTP wire-body logging, even with application DEBUG.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-    clock = WorldClock(speed=config.clock_speed, start_hour=config.clock_start_hour,
-                       mode=config.simulation_mode, action_seconds=config.action_seconds)
-    bus, engine = EventBus(), WorldEngine(config.world_file, clock=clock)
+    bus = EventBus()
     llm = client if client is not None else create_client(config)
     # Injected test clients get a throwaway in-memory store and no embedding model,
     # unless the test hands in its own store (e.g. a file, to test restarts).
@@ -55,8 +51,7 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
                                  backups_dir=config.memory_file.parent / "backups")
     persona = None
     if config.persona_enabled:
-        persona = Persona(persistent.persona, config.persona_name, now=clock.simulated_seconds, maker=config.persona_maker,
-                          helpfulness_baseline=config.drive_helpfulness)
+        persona = Persona(persistent.persona, config.persona_name, now=time.time, maker=config.persona_maker)
         persona.attach(bus)
     local_chat = create_chat_client(config, llm) if live else llm
     shared = local_chat is llm
@@ -70,9 +65,8 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
         # minutes for a long prompt on a local CPU model); the local chat model otherwise.
         from app.llm.groq import HostedChat
         chat_llm = HostedChat(hosted, local_chat, [m.strip() for m in config.groq_chat_models.split(",") if m.strip()])
-    manager = TaskManager(task_llm, WorldTools(engine, bus), bus, config, persistent, persona=persona,
-                          memory_store=store, hosted=hosted)
-    chat = ChatSession(chat_llm, bus, manager, engine, config, store=store, persona=persona,
+    manager = TaskManager(task_llm, bus, config, persistent, persona=persona, memory_store=store, hosted=hosted)
+    chat = ChatSession(chat_llm, bus, manager, config, store=store, persona=persona,
                        shares_task_model=shared, session_id=config.chat_session_id)
     chat.gate = task_llm if shared else None
     chat.attach()
@@ -80,9 +74,22 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
         # Reviewed corrections join the shipped examples; the embedding model joins once loaded.
         from app.chat.router import IntentRouter
         chat.router = IntentRouter(store.accepted_intent_examples(), embedder=embedder)
-    mind = AgentMind(task_llm, manager, engine, bus, config, persistent, persona=persona,
-                     memory_store=store, chat=chat)
     mutation_lock = asyncio.Lock()
+
+    def save_persona() -> None:
+        if persona and persona.dirty:
+            persona.dirty = False
+            try:
+                persistent.save()
+            except Exception:
+                persona.dirty = True
+                _log.exception("Could not save persona state")
+
+    async def keep_persona_saved() -> None:
+        # Conversations change Kip: who he is must survive a crash, not only a clean shutdown.
+        while True:
+            await asyncio.sleep(5)
+            save_persona()
 
     @asynccontextmanager
     async def lifespan(app):
@@ -96,21 +103,17 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
                     await asyncio.to_thread(chat.router.add_embeddings)
                 await store.backfill()
             app.state.memory_ready = asyncio.create_task(prepare_memory())
-        mind.start()
+        saver = asyncio.create_task(keep_persona_saved(), name="persona-saver")
         yield
+        saver.cancel()
+        await asyncio.gather(saver, return_exceptions=True)
         memory_ready = getattr(app.state, "memory_ready", None)
         if memory_ready and not memory_ready.done():
             memory_ready.cancel()  # never let a backfill touch the store after shutdown
             await asyncio.gather(memory_ready, return_exceptions=True)
         await chat.close()
-        await mind.close()
         await manager.close()
-        if persona and persona.dirty:
-            # Who Kip is must survive a restart, including what changed since the last save.
-            try:
-                persistent.save()
-            except Exception:
-                logging.getLogger("agentic_friend").exception("Could not save persona state at shutdown")
+        save_persona()  # including what changed since the last save
         if client is None:
             await llm.close()
             if local_chat is not llm:
@@ -120,16 +123,11 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
         store.close()
 
     app = FastAPI(title="agentic_friend", lifespan=lifespan)
-    app.state.manager, app.state.engine, app.state.bus = manager, engine, bus
+    app.state.manager, app.state.bus = manager, bus
 
     def snapshot() -> dict:
         latest = next(reversed(manager.tasks.values()), None) if manager.tasks else None
-        return {"world": engine.snapshot(), "sequence": bus.sequence,
-                "task": manager.active() or (latest.public() if latest else None)}
-
-    @app.get("/api/beliefs")
-    async def get_beliefs():
-        return derive_beliefs(persistent)
+        return {"sequence": bus.sequence, "task": manager.active() or (latest.public() if latest else None)}
 
     @app.post("/api/chat", status_code=202)
     async def send_chat(request: ChatRequest):
@@ -159,29 +157,16 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
         model = await llm.health() if client is None else {"mode": "test"}
         memory = {"meaning_search": store.vectors and bool(embedder and embedder.available),
                   "keyword_search": True, "persistent_error": persistent.load_error or None}
-        return {"status": "ok" if not persistent.load_error else "degraded",
-                "llm": {"provider": config.llm_provider, **model}, "memory": memory}
+        result = {"status": "ok" if not persistent.load_error else "degraded",
+                  "llm": {"provider": config.llm_provider, **model}, "memory": memory}
+        if chat_llm is not local_chat:
+            # Conversation runs on Groq while it has quota; the local model only stands in.
+            result["chat"] = {"provider": "groq", "model": chat_llm.models[0] if chat_llm.models else ""}
+        return result
 
-    @app.get("/api/world")
-    async def world():
+    @app.get("/api/state")
+    async def state():
         return snapshot()
-
-    @app.post("/api/world/reset")
-    async def reset():
-        async with mutation_lock:
-            # Reset also discards pending replies/errands from the previous world.
-            await chat.reset_pending()
-            await manager.close()
-            try:
-                engine.reset()
-            except (ValueError, OSError) as exc:
-                raise HTTPException(422, "Cannot reload world definition: " + str(exc)) from None
-            # A new world starts a new session; old tasks should not appear active in UI.
-            manager.tasks.clear()
-            manager.checkpoint()
-            bus.history.clear()
-            bus.emit("world_reset", world=engine.snapshot(), summary="World restored to its initial state.")
-            return snapshot()
 
     @app.post("/api/tasks", status_code=202)
     async def create_task(request: GoalRequest):
@@ -194,7 +179,7 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
     @app.get("/api/tasks/{task_id}")
     async def task(task_id: str):
         if task_id not in manager.tasks:
-            raise HTTPException(404, "Task not found (only the latest 50 tasks are retained, until world reset).")
+            raise HTTPException(404, "Task not found (only the latest 50 tasks are retained).")
         return manager.tasks[task_id].model_dump()
 
     @app.post("/api/tasks/{task_id}/cancel")

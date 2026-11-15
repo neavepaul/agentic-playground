@@ -10,6 +10,8 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
+from app import clock
+
 # Fixed offsets in minutes. Daylight-saving names are listed separately (NZDT, BST).
 ZONES = {"utc": 0, "gmt": 0, "z": 0, "ist": 330, "nzdt": 780, "nzst": 720, "bst": 60, "cet": 60, "cest": 120,
          "est": -300, "edt": -240, "cst": -360, "cdt": -300, "pst": -480, "pdt": -420, "aedt": 660, "aest": 600,
@@ -77,6 +79,18 @@ def _numbers(text: str) -> set[str]:
     return {n.replace(",", "") for n in _NUMBER.findall(without_times)}
 
 
+_FAHRENHEIT = re.compile(r"(-?\d+(?:\.\d+)?)\s*°\s*F\b|(-?\d+(?:\.\d+)?)\s*(?:degrees? )?fahrenheit\b", re.I)
+
+
+def _celsius_of(text: str) -> set[str]:
+    """Each °F reading as °C, rounded and to one decimal: "33 °F" backs "1 °C" and "0.6 °C"."""
+    found = set()
+    for match in _FAHRENHEIT.finditer(text):
+        celsius = (float(match.group(1) or match.group(2)) - 32) * 5 / 9
+        found |= _numbers(f"{abs(round(celsius))} {abs(round(celsius, 1))}")
+    return found
+
+
 def quote_found(quote: str, evidence: str) -> bool:
     """The quoted words are in what was read: verbatim, or nearly (every figure present, and
     nine in ten of the words), since pages wrap and the model trims punctuation."""
@@ -116,7 +130,7 @@ def _same(said: Clock, source: Clock, local_offset: int, day: date | None = None
     when Kip says it, and the page's own when the page says it."""
     if said.zone is None and source.zone is None:
         return said.minutes == source.minutes
-    day = day or date.today()
+    day = day or clock.now().date()
     said_offset = _offset(said.zone, day) if said.zone else local_offset
     source_offset = _offset(source.zone, day) if source.zone else None
     if source_offset is None or said_offset is None:
@@ -141,7 +155,7 @@ def unsupported(answer: str, quote: str, evidence: str, local_offset: int, today
     sources = clock_times(quote)
     # "8:00 pm Sunday: it's played on New Zealand time": the zone the quote names applies to
     # its times that carry none of their own.
-    shared = quote_zone(quote, today or date.today())
+    shared = quote_zone(quote, today or clock.now().date())
     for source in sources:
         source.zone = source.zone or shared
     for said in clock_times(answer):
@@ -149,6 +163,7 @@ def unsupported(answer: str, quote: str, evidence: str, local_offset: int, today
             problems.append(f"time {said.minutes // 60:02d}:{said.minutes % 60:02d}"
                             f"{' ' + said.zone.upper() if said.zone else ''} is not in the quoted source")
     known = _numbers(quote) | _numbers(evidence) | (_numbers(today.strftime("%Y-%m-%d %d")) if today else set())
+    known |= _celsius_of(f"{quote}\n{evidence}")  # temperatures are said in °C, pages often give °F
     for number in sorted(_numbers(answer) - known):
         problems.append(f"{number} is in nothing that was read")
     return problems
@@ -172,8 +187,8 @@ def _listed_times(text: str) -> list[tuple[Clock, str]]:
         found = clock_times(match.group(0))
         if found:
             spans.append((found[0], match.start(), match.end()))
-    return [(clock, text[end:(spans[i + 1][1] if i + 1 < len(spans) else len(text))][:250])
-            for i, (clock, _, end) in enumerate(spans)]
+    return [(at, text[end:(spans[i + 1][1] if i + 1 < len(spans) else len(text))][:250])
+            for i, (at, _, end) in enumerate(spans)]
 
 
 def _names(team: str) -> set[str]:
@@ -191,7 +206,7 @@ def wrong_event(answer: str, pages: list[str], teams: list[str], local_offset: i
     listed = [entry for page in pages for entry in _listed_times(page)]
     problems = []
     for said in clock_times(answer):
-        records = [record for clock, record in listed if _same(said, clock, local_offset)]
+        records = [record for at, record in listed if _same(said, at, local_offset)]
         label = f"{said.minutes // 60:02d}:{said.minutes % 60:02d}"
         if not records:
             problems.append(f"{label} is in none of the pages read")
@@ -242,6 +257,41 @@ def wrong_day(texts: list[str], today: date) -> str | None:
         return None
     nearest = min(found, key=lambda d: abs((d - today).days))
     return f"the source is about {nearest.strftime('%d %B %Y')}, not today ({today.strftime('%d %B %Y')})"
+
+
+def stale_latest(texts: list[str], evidence: str, today: date) -> str | None:
+    """For "latest"/"most recent": nothing read may name a later past date than a dated source.
+    Today's date is left out (page headers carry it), and so are future ones (schedules)."""
+    # ponytail: an undated source passes (rejecting it threw out a right answer, and a rejection
+    # costs minutes on the local model); any later past date anywhere in what was read counts, even
+    # one about something else, which sends the lookup the usual way, slower but not wrong.
+    source = set().union(*(dates_in(t) for t in texts)) if texts else set()
+    if not source:
+        return None
+    newest = max(source)
+    later = [d for d in dates_in(evidence) if newest + timedelta(days=1) < d < today]
+    if later:
+        return f"the source is from {newest.strftime('%d %B %Y')}, but what was read names {max(later).strftime('%d %B %Y')}"
+    return None
+
+
+_WIN = r"(?:won|wins|win|takes|took|claims|claimed|clinch(?:es|ed)?|triumph(?:s|ed)?|victory|finished first)"
+_NAME = r"([A-Z][\w'’-]+(?:\s+[A-Z][\w'’-]+)*)"
+_WON_BY = re.compile(rf"\b(?:won by|victory (?:for|to))\s+{_NAME}")
+_WINS = re.compile(rf"{_NAME}\s+{_WIN}\b")
+
+
+def wrong_winner(answer: str, quote: str) -> str | None:
+    """The winner the answer names must be the one its quoted source says won: "Antonelli won" is
+    not backed by "Antonelli crowned champion as Verstappen wins". Names compare by surname."""
+    match = _WON_BY.search(answer) or _WINS.search(answer)
+    if not match:
+        return None
+    name = re.escape(match.group(1).split()[-1])
+    if re.search(rf"\b{name}\b(?:'s)?\W+(?:\w+\W+){{0,2}}{_WIN}\b|\b(?:won by|victory (?:for|to))\s+(?:\w+\s+)?{name}\b",
+                 quote, re.I):
+        return None
+    return f"the source does not say {match.group(1).split()[-1]} won"
 
 
 _MARGIN = re.compile(r"\b(\d+)[\s-]*(runs?|wickets?|wkts?|goals?|points?|strokes?|sets?)\b", re.I)

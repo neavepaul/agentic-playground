@@ -14,9 +14,21 @@ _DURATIONS = {"total_duration": "total_seconds", "load_duration": "load_seconds"
 _COUNTS = {"prompt_eval_count": "prompt_tokens", "eval_count": "completion_tokens"}
 
 
+def _keep_alive(value: str) -> dict:
+    """OLLAMA_KEEP_ALIVE as Ollama wants it: -1 (keep loaded) or a duration like "30m"."""
+    value = value.strip()
+    if not value:
+        return {}
+    try:
+        return {"keep_alive": int(value)}
+    except ValueError:
+        return {"keep_alive": value}
+
+
 class OllamaClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.keep_alive = _keep_alive(settings.ollama_keep_alive)
         self.last_metrics: dict = {}
         self.http = httpx.AsyncClient(base_url=settings.ollama_base_url.rstrip("/"),
                                      timeout=settings.llm_timeout_seconds, trust_env=False)
@@ -28,7 +40,7 @@ class OllamaClient:
         try:
             response = await self.http.post("/api/chat", json={
                 "model": self.settings.ollama_model, "messages": messages,
-                "format": response_schema, "stream": False, "think": thinking,
+                "format": response_schema, "stream": False, "think": thinking, **self.keep_alive,
                 "options": {"temperature": self.settings.temperature,
                             "num_ctx": self.settings.context_tokens,
                             "num_predict": self.settings.decision_output_tokens if thinking else 1024},
@@ -62,6 +74,7 @@ class OllamaClient:
         try:
             async with self.http.stream("POST", "/api/chat", json={
                 "model": self.settings.ollama_model, "messages": messages, "stream": True, "think": False,
+                **self.keep_alive,
                 "options": {"temperature": self.settings.temperature if temperature is None else temperature,
                             "num_ctx": self.settings.context_tokens, "num_predict": max_tokens},
             }) as response:

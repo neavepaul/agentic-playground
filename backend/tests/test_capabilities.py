@@ -16,8 +16,6 @@ from app.events.bus import EventBus
 from app.tasks.goals import check_conditions
 from app.tasks.manager import TaskManager
 from app.tasks.models import TaskContext
-from app.world.engine import WorldEngine
-from app.world.tools import WorldTools
 from tests.fakes import ScriptedLLM
 
 
@@ -101,6 +99,49 @@ def test_search_preserves_sources_and_filters_non_web_links(monkeypatch):
     assert result['results'] == [{'title': 'Source', 'url': 'https://example.com', 'snippet': 'Snippet'}]
 
 
+def test_search_moves_to_the_next_engine_when_one_is_blocked_or_empty(monkeypatch):
+    """Live: DuckDuckGo answered with its bot check, "bing" no longer exists in ddgs, and every
+    search failed though Yahoo still answered."""
+    import ddgs
+    tried = []
+
+    class Search:
+        def __init__(self, **kwargs):
+            pass
+
+        def text(self, query, backend, **kwargs):
+            tried.append(backend)
+            if backend == 'duckduckgo':
+                raise ddgs.DDGSException('No results found.')
+            if backend == 'yahoo':
+                return [{'title': 'Weather', 'href': 'https://weather.example', 'body': 'Clear'}]
+            return []
+
+    monkeypatch.setattr(ddgs, 'DDGS', Search)
+    assert web.web_search('weather london')['results'][0]['url'] == 'https://weather.example'
+    assert tried == ['duckduckgo', 'yahoo']
+
+
+def test_search_fails_plainly_when_every_engine_has_nothing(monkeypatch):
+    import ddgs
+
+    class Search:
+        def __init__(self, **kwargs):
+            pass
+
+        def text(self, query, backend, **kwargs):
+            raise ddgs.DDGSException('No results found.')
+
+    monkeypatch.setattr(ddgs, 'DDGS', Search)
+    with pytest.raises(ValueError, match='no results'):
+        web.web_search('weather london')
+
+
+def test_every_search_engine_named_exists_in_ddgs():
+    from ddgs.engines import ENGINES
+    assert set(web.SEARCH_BACKENDS) <= set(ENGINES['text'])
+
+
 @pytest.mark.asyncio
 async def test_python_calculates_with_input_and_has_no_host_access():
     result = await run_python('values = data["values"]\nprint(sum(values))\nsum(values) / len(values)', {'values': [4, 6]})
@@ -144,24 +185,16 @@ def test_answer_requires_real_task_evidence_and_requested_tools():
 
 
 @pytest.mark.asyncio
-async def test_digital_goal_executes_program_and_finishes_without_moving():
-    def answer(payload):
-        entry = next(o for o in payload['tool_observations'] if o['tool'] == 'run_python')
-        assert entry['observation']['result'] == '42'
-        return {'summary': 'Calculation checked.', 'action': {'tool': 'finish_answer', 'answer': 'The answer is 42.',
-                                                            'evidence_ids': [entry['evidence_id']]}}
-    llm = ScriptedLLM([{'summary': 'Calculating.', 'action': {'tool': 'run_python', 'code': '6 * 7'}}, answer],
-                      conditions=[{'kind': 'answer', 'required_tools': ['run_python']}])
-    engine, bus = WorldEngine(), EventBus()
-    before = engine.snapshot()
-    manager = TaskManager(llm, WorldTools(engine, bus), bus,
-                          Settings(direct_initial_delegation=True, idle_reflection_enabled=False))
+async def test_digital_goal_executes_program_and_finishes():
+    # A Python-only request: one narrow call writes the code, and the run itself is the answer.
+    llm = ScriptedLLM([{'code': '6 * 7'}], conditions=[{'kind': 'answer', 'required_tools': ['run_python']}])
+    manager = TaskManager(llm, EventBus(), Settings())
     task = manager.start('Use Python to calculate 6 * 7.')
     await manager.runner
     assert task.status == 'completed', task.summary
-    assert task.answer['answer'] == 'The answer is 42.'
-    assert engine.snapshot() == before
-    assert [a['tool'] for a in task.action_history] == ['get_status', 'get_map', 'run_python', 'finish_answer']
+    assert task.answer['answer'] == 'Ran the numbers: 42.'
+    assert [a['tool'] for a in task.action_history] == ['run_python', 'finish_answer']
+    assert [schema.get('title') for _, schema in llm.calls] == ['PythonProgram']
 
 
 @pytest.mark.asyncio
@@ -177,8 +210,7 @@ async def test_search_read_answer_workflow(monkeypatch):
     llm = ScriptedLLM([{'summary': 'Searching.', 'action': {'tool': 'web_search', 'query': 'a fact'}},
                       {'summary': 'Reading.', 'action': {'tool': 'read_webpage', 'url': 'https://example.com'}}, answer],
                      conditions=[{'kind': 'answer', 'required_tools': ['web_search', 'read_webpage']}])
-    bus, engine = EventBus(), WorldEngine()
-    manager = TaskManager(llm, WorldTools(engine, bus), bus, Settings(direct_initial_delegation=True))
+    manager = TaskManager(llm, EventBus(), Settings())
     task = manager.start('Research a fact online.')
     await manager.runner
     assert task.status == 'completed', task.summary
@@ -208,14 +240,6 @@ async def test_capability_cancellation_is_propagated(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_robot_only_goals_keep_original_explorer_schema():
-    task = TaskContext(goal='Find keys', conditions=[GoalCondition(kind='find_object', object='keys')])
-    evidence(task, 'get_status', {'room': 'hall', 'inventory': []})
-    action = await Explorer(ScriptedLLM([]), WorldTools.schemas()).decide(task, task.goal)
-    assert action.tool == 'look' and action.source == 'reflex'
-
-
-@pytest.mark.asyncio
 async def test_failed_program_can_be_corrected_from_observed_error():
     def repair(payload):
         failure = payload['tool_observations'][-1]
@@ -226,10 +250,10 @@ async def test_failed_program_can_be_corrected_from_observed_error():
         good = next(o for o in payload['tool_observations'] if o['tool'] == 'run_python' and o['success'])
         return {'summary': 'Checked.', 'action': {'tool': 'finish_answer', 'answer': '42',
                                                'evidence_ids': [good['evidence_id']]}}
-    llm = ScriptedLLM([{'summary': 'Calculating.', 'action': {'tool': 'run_python', 'code': '1 / 0'}}, repair, answer],
+    # The narrow call's program fails; the Explorer corrects it from the observed error.
+    llm = ScriptedLLM([{'code': '1 / 0'}, repair, answer],
                       conditions=[{'kind': 'answer', 'required_tools': ['run_python']}])
-    bus, engine = EventBus(), WorldEngine()
-    manager = TaskManager(llm, WorldTools(engine, bus), bus, Settings(direct_initial_delegation=True))
+    manager = TaskManager(llm, EventBus(), Settings())
     task = manager.start('Calculate 6 * 7 with Python.')
     await manager.runner
     assert task.status == 'completed', task.summary
@@ -251,7 +275,7 @@ async def test_completion_choice_is_unavailable_until_required_tools_succeed():
         return {'summary': 'Executing the missing calculation.', 'action': {'tool': 'run_python', 'code': '6 * 7'}}
     llm = ScriptedLLM([calculate, {'summary': 'Evidence complete.', 'action': {
         'tool': 'finish_answer', 'answer': 'Example; 42.', 'evidence_ids': ['page-id', 'python-id']}}])
-    explorer = Explorer(llm, WorldTools.schemas())
+    explorer = Explorer(llm)
     first = await explorer.decide(context, context.goal)
     assert first.tool == 'run_python'
     assert 'finish_answer' not in llm.calls[0][1]['properties']['action']['discriminator']['mapping']
@@ -269,34 +293,6 @@ def test_missing_evidence_error_names_only_the_missing_tool():
         CapabilityTools.finish_answer(AnswerAction(tool='finish_answer', answer='42', evidence_ids=['page-id']), context)
     assert 'run_python' in str(exc.value)
     assert 'read_webpage' not in str(exc.value)
-
-
-@pytest.mark.asyncio
-async def test_mixed_goal_can_read_page_then_complete_physical_delivery(monkeypatch):
-    from pathlib import Path
-    from app.capabilities import tools
-    async def read(*args):
-        return {'title': 'Example', 'url': 'https://example.com', 'text': 'Example page'}
-    monkeypatch.setattr(tools, 'read_webpage', read)
-    def answer(payload):
-        page = next(o for o in payload['tool_observations'] if o['tool'] == 'read_webpage')
-        return {'summary': 'Page read.', 'action': {'tool': 'finish_answer', 'answer': 'Example page.',
-                                                  'evidence_ids': [page['evidence_id']]}}
-    def move(room):
-        return {'summary': 'Moving.', 'action': {'tool': 'robot_command', 'command_id': 'move_to:' + room}}
-    llm = ScriptedLLM([{'summary': 'Reading.', 'action': {'tool': 'read_webpage', 'url': 'https://example.com'}},
-                      answer, move('study'), move('hall'), move('bedroom')], conditions=[
-                          {'kind': 'answer', 'required_tools': ['read_webpage']},
-                          {'kind': 'deliver', 'object': 'charger', 'person': 'neave'}])
-    engine = WorldEngine(Path(__file__).parent / 'fixtures' / 'legacy_house.json')
-    bus = EventBus()
-    manager = TaskManager(llm, WorldTools(engine, bus), bus, Settings(direct_initial_delegation=True))
-    task = manager.start('Read example.com and bring the charger to Neave.')
-    await manager.runner
-    assert task.status == 'completed', task.summary
-    assert task.answer['answer'] == 'Example page.'
-    assert all(c['satisfied'] for c in check_conditions(task))
-    assert any(a['tool'] == 'give' and a['success'] for a in task.action_history)
 
 
 @pytest.mark.asyncio

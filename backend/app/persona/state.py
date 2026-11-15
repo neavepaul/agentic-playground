@@ -58,14 +58,6 @@ class SkillRecord(BaseModel):
         return (self.successes + 1) / (self.attempts + 2)
 
 
-class ObjectNote(BaseModel):
-    """Where Kip has personally seen a thing. Raw sightings; patterns are only suspicions."""
-    first_room: str
-    last_room: str
-    rooms: list[str] = Field(default_factory=list)
-    moves: int = 0
-
-
 class PersonaState(BaseModel):
     """Everything about the persona that evolves. Persisted with PersistentMemory."""
     character_version: int = CHARACTER_VERSION
@@ -77,10 +69,19 @@ class PersonaState(BaseModel):
     episodes: list[Episode] = Field(default_factory=list)
     followups: list[Followup] = Field(default_factory=list)
     skills: dict[str, SkillRecord] = Field(default_factory=dict)
-    seen_objects: dict[str, ObjectNote] = Field(default_factory=dict)
-    # Simulated seconds lived across sessions. World clocks restart with the
-    # backend, so time is accumulated rather than read as an absolute value.
+    # Seconds lived across sessions. Only time the backend was running counts, so time
+    # is accumulated rather than read as an absolute value.
     age_seconds: float = 0.0
+
+    @model_validator(mode="after")
+    def _forget_house_residents(self):
+        """Conversation is the only way Kip meets anyone now. A relationship without a single
+        chat was made by errands in the retired house simulation: not someone he knows."""
+        gone = {person for person, bond in self.relationships.items() if not bond.chats}
+        if gone:
+            self.relationships = {p: b for p, b in self.relationships.items() if p not in gone}
+            self.followups = [f for f in self.followups if f.person not in gone]
+        return self
 
     @model_validator(mode="before")
     @classmethod

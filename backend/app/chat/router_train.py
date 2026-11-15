@@ -18,12 +18,11 @@ import time
 from datetime import date
 from pathlib import Path
 
-from app.chat.intent import is_live_fact, read_intent
+from app.chat.intent import read_intent
 from app.chat.router import (LIVE, THRESHOLD, IntentRouter, TfidfLogistic, fast_path, frame_of, normalize,
                              training_rows)
 
 EVAL = Path(__file__).resolve().parents[2] / "evaluations" / "intent_eval.jsonl"
-HOUSE = re.compile(r"\b(paul|moira|neave|kitchen|hall|bedroom|study)\b")
 TODAY = date(2026, 11, 1)
 
 
@@ -38,8 +37,6 @@ def _legacy(case: dict, intent, earlier_fast: str | None) -> bool:
     if intent.cancel or intent.changes_state_only or intent.about_past or intent.wants_offer or intent.needs_tools:
         return False
     if not (intent.question or intent.request) or "web_search" in case.get("forbidden", []):
-        return False
-    if HOUSE.search(normalize(said)):
         return False
     if intent.live_fact:
         return True
@@ -62,8 +59,7 @@ def evaluate(router: IntentRouter, rows: list[dict]) -> dict:
         route = router.route(case["say"], frame, len(case.get("context", [])), TODAY)
         latencies.append((time.perf_counter() - started) * 1000)
         intent = read_intent(case["say"], revoked=case.get("revoked", []))
-        fast = fast_path(route, intent, web_allowed="web_search" not in case.get("forbidden", []),
-                         involves_house=bool(HOUSE.search(normalize(case["say"]))))
+        fast = fast_path(route, intent, web_allowed="web_search" not in case.get("forbidden", []))
         old = _legacy(case, intent, earlier_fast)
         problems = []
         if case.get("intent"):

@@ -1,8 +1,10 @@
-# agentic_friend — local house simulation (V1)
+# agentic_friend — Kip, a companion you can talk to
 
-A learning project with one simulated avatar and three software agents: Coordinator,
-Explorer and Critic. Python owns the world. Three.js visualizes it. All model calls
-go to your configured local Colibri server; there are no API keys or cloud model dependencies.
+Kip is a robot friend in a chat window. He remembers you, has a persistent personality,
+and can look things up on the web, read pages and run small Python programs to answer you.
+Behind the conversation, three software agents (Coordinator, Explorer and Critic) run those
+lookups and check answers against their sources. Models run on your local Colibri server,
+optionally with Groq for faster replies and web search.
 
 ## Start on Windows
 
@@ -50,8 +52,8 @@ pnpm dev
 ```
 
 Open **[http://127.0.0.1:5173](http://127.0.0.1:5173)**. The development server proxies
-`/api` and `/ws` to FastAPI on port 8000. Keep both processes running. Three.js is
-served from the installed package, with no CDN or external fonts.
+`/api` and `/ws` to FastAPI on port 8000. Keep both processes running. Everything is
+served from installed packages, with no CDN or external fonts.
 
 On macOS/Linux, use `python3 -m venv .venv` and `.venv/bin/python` in place of the
 Windows Python paths. Other commands are the same.
@@ -77,37 +79,39 @@ The included pnpm lockfile records the frontend versions used here; npm is also 
 
 ## Use it
 
-1. Check that the sidebar says `qwen3.6-colibri · ready locally`.
-2. Enter a goal, such as **Neave needs the charger. Find it and bring it to him.**
-3. Click **Run goal**. The feed shows short public agent summaries, tool results,
-   NPC responses and Critic reviews. The active role is highlighted.
-4. Watch the avatar move and objects change ownership. Inventory and location
-   reflect the backend immediately; movement animation catches up visually.
-5. **Cancel** stops inference and further actions but retains completed actions.
-   **Reset** cancels the active task and restores the original world.
+Open the page and talk. Kip answers in his own voice, remembers what you tell him about
+yourself (see **About you** in the side panel), and looks things up when you ask about live
+information such as scores, weather, prices or news. A lookup shows its sources under the
+answer, and **Activity** lists what each lookup did. **Kip** shows his current mood, traits
+and how well you know each other.
 
-Only one task runs at a time. A second request receives HTTP 409. The world persists
-between goals until Reset or a backend restart. Room labels, people and objects
-are visible to you. Agents receive the static map but must discover people and objects with tools.
+Only one lookup runs at a time; a second one waits for the first. Saying "stop" cancels it.
 
 ### Talking to Kip
 
 The **Talk to Kip** panel is an ongoing conversation. Each message costs one streamed
 model call with a short prompt: Kip's voice and mood, up to six recalled memories, the
 last eight turns and a one-line status. There are no maps or tool schemas in this prompt.
-When you ask for something to be done ("could you find the keys?"), Kip agrees and starts
-an errand through the normal task system, ending its reply with a hidden `###` action
-line. A second errand waits until the first finishes. Kip narrates errand progress and
-results in the chat using templates, without extra model calls. The old goal form is
-still available under **Run a task directly**.
+When you ask for something that needs a tool ("search for…", "use Python to…"), Kip agrees and
+starts an errand through the task system, ending its reply with a hidden `###` action line. A
+second errand waits until the first finishes. Kip narrates errand results in the chat using
+templates, without extra model calls.
 
-The idle mind stays quiet while you are chatting and for `CHAT_QUIET_SECONDS` (default
-90) afterwards, so it doesn't compete with the conversation for the model.
+The status line in every chat prompt carries the real local date, time and timezone, and
+"what time is it?" is answered straight from the device clock with no model call. "What time?"
+right after a question about a match still asks about the match. Kip has no body and no
+surroundings: the prompt tells him never to describe any.
 
 **Reply speed.** With `GROQ_API_KEY` set, conversation runs on Groq while it has quota
 (`GROQ_CHAT_MODELS`, Qwen first so chat leaves the gpt-oss search quota alone), streamed, with
-the first words in about a second. When every chat model is rate-limited, or Groq fails before
-the first word, the reply comes from the local chat model and the log says so. Set
+the first words in about a second. When every chat model is rate-limited for only a few seconds
+(up to `GROQ_MAX_WAIT_SECONDS`, default 20), the reply waits for one rather than going local.
+A model that sends back nothing gets one more try; one that tries to call a tool (gpt-oss reaches
+for its own Python when asked to "use Python") is skipped for that reply. When no chat model can
+answer, the reply comes from the local chat model and the log says why. A request that names a
+tool ("use Python to…", "read https://…") gets no chat reply at all: like a live lookup, the
+errand starts at once and its answer is the reply, and if the chat model fails, what the person
+plainly asked for still starts. Set
 `CHAT_HOSTED=false` to keep conversation local. The `chat_reply` log line names the provider and
 model, and how the prompt's size splits between system, history and the latest message.
 
@@ -144,9 +148,8 @@ better on wording the examples never used.
 
 - `on` (default): a confident live-information question (sport, weather, markets, news)
   goes straight to the one-call web lookup with a search built from what it means, with no
-  chat-model reply first. Everything else (chat, feelings, memory, house errands, complex
-  requests, anything uncertain) takes the usual path. Stop, permissions, offers, requested
-  tools and the house checks always come first.
+  chat-model reply first. Everything else (chat, feelings, memory, complex requests, anything
+  uncertain) takes the usual path. Stop, permissions, offers and requested tools always come first.
 - `shadow`: the router reads every message and records what it would have done next to
   what the usual path did, and changes nothing.
 - `off`: no router.
@@ -169,23 +172,19 @@ training data, the next time Kip starts. Nothing is retrained during a conversat
 
 `backend/memory/kip.db` holds everything Kip keeps between runs. Its `memories` table has
 every kind of memory as a row: chat
-exchanges, facts you ask Kip to remember, task episodes, *skills* learned from
-successful errands (where things were found, the route that worked), and answers to
-past questions. Recall combines keyword search (FTS5) with meaning search (`sqlite-vec`
+exchanges, facts you tell Kip, task episodes and answers to past questions. Recall combines keyword search (FTS5) with meaning search (`sqlite-vec`
 plus a small local `fastembed` model, `BAAI/bge-small-en-v1.5`, about 70 MB, downloaded to
 `backend/memory/models/` on first use), then ranks by recency and importance.
 Rewordings of a memory reinforce it instead of being stored twice. If the embedding
 model cannot load, recall falls back to keyword search. Set `EMBEDDINGS_ENABLED=false` to
 skip it entirely.
 
-Chat replies, new errands (as `relevant_memories`, marked advisory) and the idle mind
-all read from this store. Browse or search it in the **Memories** tab, or with
-`GET /api/memories?q=...`.
+Chat replies and new errands (as `relevant_memories`, marked advisory) read from this store.
+Browse or search it under **About you**, or with `GET /api/memories?q=...`.
 
-Its `state` table holds structured documents: where people and objects were last seen,
-room tallies, delivery counts, the self-model and the persona. **Beliefs** (Beliefs tab,
-`GET /api/beliefs`, the idle mind) are computed from those tallies on demand, with
-confidence that fades with time since the last sighting; no model call maintains them.
+Its `state` table holds structured documents: recent errands, Kip's self-model (which tools
+have failed), his persona, the restrictions you set ("don't use Python") and the name you
+gave him, so he still knows who he is talking to after a restart.
 
 `backend/memory/persistent.json` and `beliefs.json` are the stores from before this. The first
 time the backend starts with a `kip.db` that has no state, it imports them, copies them to
@@ -197,105 +196,27 @@ are imported again).
 
 ```text
 backend/app/
-  world/        deterministic models, initial state, simulator, validated tool registry
-  llm/          small LLM protocol, JSON validation/retry, Colibri/Ollama adapters
-  agents/       distinct role prompts, typed decisions, role-specific model calls
-  tasks/        task-scoped memory and explicit bounded asyncio agent loop
+  chat/         the conversation: prompt, intent router, consent, claim checks, narration
+  agents/       Coordinator/Explorer/Critic prompts, typed decisions, role-specific model calls
+  tasks/        task context, permissions and the bounded asyncio agent loop
+  capabilities/ web search, webpage reading, restricted Python, answer grounding
+  memory/       kip.db: searchable memories and structured state
+  persona/      deterministic personality: mood, traits, relationships (no model calls)
+  llm/          small LLM protocol, JSON validation/retry, Colibri/Ollama/Groq adapters
   events/       bounded event history and WebSocket subscriber queues
+  clock.py      the real device clock (date, time, timezone)
   main.py       FastAPI lifecycle, endpoints, WebSocket stream
   check_model.py  live structured-output smoke check
-  evaluate.py   four live evaluation missions and programmatic success predicates
-frontend/src/
-  scene.js      primitive Three.js house, labels, avatar, people and objects
-  animations.js queued room-to-room interpolation
-  websocket.js  connection retry and authoritative snapshot resynchronization
-  api.js        HTTP requests
-  ui.js         task state and safe text-only activity feed
-  main.js       interface wiring
+frontend/src/   the chat interface
 ```
 
-`TaskManager._loop()` is the orchestration. Each Coordinator decision delegates,
-requests a review, proposes completion, or fails. Explorer returns a single
-allowlisted tool command or a report. A delegated task has an action budget,
-after which control returns to Coordinator. Critic reviews plans on request and
-every proposed completion. Reports from a delegation with no tool progress also
-receive a review, allowing Critic feedback to correct unsupported claims. Pickup
-and handoff proposals also require Critic approval before execution. It has
-a separate review budget to prevent debate loops. Conversation memory guides follow-ups without blocking repeated topics or messages.
-Execution budgets still bound stalled tasks.
-
-Coordinator and Critic receive **no simulator or tool handles**. Explorer's decision
-class receives only the LLM client and tool schemas. The manager dispatches its
-validated command through `WorldTools`; no role can execute Python or dynamically
-resolve a function name. All three roles share the same configured model, with
-distinct prompts and role-specific context. NPCs use deterministic keyword matching.
-
-Explorer chooses a schema-constrained `command_id` such as `move_to:hall` or
-`pick_up:charger`, with a free-text `message` for conversation. `agents/commands.py`
-constructs these tool choices from **observed rooms, inventory, successful actions
-and Coordinator's fixed success conditions**. It never reads the simulator or
-parses natural-language goal text. Object actions are scoped to the requested
-objects, and a handoff to an unnamed recipient requires conversation evidence
-establishing who needs that object. The choice maps to
-an ordinary `{tool, arguments}` call, which is validated again by the tool registry.
-This avoids requiring a small local model to invent valid identifiers and arguments
-on every step. The model still selects the route, questions, object actions and
-when to report. Static rooms are remembered, and known object transfers update
-that remembered view, so unchanged rooms do not require repeated `look` calls.
-
-### World and evidence
-
-The default scenario is [`backend/worlds/house.json`](backend/worlds/house.json),
-modelled after the supplied sketch: an L-shaped hall, kitchen, bedroom corridor,
-master bedroom, second bedroom, entrance vestibule and office. Doorways determine
-adjacency. Coordinates approximate the drawing; they are not measured dimensions.
-Mom/keys start in the kitchen, Neave/laptop in the master bedroom and Dad/charger
-in the office. These are editable example placements, not agent knowledge.
-
-The JSON defines room outlines, anchors, connections, door positions, people,
-objects, the robot start and topic-based NPC dialogue. Change it and click **Reset**
-to reload it. Set `WORLD_FILE` to an absolute path to load another scenario at startup.
-Invalid references, asymmetric connections and unknown fields are rejected. A failed
-reset preserves the previous world. See [the world format and hardware boundary](backend/worlds/README.md).
-
-There are three distinct information layers:
-
-- **Simulator truth:** the JSON and mutable world state. Only the simulator and
-  observer UI receive all occupants, objects and dialogue definitions.
-- **Prior map:** `get_map` returns static room geometry and connections, as a robot
-  could receive from a surveyed house. It contains no occupants, object locations,
-  dialogue, needs or inventory. The task starts with status and map observations.
-- **Robot evidence:** `look` scans the current room; `talk_to` returns the local
-  conversation transcript; movement and manipulation return action results.
-  `get_status` returns local position and carried inventory. These are idealized
-  semantic sensor/controller outputs, not implemented camera/audio processing.
-
-Every object has one tagged location: room, robot or person. Inventory is derived.
-Movement is restricted to adjacent rooms. Talk/give require a nearby person;
-pickup requires a portable object on the current room's floor. The scene draws
-room polygons and doorway waypoints from JSON, independently of agent planning.
-The outside of the house is not a navigable region in this version.
-
-NPC dialogue is scenario data. A response is a speech transcript, **not** a hidden
-structured `needs_object` fact. Explorer's language interpretation makes a separate
-local model call and proposes needs with exact supporting quotes. Python checks
-that the quote occurs in a real response; that does not prove the interpretation
-is correct or the speaker is truthful. Claims remain labelled unverified and the
-Critic sees the transcripts. A known recipient can still receive other messages.
-
-Task memory holds observations and interpretations separately. Cached views can
-be refreshed with `look`. No agent reads `/api/world` or the observer scene.
-Coordinator translates the goal into fixed typed outcomes: find an object/person,
-identify a recipient, hold/deliver/place an object, notify a person/everyone, or
-visit a room. Python checks action evidence for these outcomes; unknown-recipient
-conditions also rely on fallible transcript interpretation. These capabilities
-can compose across scenarios, but do not cover every possible household task.
-
-Completion requires all conditions satisfied, successful observation evidence IDs,
-and Critic approval. This is not a formal proof of arbitrary natural-language goals.
-Notification checks use normalized message text. Hardware will need perception,
-localization, collision-aware navigation, grasp feedback and safety controllers
-behind these interfaces; none is implemented or validated by this simulator.
+`TaskManager._loop()` is the orchestration. A plain lookup of a live fact skips planning and,
+with Groq, is answered in one browser-search call whose answer is checked against what it read.
+Otherwise Coordinator turns the request into required answer outcomes, Explorer picks digital
+tool calls (singly or as an independent batch) until it can cite successful evidence in
+`finish_answer`, and Coordinator replans or fails when progress stops. Critic reviews plans on
+request and any completion the deterministic checks cannot settle. Budgets on cycles, tool
+calls, model calls and time bound every task.
 
 ### Model interface
 
@@ -313,12 +234,10 @@ Only brief explicitly requested public summaries and validated tool results are 
 
 ### Realtime consistency
 
-The browser fetches `/api/world` at startup and on every reconnect. The WebSocket
-also begins with an authoritative snapshot after subscribing, closing the
-HTTP-to-WebSocket race. Events have monotonically increasing sequence numbers;
-the UI ignores events already included in a snapshot. Slow subscribers receive
-a resync snapshot instead of silently losing world changes. A reset/reconnect
-discards pending visual movement and places the avatar at the authoritative position.
+The WebSocket begins with an authoritative snapshot (`{sequence, task}` plus recent events)
+after subscribing, closing the HTTP-to-WebSocket race. Events have monotonically increasing
+sequence numbers; the UI ignores events already included in a snapshot. Slow subscribers
+receive a resync snapshot instead of silently losing events.
 
 ## Configuration
 
@@ -326,87 +245,94 @@ Copy `backend/.env.example` to `backend/.env`. Environment variables override it
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `LLM_PROVIDER` | `colibri` | `colibri` or `ollama`; shared by all roles and idle reflection |
+| `LLM_PROVIDER` | `colibri` | `colibri` or `ollama`; shared by all roles |
 | `COLIBRI_BASE_URL` | `http://127.0.0.1:8001/v1` | Colibri OpenAI-compatible endpoint |
 | `COLIBRI_MODEL` | `qwen3.6-colibri` | Qwen3.6-35B-A3B model ID reported by Colibri |
-| `IDLE_REFLECTION_ENABLED` | `true` | `.env.example` sets false so idle intention calls do not compete with user tasks |
-| `DIRECT_INITIAL_DELEGATION` | `false` | `.env.example` sets true: delegate the full goal after interpretation, saving one initial model call; later replanning still uses Coordinator |
 | `GROQ_API_KEY` | unset | Optional hosted Groq for goal planning and web-research tasks; unset keeps everything on Colibri |
+| `CRICKETDATA_API_KEY` | unset | Optional CricketData.org key for cricket (100 requests a day free); unset, ESPN's scoreboard answers cricket |
 | `GROQ_MODELS` | `openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b` | Preference order. Free-tier limits are per model, so a model whose quota is spent is skipped until its reset |
+| `GROQ_MAX_WAIT_SECONDS` | `20` | When every Groq model is rate-limited and one frees within this long, a call waits for it (once) instead of falling back to the local model, which can take minutes |
 | `GROQ_PLAN_CALLS` / `GROQ_RESEARCH_CALLS` | `2` / `4` | Hard caps on Groq calls per goal plan and per web-research task; past a cap, or on any Groq failure, Colibri continues |
 | `CHAT_HOSTED` / `GROQ_CHAT_MODELS` | `true` / `qwen/qwen3.8-27b,openai/gpt-oss-20b` | Conversation on Groq while it has quota, streamed, falling back to the local chat model |
 | `GROQ_SEARCH_REASONING` | `low` | Effort for Groq's browser search. Higher opens more pages, and every step re-reads each page read so far (one page can be ~50k tokens) |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Optional Ollama endpoint |
 | `OLLAMA_MODEL` | `qwen3:4b` | Used only when LLM_PROVIDER=ollama |
-| `WORLD_FILE` | `backend/worlds/house.json` | Optional absolute path to a scenario JSON |
+| `OLLAMA_KEEP_ALIVE` | unset | How long Ollama keeps the model loaded (`-1` always, or `30m`); unset is Ollama's 5 minutes |
+| `PROMPT_PROFILE` | `full` | `compact`: the same character, rules and action line in about a third of the size, at most 2 memories, for small local models. Groq gets the same prompt |
+| `LOCAL_CHAT_ERRANDS` | `true` | `false`: a reply the local model writes keeps its memories, but its task and offer are dropped; errands start only from the person's own words. For small local models. Groq-written replies are unaffected |
+| `COMPACT_HISTORY_TOKENS` | `600` | Earlier conversation the compact prompt carries; a long message itself is never refused for it |
 | `LLM_TIMEOUT_SECONDS` | `120` | Per model HTTP request; `.env.example` uses 600 for Colibri CPU inference |
 | `TASK_TIMEOUT_SECONDS` | `1800` | Entire task, including retries and reviews; allows CPU-only inference |
 | `TEMPERATURE` | `0.1` | Conservative structured generation |
 | `CONTEXT_TOKENS` | `8192` | Ollama context size |
 | `MAX_COORDINATOR_CYCLES` | `20` | Maximum planning iterations |
 | `MAX_EXPLORER_ACTIONS` | `40` | Hard safety ceiling per delegation, not the normal exit |
-| `MAX_TOOL_CALLS` | `80` | Includes bootstrap status/map and failed calls |
-| `MAX_CRITIC_REVIEWS` | `8` | Bounds transfer/completion reviews and recovery |
-| `MAX_SEMANTIC_STALL` | `3` | Barren physical actions before the strategy is replanned |
-| `SEARCH_STALE_AFTER` | `12` | Actions after which a room scan is worth repeating |
-| `SIMULATION_MODE` | `device` | `device` (the machine's local time), or the simulated `realtime` / `action_driven` (see below) |
-| `CLOCK_SPEED` | `60` | Simulated seconds per real second in `realtime` |
-| `CLOCK_START_HOUR` | `8` | Simulated hour at startup in `realtime` and `action_driven` |
-| `ACTION_SECONDS` | `60` | Simulated seconds per action in `action_driven` |
+| `MAX_TOOL_CALLS` | `80` | Includes failed calls |
+| `MAX_CRITIC_REVIEWS` | `8` | Bounds plan/completion reviews and recovery |
 | `LOG_LEVEL` | `INFO` | Use `DEBUG` for application diagnostics |
+| `TIMEZONE` | `Asia/Kolkata` | Every time Kip says or reasons with (the clock, match and race times, the status line), whatever the device's clock is set to; an IANA name |
 | `CHAT_PROVIDER` / `CHAT_MODEL` / `CHAT_BASE_URL` | unset | Optional separate (faster) model for conversation; unset uses the main model |
 | `CHAT_MAX_TOKENS` | `300` | Upper bound on one chat reply |
 | `CHAT_TEMPERATURE` | `0.6` | Conversational variety (tasks keep `TEMPERATURE`) |
-| `CHAT_QUIET_SECONDS` | `90` | Idle mind waits this long after chat activity |
 | `INTENT_ROUTER` | `on` | Local intent router: `on` sends confident live questions straight to the lookup, `shadow` only records what it would do, `off` |
 | `MEMORY_DB_FILE` | `backend/memory/kip.db` | Kip's durable store: memories and structured state |
 | `MEMORY_FILE` / `GRAPH_FILE` | `backend/memory/persistent.json` / `beliefs.json` | Legacy JSON stores, read once to import |
 | `EMBEDDINGS_ENABLED` | `true` | Meaning search with fastembed; false means keyword-only |
 | `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | fastembed model name |
 | `PERSONA_ENABLED` / `PERSONA_NAME` | `true` / `Kip` | Personality layer |
+| `CHAT_DEFAULT_SPEAKER` | unset | Who is talking when nobody has said; unset, Kip learns it from "my name is …" |
 | `PERSONA_MAKER` | unset | Who built Kip, as he should know it (e.g. `Neave`); unset, he says he does not know, never denying a claim or naming someone else |
-
-### Clock modes
-
-`device` (the default) is the real Kip: the house clock is the machine's own local time, at
-normal speed. Kip's status carries the date and timezone, people's routines follow the
-real hour, web lookups are told the local time, and "what time is it?" is answered straight
-from the clock with no model call. "What time?" right after a question about a match still
-asks about the match.
-
-The two simulated modes are for running the house as a simulation. In `realtime` the
-world advances at `CLOCK_SPEED` times wall-clock speed from `CLOCK_START_HOUR`, so a slow local model
-costs simulated minutes while it thinks — NPCs move during inference. In
-`action_driven` the clock advances only on successful robot actions, so
-inference latency cannot move the world. Use `action_driven` for evaluation and
-regression runs: results become reproducible and comparable across machines and
-model speeds.
-
-### Execution layers
-
-Not every step reaches the model. A reflex layer executes the action when intent
-and preconditions leave exactly one correct choice — scanning a room the robot has
-just entered, picking up the goal object when it is visible and unheld, handing the
-goal object to a recipient standing right there — and a route executor walks the
-remaining hops of a destination the model already committed to. Speech, drops and
-reports are never reflexive. Each decision is logged with `decision_source=reflex`,
-`decision_source=route_executor` or `decision_source=llm`, and every task ends with
-a `task_metrics` line so `llm_calls` per completed task can be compared between runs.
 
 The application uses in-process memory; use **one Uvicorn worker**. Bind it to
 loopback as shown. There is intentionally no authentication or remote deployment setup.
+
+### Running on a Raspberry Pi 4 (8 GB)
+
+Colibri does not fit a Pi: its 35B model is ~18 GB and streams weights from storage, which on a
+microSD card means seconds per word. Use Ollama with one small Qwen model instead, and the compact
+prompt. Start from `backend/.env.pi.example`:
+
+1. Install Ollama and `ollama pull qwen3.5:2b-q4_K_M` (the 4-bit build; the plain `qwen3.5:2b`
+   tag is 8-bit, twice the weights and about half the speed on a Pi).
+2. `Copy-Item .env.pi.example .env` (or `cp` on the Pi), then add `GROQ_API_KEY` if you have one.
+3. Check the model with `python -m app.check_model`.
+
+What to expect, as estimates from the Pi 4's memory bandwidth, not measurements: a 2B model reads a
+prompt at roughly 6–10 tokens a second and writes about 3; 0.8B roughly 15–25 and 6–8. So:
+
+- **Instant** (no model): the clock, router answers, F1 and cricket results from their feeds (below),
+  live lookups with Groq, and explicit tool requests like "use Python to…" or "read https://…",
+  whose errand starts at once. A named page is read with no planning call. Times are always in
+`TIMEZONE` (IST by default) and temperatures in °C, whichever model or feed answers.
+- **Tens of seconds**: anything the local model writes. The compact system prompt stays the same
+  every reply, so Ollama reuses it; each reply adds the mood, two memories, the status, recent
+  history (`COMPACT_HISTORY_TOKENS`) and the message.
+
+A 2B model is a weak judge of what to do: tested without Groq, its replies proposed nonsense
+errands, and one became an offer that blocked lookups for ten minutes. So the Pi settings keep it to
+talking and remembering (`LOCAL_CHAT_ERRANDS=false`); errands start from what you said. A request
+that only asks for Python costs one narrow model call that writes just the code.
+
+With `GROQ_API_KEY` set, Groq answers while it has quota, from the same compact prompt, and the
+Pi's model takes over when Groq cannot. Measure your own numbers with `python -m app.bench` from
+`backend` while Kip runs: it times chat, memory, a live lookup, Python and a page read. It talks to
+Kip like the browser, so start that backend with `MEMORY_DB_FILE` pointing at a copy of `kip.db` if
+the test conversation should not be kept. Keep `kip.db` on a USB 3 SSD if you can: it is written
+constantly, which wears microSD cards.
 
 ## API
 
 | Endpoint | Result |
 |---|---|
 | `GET /api/health` | Backend health plus provider/model availability in `llm` |
-| `GET /api/world` | `{world, sequence, task}` for visualization |
-| `POST /api/world/reset` | Cancel, reset world, clear session tasks and event history |
+| `GET /api/state` | `{sequence, task}`: the event sequence and the active or latest task |
+| `GET /api/chat` / `POST /api/chat` | Conversation history / `{ "message": "..." }` → 202 |
+| `GET /api/memories` | `?q=&kind=&limit=`: search or list Kip's memories |
+| `GET /api/persona` | Mood, traits, relationships and recent moments |
 | `POST /api/tasks` | `{ "goal": "..." }` → 202 with task state |
 | `GET /api/tasks/{id}` | Task state, observations and reviews |
 | `POST /api/tasks/{id}/cancel` | Cancel active task; terminal tasks unchanged |
-| `WS /ws` | Initial snapshot, then world/agent/tool/task events |
+| `WS /ws` | Initial snapshot, then chat/agent/tool/task/persona events |
 
 Interactive API docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
 Task history is bounded to the latest 50 tasks. Event history retains 300 events.
@@ -419,28 +345,13 @@ From `backend`, with its virtual environment installed:
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m app.check_model
-.\.venv\Scripts\python.exe -m app.evaluate
-# Run just one live mission:
-.\.venv\Scripts\python.exe -m app.evaluate --mission 3
 ```
 
 If using this workspace's root virtual environment, substitute
 `..\.venv\Scripts\python.exe` for those commands while in `backend`.
 
 `pytest` uses scripted/mock model responses and does **not** require a running model server.
-The smoke check and evaluation commands intentionally call your local model.
-Each evaluation mission starts a fresh independent world and exits nonzero if
-the task fails or its programmatic success condition is unmet.
-
-| Mission | Success condition |
-|---|---|
-| Find the charger | Successful `look` observed the charger |
-| Find Neave and tell him dinner is ready | Successful `talk_to(neave, ...)` conveyed dinner-ready message |
-| Find out who needs the charger and deliver it | Conversation established need and charger location is person/neave |
-| Find the missing keys | Successful `look` observed keys |
-
-The checks are intentionally simple predicates for these four missions. They
-are not a general semantic goal evaluator and do not steer the production agents.
+The smoke check intentionally calls your local model.
 
 From `frontend`:
 
@@ -449,8 +360,8 @@ npm test
 npm run build
 ```
 
-The JavaScript test checks interpolation order and resynchronization. The
-production build checks module resolution and bundling. See `VALIDATION.md` for
+The JavaScript tests cover the pure UI helpers. The production build checks module
+resolution and bundling. See `VALIDATION.md` for
 the actual validation performed during implementation.
 
 ## Troubleshooting and V1 limits
@@ -458,45 +369,17 @@ the actual validation performed during implementation.
 - **Model missing/offline:** start Colibri on port 8001 and check `/v1/models`
   agrees with `COLIBRI_MODEL`. Restart the backend after changing `.env`.
 - **Slow inference:** CPU inference with a small expert cache can take minutes per
-  decision. The role indicator stays active while waiting. Increase the request/task
-  timeout as needed. Use `SIMULATION_MODE=action_driven` for comparable evaluations.
+  decision. Increase the request/task timeout as needed, or set `GROQ_API_KEY`.
 - **Truncated model output:** increase Colibri's output/context capacity or shorten
   the context. The adapter reports truncation as a task failure; it never accepts
   a partial JSON response as a completed decision.
-- **Failure or cancellation:** completed actions are not rolled back. Inspect the
-  activity feed, then Reset for a clean attempt.
-- **Disconnected UI:** it retries automatically and fetches a fresh world snapshot.
-- **Blank 3D view:** enable WebGL/hardware acceleration in the browser.
+- **Disconnected UI:** it retries automatically and fetches a fresh snapshot.
 - **Port conflict:** stop the existing process on 8000 or 5173. If changing ports,
   update both Vite proxy targets and the backend launch command.
-- This is a four-room deterministic simulator with static NPC locations, keyword
-  conversation, simple room interpolation, no pathfinding or physics, no persistent
-  memory, and no physical hardware. NPCs cannot hand held objects back to the robot.
 - Model decisions can be inefficient or wrong. Invalid actions are rejected,
-  completion is reviewed, and hard budgets stop stalled tasks. These checks cannot
-  guarantee that a local model will solve every arbitrary goal.
+  answers are checked against their cited evidence, and hard budgets stop stalled
+  tasks. These checks cannot guarantee that a model will answer every question.
 
-A useful V2 step is a larger regression mission suite with evidence-based goal
-predicates and measured success/latency across local models, before adding a
-larger world or more autonomous capabilities.
-
-
-### Search recovery
-
-Agent context includes a compact map (room names and connections, without rendering
-geometry) and per-object delivery prerequisites derived only from observations.
-Knowing a recipient does not imply holding or locating the object. Explorer must
-use a movement command to search elsewhere, rather than announcing that plan through
-speech. The same applies when Critic advice skips a pickup prerequisite.
-
-Explorer validates nonblank speech before executing talk_to. Missing, empty or
-whitespace-only messages receive one structured-output repair attempt with an explicit
-instruction to supply the actual words. Two invalid decisions fail before speech
-execution. Task memory records prior conversations, but neither repeated wording nor
-an already investigated topic blocks further dialogue. Failed tool calls are not
-treated as successful observations by the remaining non-conversation repeat check.
-Tool, delegation, cycle and time limits still bound execution; these changes do not
-guarantee that every conversation will make progress.
 ## Web research and small Python programs
 
 Every digital request goes through the model, including an explicit URL plus a
@@ -507,10 +390,9 @@ The initial goal plan can request up to four independent tools with fully known
 arguments. Later decisions can use `batch_capabilities` to group independent
 calls too. These public reads/restricted Python calls execute concurrently, with
 the complete batch checked against the remaining tool budget before starting.
-Each actual result retains its own evidence record. Physical actions and final
-answers cannot be batched. A search must finish before the model selects a result
+Each actual result retains its own evidence record. Final answers cannot be batched. A search must finish before the model selects a result
 URL; programs using page data must wait for that data. Cancellation preserves
-completed evidence and cancels unfinished calls. Existing robot actions remain.
+completed evidence and cancels unfinished calls.
 
 Model prompts use smaller page excerpts (with continuation offsets), shorter
 search snippets, and short citation labels. Full tool observations and original
@@ -520,8 +402,7 @@ still validates outputs. Metrics now include the initial GoalPlan call. These
 changes reduce inference work and round trips; model/hardware speed still limits
 response time, and general research is not guaranteed to be instantaneous.
 
-Colibri remains the local model; the existing robot navigation, search, conversation,
-pickup and delivery tools remain available. You can now also give goals such as:
+Things you can ask:
 
 - “Search the internet for Raspberry Pi 5 power requirements. Read the official source and explain them.”
 - “Read https://www.raspberrypi.com/documentation/ and summarize what it covers.”
@@ -530,11 +411,26 @@ pickup and delivery tools remain available. You can now also give goals such as:
 Install the updated dependencies in the backend's existing environment with
 `python -m pip install -r requirements.txt`, then restart the backend and refresh
 the frontend. No search API key is required. `DIGITAL_TOOLS_ENABLED=true` is the
-default; set it to false to disable the new capabilities. No MCP service is needed
-for this first implementation, and skills/personality loading is not included.
+default; set it to false to disable them.
+
+**Results and weather feeds.** F1, cricket and weather questions the router recognises are
+answered from a feed before any search: F1 from [Jolpica](https://api.jolpi.ca/ergast/f1) (the Ergast
+successor: results, qualifying, sprints, standings, the next race; free, no key) and cricket from
+[CricketData.org](https://cricketdata.org/)'s `cricScore` when `CRICKETDATA_API_KEY` is set (results,
+live scores and fixtures for a week or more either side; 100 requests a day free, and one request is
+kept for a minute so follow-ups cost nothing), else ESPN's scoreboard (the last few days; free, no
+key, but unofficial, so it can change without notice). ESPN also answers when the day's 100 are used
+or a match is not in CricketData's list. Weather comes from [Open-Meteo](https://open-meteo.com/) (free, no key): now,
+today, tomorrow, yesterday or this weekend at a named place, in °C. Air quality, UV, other periods and
+questions with no place go to the web lookup. One request, exact facts, an answer in fixed words and
+no model call, recorded like a web search, so "don't use the internet" still stops it. Team names
+must match exactly ("India" is not "India Under-19s"). Anything a feed does not cover (practice
+times, pit stops, broadcasters, a match outside the cricket feeds) goes to the usual web lookup.
 
 The agent chooses search queries, page URLs and short programs as needed. Search
-uses DDGS (DuckDuckGo/Bing); queries are sent to those external search services,
+uses DDGS, trying DuckDuckGo, Yahoo, Brave and Mojeek in turn until one answers (Yahoo up to
+three times, in fresh sessions, since it sometimes serves a page layout DDGS cannot read);
+queries are sent to those external search services,
 and reading a page contacts its website. Model inference stays local. Search may
 be throttled; errors are reported rather than replaced with invented results.
 The webpage reader supports public HTML/plain text, validates every redirect,
@@ -545,16 +441,15 @@ into accounts, or read PDFs. Long pages can be read in successive text windows.
 Python runs in Monty 1.3.0, a restricted Python interpreter in a separate worker,
 with a fresh session, a 3-second execution limit, 64 MB interpreter memory limit,
 bounded output, and no exposed host functions, filesystem mounts, network,
-shell, credentials or robot controls. It supports small calculations and data
+shell or credentials. It supports small calculations and data
 transformations, not arbitrary CPython packages or installing dependencies.
 The tool's input dictionary is available as `data`; print a result or end with
 an expression. Failed programs provide errors for correction and do not count
 as successful execution. This is bounded interpreter execution, not an OS-wide
 security guarantee against runtime vulnerabilities.
 
-Research and calculation results appear in the Answer panel with source links;
+Research and calculation results appear in the conversation with source links;
 tool activity and failures appear in Activity. Final answers must reference
 successful task-local tool evidence and the tools required by the interpreted
 goal. This checks provenance/execution, not the factual correctness of every
-sentence. External page content is treated as untrusted data. Digital tools do
-not move the avatar or advance the simulated world clock in action-driven mode.
+sentence. External page content is treated as untrusted data.

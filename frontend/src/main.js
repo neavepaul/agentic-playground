@@ -1,137 +1,101 @@
 import './style.css';
 import { api } from './api.js';
-import { createScene } from './scene.js';
 import { connectEvents } from './websocket.js';
-import { addEvent, clearFeed, getTask, setAgent, setConnection, setMemoryOpen, setTask, setWorld, showError } from './ui.js';
-import { renderBeliefs } from './beliefs.js';
-import { renderPersona } from './persona.js';
-import { handleChatEvent, initChat } from './chat.js';
+import { handleChatEvent, initChat, isChatEvent, reloadChat, showNote } from './chat.js';
+import { initLookups, update as updateLookup } from './lookups.js';
+import { addEvent, clearActivity, initActivity } from './activity.js';
 import { initMemories, loadMemories } from './memories.js';
+import { renderPersona } from './persona.js';
+import { initPanel, initTabs, setConnection, setModel, setMood } from './ui.js';
 
-let scene;
-try { scene = createScene(document.getElementById('scene')); }
-catch { showError('The 3D view requires WebGL. Enable hardware acceleration or try another browser.'); }
-let sequence = -1;
-let activeTab = 'activity';
-const beliefsPanel = document.getElementById('beliefs-panel');
-const personaPanel = document.getElementById('persona-panel');
 const memoriesPanel = document.getElementById('memories-panel');
-initMemories(memoriesPanel);
-initChat();
+const personaPanel = document.getElementById('persona-panel');
+const activityPanel = document.getElementById('activity-panel');
 
-async function fetchAndRenderBeliefs() {
-  try {
-    const [data, worldData] = await Promise.all([api('/beliefs'), api('/world')]);
-    const people = new Set(Object.keys(worldData?.world?.people ?? {}));
-    const rooms = new Set(Object.keys(worldData?.world?.rooms ?? {}));
-    renderBeliefs(beliefsPanel, data, people, rooms);
-  } catch {
-    beliefsPanel.innerHTML = '<p class="beliefs-empty">Could not load beliefs.</p>';
+let sequence = -1;
+let replaying = false;
+let persona = null;
+let memoriesTimer;
+
+initChat();
+initLookups();
+initPanel();
+initMemories(memoriesPanel);
+const tabs = initTabs(['memories', 'persona', 'activity'], (name) => {
+  if (name === 'memories') loadMemories(memoriesPanel);
+  if (name === 'persona') loadPersona();
+});
+initActivity(activityPanel, () => { if (!replaying) tabs.flag('activity'); });
+loadMemories(memoriesPanel);
+
+async function loadPersona() {
+  try { showPersona(await api('/persona')); }
+  catch {
+    if (tabs.active() === 'persona') {
+      personaPanel.innerHTML = '<div class="panel-empty"><strong>Could not load Kip’s personality</strong><span>Check that the backend is running.</span></div>';
+    }
   }
 }
 
-async function fetchAndRenderPersona() {
-  try { renderPersona(personaPanel, await api('/persona')); }
-  catch { personaPanel.innerHTML = '<p class="beliefs-empty">Could not load the personality.</p>'; }
+function showPersona(data) {
+  persona = data;
+  setMood(data);
+  if (tabs.active() === 'persona') renderPersona(personaPanel, data);
 }
 
-const tabs = {
-  activity: { panel: document.getElementById('feed') },
-  beliefs: { panel: beliefsPanel, load: fetchAndRenderBeliefs },
-  persona: { panel: personaPanel, load: fetchAndRenderPersona },
-  memories: { panel: memoriesPanel, load: () => loadMemories(memoriesPanel) },
-};
-for (const name of Object.keys(tabs)) {
-  document.getElementById(`tab-${name}`).addEventListener('click', () => {
-    if (activeTab === name) return;
-    activeTab = name;
-    for (const [other, { panel }] of Object.entries(tabs)) {
-      const button = document.getElementById(`tab-${other}`);
-      button.classList.toggle('active', other === name);
-      button.setAttribute('aria-selected', String(other === name));
-      panel.hidden = other !== name;
-    }
-    document.getElementById(`tab-${name}`).classList.remove('has-update');
-    if (tabs[name].load) requestAnimationFrame(tabs[name].load);
-  });
+/** New memories are written just after Kip replies; refresh the list if it is open. */
+function refreshMemoriesSoon() {
+  if (tabs.active() !== 'memories') return;
+  clearTimeout(memoriesTimer);
+  memoriesTimer = setTimeout(() => loadMemories(memoriesPanel), 1500);
 }
 
 function snapshot(data, events) {
-  sequence = data.sequence;
-  scene?.update(data.world, true);
-  setWorld(data.world);
-  setTask(data.task);
-  if (events) { clearFeed(); events.forEach(e => handleChatEvent(e) || addEvent(e)); }
+  sequence = Math.max(sequence, Number(data?.sequence ?? -1));
+  if (data?.task) updateLookup(data.task);
+  if (!events) return; // the HTTP pre-fetch; the socket's own snapshot follows
+  replaying = true;
+  clearActivity();
+  for (const event of events) if (!isChatEvent(event)) addEvent(event);
+  replaying = false;
+  reloadChat(); // authoritative history, rebuilt on every (re)connect
 }
-connectEvents({ snapshot, connection: setConnection, error: showError, event(event) {
-  if (event.sequence <= sequence) return;
-  sequence = event.sequence;
-  const d = event.data;
-  if (event.type === 'world_reset') { clearFeed(); setTask(null); }
-  if (d.world) { scene?.update(d.world, event.type === 'world_reset'); setWorld(d.world); }
-  if (d.task) setTask(d.task);
-  if (event.type === 'agent_active' || event.type === 'agent_message' || event.type === 'critic_review') setAgent(event.agent);
-  if (event.type === 'agent_message') document.getElementById('task-summary').textContent = d.summary;
-  if (event.type === 'world_tick') return;
-  if (handleChatEvent(event)) return;
-  if (event.type === 'persona_updated') {
-    if (activeTab === 'persona') renderPersona(personaPanel, d.persona);
-    else document.getElementById('tab-persona').classList.add('has-update');
-    return;
-  }
-  if (event.type === 'beliefs_updated') {
-    if (activeTab === 'beliefs') requestAnimationFrame(fetchAndRenderBeliefs);
-    else {
-      document.getElementById('tab-beliefs').classList.add('has-update');
-    }
-    return;
-  }
-  addEvent(event);
-} });
 
-document.getElementById('goal-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const goal = document.getElementById('goal').value.trim();
-  if (!goal) return showError('Enter a goal first.');
-  showError();
-  document.getElementById('run').disabled = true;
-  try {
-    const created = await api('/tasks', { goal });
-    // A WebSocket update may arrive before this HTTP response. Preserve newer state.
-    if (getTask()?.id !== created.id) setTask(created);
+function onEvent(event) {
+  if (typeof event?.sequence === 'number') {
+    if (event.sequence <= sequence) return;
+    sequence = event.sequence;
   }
-  catch (error) { showError(error.message); setTask(getTask()); }
+  const d = event.data || {};
+  if (handleChatEvent(event)) {
+    if (event.type === 'chat_message') refreshMemoriesSoon();
+    return;
+  }
+  if (event.type === 'persona_updated') {
+    const moodChanged = d.persona?.mood !== persona?.mood;
+    if (d.persona) showPersona(d.persona);
+    if (moodChanged) tabs.flag('persona');
+    return;
+  }
+  if (d.task) updateLookup(d.task);
+  addEvent(event);
+}
+
+connectEvents({
+  snapshot,
+  event: onEvent,
+  connection: setConnection,
+  error(message) {
+    if (message) showNote(message, 'sticky');
+    else if (document.getElementById('error').dataset.tone === 'sticky') showNote('');
+  },
 });
-document.getElementById('reset').addEventListener('click', async () => {
-  try { snapshot(await api('/world/reset', {})); showError(); }
-  catch (error) { showError(error.message); }
-});
-document.getElementById('cancel').addEventListener('click', async () => {
-  if (!getTask()) return;
-  try { setTask(await api(`/tasks/${getTask().id}/cancel`, {})); }
-  catch (error) { showError(error.message); }
-});
-document.getElementById('view-reset').addEventListener('click', () => scene?.resetView());
-document.getElementById('memory-open').addEventListener('click', () => setMemoryOpen(true));
-document.getElementById('memory-close').addEventListener('click', () => setMemoryOpen(false));
-document.getElementById('memory-overlay').addEventListener('click', (event) => {
-  if (event.target.id === 'memory-overlay') setMemoryOpen(false);
-});
-document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') setMemoryOpen(false);
-});
-document.querySelectorAll('[data-goal]').forEach(button => button.addEventListener('click', () => {
-  document.getElementById('goal').value = button.dataset.goal;
-  document.getElementById('goal').focus();
-}));
+
 async function checkModel() {
-  try {
-    const { llm } = await api('/health');
-    const provider = llm.provider === 'colibri' ? 'Colibri' : 'Ollama';
-    document.getElementById('model-status').textContent = llm.model_available
-      ? `${llm.model} · ready locally`
-      : llm.reachable ? `Model missing · check ${provider}: ${llm.model}` : `${provider} offline · start the model server`;
-  } catch { document.getElementById('model-status').textContent = 'Backend offline'; }
+  // The conversation model is the one people feel: Groq when chat is hosted.
+  try { const health = await api('/health'); setModel(health.chat || health.llm); }
+  catch { setModel(null); }
 }
 checkModel();
 setInterval(checkModel, 30000);
+loadPersona();

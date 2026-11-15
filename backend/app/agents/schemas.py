@@ -1,7 +1,6 @@
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from pydantic_core import PydanticCustomError
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 ShortText = Annotated[str, Field(min_length=1, max_length=300)]
 
@@ -28,13 +27,16 @@ class CoordinatorDecision(StrictModel):
         return self
 
 
+class PythonProgram(StrictModel):
+    """The program for a request that only asks for Python: the one thing the model writes."""
+    code: str = Field(min_length=1, max_length=4000)
+
+
 class ExplorerDecision(StrictModel):
     action: Literal["tool", "report"]
     summary: ShortText
     tool: str = Field(default="", max_length=40)
     arguments: dict = Field(default_factory=dict)
-    # Set by the executor, never by the model: which layer produced this action.
-    source: Literal["llm", "reflex", "route_executor", "reflex_search"] = "llm"
 
     @model_validator(mode="after")
     def required_fields(self):
@@ -51,46 +53,10 @@ class CriticReview(StrictModel):
     suggestion: str = Field(default="", max_length=400)
 
 
-class CommandChoice(StrictModel):
-    command_id: str
-    message: str = Field(default="", max_length=500,
-                         description="For talk_to, the actual nonempty words to say. Empty only for other commands.")
-    summary: ShortText
-
-    @model_validator(mode="after")
-    def speech_required(self):
-        self.message = self.message.strip()
-        if self.command_id.startswith("talk_to:") and not self.message:
-            raise PydanticCustomError("speech_message_required",
-                                      "talk_to requires a nonempty spoken message; summary is not speech.")
-        return self
-
-
 class GoalCondition(StrictModel):
-    kind: Literal["find_object", "find_person", "identify_recipient", "hold_object", "deliver", "notify",
-                  "notify_everyone", "place_object", "visit_room", "answer"]
-    object: str = Field(default="", max_length=40)
-    person: str = Field(default="", max_length=40)
-    room: str = Field(default="", max_length=40)
-    message: str = Field(default="", max_length=500)
+    """A verifiable outcome: an answer, backed by the tools it needs."""
+    kind: Literal["answer"] = "answer"
     required_tools: list[Literal["web_search", "read_webpage", "run_python"]] = Field(default_factory=list, max_length=3)
-
-    @field_validator("object", "person", "room")
-    @classmethod
-    def normalize_entity_id(cls, value: str) -> str:
-        return "_".join(value.strip().casefold().split())
-
-    @model_validator(mode="after")
-    def required_targets(self):
-        if self.kind in {"find_object", "identify_recipient", "hold_object", "deliver", "place_object"} and not self.object:
-            raise ValueError("This condition requires an object ID.")
-        if self.kind in {"find_person", "notify"} and not self.person:
-            raise ValueError("This condition requires a person ID.")
-        if self.kind in {"place_object", "visit_room"} and not self.room:
-            raise ValueError("This condition requires a room ID.")
-        if self.kind in {"notify", "notify_everyone"} and not self.message:
-            raise ValueError("A notification requires its actual message.")
-        return self
 
 
 class InitialCapability(StrictModel):
@@ -104,27 +70,7 @@ class GoalPlan(StrictModel):
     initial_actions: list[InitialCapability] = Field(default_factory=list, max_length=4)
 
 
-class SpokenNeed(StrictModel):
-    object: str = Field(min_length=1, max_length=40)
-    person: str = Field(min_length=1, max_length=40)
-    quote: str = Field(min_length=1, max_length=500)
-
-    @field_validator("object", "person")
-    @classmethod
-    def normalize_entity_id(cls, value: str) -> str:
-        normalized = "_".join(value.strip().casefold().split())
-        if not normalized:
-            raise ValueError("An entity ID must not be blank.")
-        return normalized
-
-
-class ConversationMove(StrictModel):
-    existing_thread_id: str = Field(default="", max_length=40)
-    thread_summary: ShortText
-    advances_thread: bool
-
-
-class ConversationMeaning(StrictModel):
-    needs: list[SpokenNeed] = Field(default_factory=list, max_length=8)
-    thread_resolved: bool = False
-    thread_summary: str = Field(default="", max_length=300)
+class LookupPlan(GoalPlan):
+    """A plain web lookup; for a sport with a results feed it also carries the router's reading
+    (domain, entities, focus, time, place), so the feed can answer before any search."""
+    feed: dict | None = None

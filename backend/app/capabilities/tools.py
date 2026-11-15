@@ -1,8 +1,10 @@
 import asyncio
 import logging
 
+import httpx
 from pydantic import ValidationError
 
+from app import clock
 from app.events.bus import EventBus
 from .schemas import ACTION_SCHEMAS
 from .python import run_python
@@ -32,40 +34,47 @@ def required_tool_progress(context) -> dict:
 
 
 class CapabilityTools:
-    def __init__(self, bus: EventBus, enabled: bool = True, hosted=None):
+    def __init__(self, bus: EventBus, enabled: bool = True, hosted=None, cricket_key=None):
         self.bus, self.enabled = bus, enabled
         # Groq, whose built-in browser search can look a question up and answer it in one call.
         self.hosted = hosted
+        self.cricket_key = cricket_key.get_secret_value().strip() if cricket_key else ""
 
     def can_answer_from_web(self) -> bool:
         return self.enabled and self.hosted is not None and self.hosted.can_search()
 
     async def web_answer(self, query: str, messages: list[dict], context,
-                         about_today: bool = False) -> tuple[dict, str]:
+                         about_today: bool = False, about_latest: bool = False) -> tuple[dict, str]:
         """(web_search result, answer): the search run by Groq's browser search, which also
         writes the answer. Its pages are the evidence, recorded like any web_search.
 
         The answer is used only if what it states is in what Groq read: its quoted source must
         be there, and every time and figure must come from it (grounding.py). Otherwise the
         search counts as failed and the usual lookup, which reads the pages itself, takes over."""
-        from datetime import datetime
         from app.llm.base import ModelError
-        from .grounding import unbacked_results, unsupported, wrong_day
+        from .grounding import stale_latest, unbacked_results, unsupported, wrong_day, wrong_winner
         answer = ""
         try:
             found = await self.hosted.search(messages)
             answer = found.answer
             if not found.sources or not answer:
                 raise ValueError("Groq answered without searching the web.")
-            now = datetime.now().astimezone()
+            now = clock.now()
             problems = unsupported(answer, found.quote, found.evidence,
                                    int(now.utcoffset().total_seconds() // 60),
                                    today=now.date())
             # "7 runs" when the page says 7 wickets; "series 4-1" when it says 3-1.
             problems += unbacked_results(answer, f"{found.quote}\n{found.evidence}")
+            winner = wrong_winner(answer, found.quote)  # "Antonelli won" from "...as Verstappen wins"
+            if winner:
+                problems.append(winner)
             stale = wrong_day([s["title"] for s in found.sources] + [found.quote], now.date()) if about_today else None
             if stale:
                 problems.append(stale)  # a March final is not today's match
+            if about_latest and not about_today:
+                old = stale_latest([s["title"] for s in found.sources] + [found.quote], found.evidence, now.date())
+                if old:
+                    problems.append(old)  # an October race is not the most recent one in November
             if problems:
                 raise ValueError("Groq's answer is not backed by what it read: " + "; ".join(problems)
                                  + f". It said: {answer[:200]!r}")
@@ -78,6 +87,25 @@ class CapabilityTools:
         event = self.bus.emit(event_type, "explorer", task_id=context.id,
                               tool="web_search", arguments={"query": query}, **result)
         return {**result, "evidence_id": event["id"]}, answer
+
+    async def feed_answer(self, query: str, question: dict, context) -> tuple[dict | None, str]:
+        """(web_search result, answer) from a results feed (feeds.py), recorded like any search;
+        (None, "") when the feed does not cover the question or cannot be reached."""
+        from . import feeds
+        try:
+            found = await feeds.answer(question, clock.now(), cricket_key=self.cricket_key)
+        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
+            logging.getLogger("agentic_friend.capabilities").info("results feed not used: %s", type(exc).__name__)
+            return None, ""
+        if found is None:
+            return None, ""
+        result = {"success": True, "observation": {
+            # The feed's facts are the result's text: answer checks read evidence as titles and snippets.
+            "query": query, "results": [{"title": found.title, "url": found.url, "snippet": found.answer}],
+            "provider": found.provider, "quote": found.answer, "untrusted_content": True}}
+        event = self.bus.emit("capability_observed", "explorer", task_id=context.id,
+                              tool="web_search", arguments={"query": query}, **result)
+        return {**result, "evidence_id": event["id"]}, found.answer
 
     async def execute(self, tool: str, arguments: dict, context) -> dict:
         try:
@@ -116,7 +144,6 @@ class CapabilityTools:
     @staticmethod
     def _wrong_event(answer: str, evidence: list[dict], goal: str) -> list[str]:
         """Times in a sports answer the cited pages give only for another match."""
-        from datetime import datetime
         from app.chat.router import SPORTS, read_slots
         from .grounding import wrong_event
         slots = read_slots(goal)
@@ -128,7 +155,7 @@ class CapabilityTools:
             obs = item["observation"]
             pages.append(str(obs.get("text") or ""))
             pages += [f"{r.get('title', '')} {r.get('snippet', '')}" for r in obs.get("results", [])]
-        offset = int(datetime.now().astimezone().utcoffset().total_seconds() // 60)
+        offset = int(clock.now().utcoffset().total_seconds() // 60)
         from .grounding import unbacked_results
         pages = [p for p in pages if p.strip()]
         return wrong_event(answer, pages, teams, offset) + unbacked_results(answer, "\n".join(pages))

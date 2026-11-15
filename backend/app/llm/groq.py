@@ -3,13 +3,15 @@
 Colibri stays the engine for conversation and the task loop. Groq's free tier
 limits each model separately, so a pool of models is tried in preference order and
 a model whose quota is spent is skipped until its reset time. Each model is tried
-at most once per call: nothing here loops, waits or retries.
+at most once per call, except that when every model is rate-limited and one frees within
+GROQ_MAX_WAIT_SECONDS, the call waits for it once: seconds here beat minutes on the local model.
 
 Requests are plain chat completions: the system, user and history messages as given,
 with no JSON mode, tools or reasoning parameters. Callers validate any JSON locally.
 The one exception is search(): Groq's built-in browser_search, on the gpt-oss models
 that support it, which looks something up on the web and writes the answer in one call.
 """
+import asyncio
 import json
 import logging
 import re
@@ -54,15 +56,31 @@ class ModelQuota:
     requests_reset_at: float = 0.0
     remaining_tokens: int | None = None
     tokens_reset_at: float = 0.0
+    limit_tokens: int | None = None
+    tokens_seen_at: float = 0.0
 
     def available(self, need_tokens: int, now: float) -> bool:
-        if now < self.blocked_until:
-            return False
-        if self.remaining_requests is not None and self.remaining_requests < 1 and now < self.requests_reset_at:
-            return False
-        if self.remaining_tokens is not None and self.remaining_tokens < need_tokens and now < self.tokens_reset_at:
-            return False
-        return True
+        return self.free_in(need_tokens, now) <= 0
+
+    def free_in(self, need_tokens: int, now: float) -> float:
+        """Seconds until this model can take a call this size; 0 if it can now."""
+        waits = [self.blocked_until - now]
+        if self.remaining_requests is not None and self.remaining_requests < 1:
+            waits.append(self.requests_reset_at - now)
+        if self.remaining_tokens is not None and self.remaining_tokens < need_tokens:
+            # reset-tokens is when the per-minute bucket is full again; it refills steadily, so a
+            # call that fits the bucket can go once enough has come back.
+            full = self.tokens_reset_at - now
+            if self.limit_tokens and need_tokens <= self.limit_tokens:
+                refill = (need_tokens - self.remaining_tokens) * 60 / self.limit_tokens - (now - self.tokens_seen_at)
+                full = min(full, refill)
+            waits.append(full)
+        return max(0.0, *waits)
+
+    def rate_limited(self, wait: float, now: float) -> None:
+        """A 429: its retry-after is Groq's answer for this model, over what the token headers suggest."""
+        self.blocked_until = now + wait
+        self.remaining_tokens = self.remaining_requests = None
 
     def observe(self, headers: httpx.Headers, now: float) -> None:
         def number(name):
@@ -75,8 +93,9 @@ class ModelQuota:
             self.remaining_requests = requests
             self.requests_reset_at = now + (reset_seconds(headers.get("x-ratelimit-reset-requests")) or 60)
         if tokens is not None:
-            self.remaining_tokens = tokens
+            self.remaining_tokens, self.tokens_seen_at = tokens, now
             self.tokens_reset_at = now + (reset_seconds(headers.get("x-ratelimit-reset-tokens")) or 60)
+            self.limit_tokens = number("x-ratelimit-limit-tokens") or self.limit_tokens
 
 
 def estimate_tokens(messages: list[dict]) -> int:
@@ -85,13 +104,13 @@ def estimate_tokens(messages: list[dict]) -> int:
 
 
 class GroqClient:
-    def __init__(self, settings: Settings, now=time.monotonic) -> None:
+    def __init__(self, settings: Settings, now=time.monotonic, sleep=None) -> None:
         if settings.groq_api_key is None:
             raise ValueError("GROQ_API_KEY is not set.")
         self.settings = settings
         self.models = [model.strip() for model in settings.groq_models.split(",") if model.strip()]
         self.quota = {model: ModelQuota() for model in self.models}
-        self.now = now
+        self.now, self.sleep = now, sleep or asyncio.sleep
         self.last_metrics: dict = {}
         self.http = httpx.AsyncClient(
             base_url=settings.groq_base_url.rstrip("/") + "/", timeout=settings.groq_timeout_seconds,
@@ -102,11 +121,23 @@ class GroqClient:
         return [model for model in self.models if self.quota[model].available(need_tokens, now)
                 and (not searching or model.startswith(SEARCH_MODELS))]
 
+    def free_soon(self, need_tokens: int, searching: bool = False) -> dict[str, float]:
+        return self._soon([model for model in self.models if not searching or model.startswith(SEARCH_MODELS)],
+                          need_tokens)
+
+    def _soon(self, models: list[str], need_tokens: int) -> dict[str, float]:
+        """Rate-limited models that can take this call within GROQ_MAX_WAIT_SECONDS, with their wait."""
+        now, limit = self.now(), self.settings.groq_max_wait_seconds
+        waits = {model: self.quota.setdefault(model, ModelQuota()).free_in(need_tokens, now) for model in models}
+        return {model: wait for model, wait in waits.items() if 0 < wait <= limit}
+
     def has_capacity(self, messages: list[dict] | None = None) -> bool:
-        return bool(self.candidates(estimate_tokens(messages or [])))
+        need = estimate_tokens(messages or [])
+        return bool(self.candidates(need) or self.free_soon(need))
 
     def can_search(self, messages: list[dict] | None = None) -> bool:
-        return bool(self.candidates(estimate_tokens(messages or []) + SEARCH_TOKENS, searching=True))
+        need = estimate_tokens(messages or []) + SEARCH_TOKENS
+        return bool(self.candidates(need, searching=True) or self.free_soon(need, searching=True))
 
     async def generate(self, messages: list[dict], response_schema: dict) -> str:
         message = await self._complete(estimate_tokens(messages), lambda model: {
@@ -145,9 +176,18 @@ class GroqClient:
     async def _complete(self, need: int, body, searching: bool = False) -> dict:
         """The reply message from the first model in preference order that can answer."""
         self.last_metrics = {}
-        tried, retried = [], set()
+        tried, retried, waited = [], set(), False
         queue = self.candidates(need, searching)
-        while queue:
+        while True:
+            if not queue and not waited and (soon := self.free_soon(need, searching)):
+                # Every model is rate-limited, one only for seconds: the local model would take minutes.
+                waited, wait = True, min(soon.values())
+                _log.info("groq: every model rate-limited; waiting %.1fs for %s instead of the local model",
+                          wait, min(soon, key=soon.get))
+                await self.sleep(wait)
+                queue = [model for model in self.candidates(need, searching) if model in soon]
+            if not queue:
+                break
             model = queue.pop(0)
             tried.append(model)
             started = time.monotonic()
@@ -164,7 +204,7 @@ class GroqClient:
                 raise ModelError("Groq rejected the API key. Check GROQ_API_KEY.")
             if status == 429:
                 wait = reset_seconds(response.headers.get("retry-after")) or _seconds(response.headers.get("retry-after"))
-                self.quota[model].blocked_until = now + (wait or 60)
+                self.quota[model].rate_limited(wait or 60, now)
                 _log.info("groq model=%s rate-limited for %.0fs; trying the next model", model, wait or 60)
                 continue
             code = _error_code(response) if status == 400 else ""
@@ -209,34 +249,53 @@ class GroqClient:
         reason = "every model failed" if tried else "no model has quota left"
         raise ModelError(f"Groq could not answer: {reason}.")
 
-    def chat_candidates(self, models: list[str], messages: list[dict], max_tokens: int) -> list[str]:
+    @staticmethod
+    def _chat_need(messages: list[dict], max_tokens: int) -> int:
         # A spoken reply is a few dozen tokens: reserve for that, not the 1,200-token ceiling, or a
         # model's per-minute quota looks spent after two replies.
-        now, need = self.now(), estimate_tokens(messages) - 1024 + min(max_tokens, 300)
+        return estimate_tokens(messages) - 1024 + min(max_tokens, 300)
+
+    def chat_candidates(self, models: list[str], messages: list[dict], max_tokens: int) -> list[str]:
+        now, need = self.now(), self._chat_need(messages, max_tokens)
         return [m for m in models if self.quota.setdefault(m, ModelQuota()).available(need, now)]
+
+    def chat_free_soon(self, models: list[str], messages: list[dict], max_tokens: int) -> dict[str, float]:
+        return self._soon(models, self._chat_need(messages, max_tokens))
 
     async def stream_chat(self, messages: list[dict], models: list[str], max_tokens: int,
                           temperature: float | None = None):
         """The reply's text as Groq streams it, from the first of `models` that can answer.
 
         A model that fails before any text arrives (no quota, an error) hands over to the
-        next; once text has been spoken, a failure is raised, never papered over."""
+        next; once text has been spoken, a failure is raised, never papered over. When every
+        model is rate-limited for only seconds, the reply waits for one, once."""
         self.last_metrics = {}
-        for model in self.chat_candidates(models, messages, max_tokens):
+        queue, waited, retried, tried = self.chat_candidates(models, messages, max_tokens), False, set(), False
+        while True:
+            if not queue and not waited and (soon := self.chat_free_soon(models, messages, max_tokens)):
+                waited, wait = True, min(soon.values())
+                _log.info("groq chat: every model rate-limited; waiting %.1fs for %s instead of the local model",
+                          wait, min(soon, key=soon.get))
+                await self.sleep(wait)
+                queue = [m for m in self.chat_candidates(models, messages, max_tokens) if m in soon]
+            if not queue:
+                break
+            model, tried = queue.pop(0), True
             body = {"model": model, "messages": messages, "stream": True, "max_completion_tokens": max_tokens,
                     "temperature": self.settings.chat_temperature if temperature is None else temperature}
             # Conversation needs no visible reasoning: it only delays the first word.
             body |= ({"reasoning_effort": "none"} if model.startswith("qwen/") else
                      {"reasoning_effort": "low", "include_reasoning": False} if model.startswith("openai/gpt-oss")
                      else {})
-            started, first, raw, sent, finish = time.monotonic(), None, "", 0, None
+            started, first, raw, sent, finish, stream_error = time.monotonic(), None, "", 0, None, ""
             try:
                 async with self.http.stream("POST", "chat/completions", json=body) as response:
                     now = self.now()
                     self.quota[model].observe(response.headers, now)
                     if response.status_code == 429:
-                        wait = reset_seconds(response.headers.get("retry-after")) or 60
-                        self.quota[model].blocked_until = now + wait
+                        retry = response.headers.get("retry-after")
+                        wait = reset_seconds(retry) or _seconds(retry) or 60  # usually plain seconds: "8"
+                        self.quota[model].rate_limited(wait, now)
                         _log.info("groq chat model=%s rate-limited for %.0fs; trying the next model", model, wait)
                         continue
                     if response.status_code in (401, 403):
@@ -250,7 +309,14 @@ class GroqClient:
                         if not line.startswith("data: ") or line.strip() == "data: [DONE]":
                             continue
                         try:
-                            choice = json.loads(line[6:])["choices"][0]
+                            event = json.loads(line[6:])
+                            if isinstance(event, dict) and isinstance(event.get("error"), dict):
+                                # Groq reports some failures inside a 200 stream, not as a status.
+                                error = event["error"]
+                                stream_error = f"{error.get('code') or error.get('type') or 'no code'}: " \
+                                               f"{str(error.get('message') or '')[:200]}"
+                                continue
+                            choice = event["choices"][0]
                         except (ValueError, KeyError, IndexError, TypeError):
                             continue
                         finish = choice.get("finish_reason") or finish
@@ -273,13 +339,24 @@ class GroqClient:
                     raise ModelError("Lost Groq mid-reply.") from None
                 raise ModelError("Cannot reach Groq.") from None
             if not sent:
-                _log.info("groq chat model=%s returned no text; trying the next model", model)
+                # One empty generation (often all its tokens spent reasoning) says little about the
+                # next: the same model gets one more try, which costs seconds, not the local model's minutes.
+                # A model that called a tool will do it again for this message (gpt-oss reaches for its
+                # own Python tool when asked to "use Python"): the next model instead.
+                again = model not in retried and not stream_error.startswith("tool_use_failed")
+                retried.add(model)
+                if again:
+                    queue.insert(0, model)
+                _log.info("groq chat model=%s returned no text (finish=%s, %d characters of hidden reasoning%s); %s",
+                          model, finish, len(raw), f", stream error {stream_error}" if stream_error else "",
+                          "trying it once more" if again else "trying the next model")
                 continue
             self.last_metrics = {"provider": "groq", "model": model, "first_token_seconds": round(first or 0, 3),
                                  "total_seconds": round(time.monotonic() - started, 3),
                                  **({"truncated": True} if finish == "length" else {})}
             return
-        raise ModelError("Groq could not hold the conversation: no chat model has quota left.")
+        reason = "no chat model answered" if tried else "no chat model has quota left"
+        raise ModelError(f"Groq could not hold the conversation: {reason}.")
 
     async def close(self) -> None:
         await self.http.aclose()
@@ -363,7 +440,8 @@ class HostedChat:
 
     async def stream_text(self, messages: list[dict], max_tokens: int = 300, temperature: float | None = None):
         spoke = False
-        if self.hosted.chat_candidates(self.models, messages, max_tokens):
+        if (self.hosted.chat_candidates(self.models, messages, max_tokens)
+                or self.hosted.chat_free_soon(self.models, messages, max_tokens)):
             try:
                 async for chunk in self.hosted.stream_chat(messages, self.models, max_tokens, temperature):
                     spoke = True

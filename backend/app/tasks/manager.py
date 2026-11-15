@@ -3,22 +3,22 @@ import json
 import logging
 import re
 
+from pydantic import ValidationError
+
+from app import clock
 from app.agents.coordinator import Coordinator
 from app.agents.explorer import Explorer
-from app.agents.conversation import classify_conversation_move, interpret_conversation
 from app.agents.prompts import CRITIC
-from app.agents.schemas import CoordinatorDecision, CriticReview
+from app.agents.schemas import CoordinatorDecision, CriticReview, GoalCondition
 from app.config import Settings
-from app.capabilities.tools import CapabilityTools, DIGITAL_TOOLS
+from app.capabilities.tools import CapabilityTools
 from app.events.bus import EventBus
 from app.llm.base import LLMClient, ModelError, structured
 from app.memory.store import PersistentMemory
-from app.world.tools import WorldTools
 from .models import TaskContext
-from .goals import check_conditions, normalize
+from .goals import check_conditions
 from .permissions import (DIGITAL_LOOKUP, CALCULATION, TOOL_PLAIN, Grant, Restrictions,
                           explicitly_requested_tools, plain)
-from app.agents.schemas import GoalCondition
 
 
 _CLAIMS_A_RUN = re.compile(r"\b(ran|run|executed|computed|calculated)\b[^.]{0,40}\b(python|code|program|script|"
@@ -55,71 +55,56 @@ async def critic_review(client: LLMClient, context: TaskContext, proposal: str, 
                             metrics=context.metrics, role="critic")
 
 
-def _repeats_previous_message(context: TaskContext, person: str, message: str) -> bool:
-    """Cheap local check for an already-asked question.
-
-    Catches the common repeat without spending an inference call on the
-    conversation classifier; genuinely new wording still goes to the model.
-    """
-    known = context.memory.people.get(person)
-    if not known:
-        return False
-    current = normalize(message)
-    return any(normalize(turn.message) == current
-               for thread in known.conversation_threads.values() for turn in thread.turns)
-
-
 class LimitReached(RuntimeError):
     pass
 
 
 TERMINAL = {"completed", "failed", "cancelled"}
-# Outcomes that rest on interpretation (who needs something) still get a Critic review;
-# everything else is decided by deterministic checks against tool evidence.
-JUDGMENT_KINDS = {"identify_recipient"}
 
 
 def verified_complete(context: TaskContext) -> bool:
-    """Every required outcome is satisfied by tool evidence and none needs judgment."""
+    """Every required outcome is satisfied by tool evidence."""
     outcomes = check_conditions(context)
-    return (bool(outcomes) and all(c["satisfied"] for c in outcomes)
-            and not any(c.kind in JUDGMENT_KINDS for c in context.conditions))
+    return bool(outcomes) and all(c["satisfied"] for c in outcomes)
+
+
+def unmet(context: TaskContext) -> list[dict]:
+    return [c for c in check_conditions(context) if not c["satisfied"]]
 
 
 def relevant_evidence(context: TaskContext, limit: int = 12) -> list[dict]:
-    """Recent, task-relevant observations for a review; never the whole map or history."""
-    useful = [e for e in context.action_history
-              if e["success"] and e["tool"] not in {"get_status", "get_map"}]
-    return useful[-limit:]
+    """Recent, task-relevant observations for a review; never the whole history."""
+    return [e for e in context.action_history if e["success"]][-limit:]
 
 
 class TaskManager:
-    def __init__(self, client: LLMClient, tools: WorldTools, bus: EventBus, settings: Settings,
+    def __init__(self, client: LLMClient, bus: EventBus, settings: Settings,
                  persistent: PersistentMemory | None = None, persona=None, memory_store=None,
                  hosted=None) -> None:
-        self.tools, self.bus, self.settings = tools, bus, settings
+        self.bus, self.settings = bus, settings
         self.client = client
         self.persistent = persistent
         self.persona = persona
         self.memory_store = memory_store
-        self.coordinator = Coordinator(client, digital_enabled=settings.digital_tools_enabled,
-                                       hosted=hosted, hosted_calls=settings.groq_plan_calls)
-        self.capabilities = CapabilityTools(bus, enabled=settings.digital_tools_enabled, hosted=hosted)
-        self.explorer = Explorer(client, tools.schemas(), persona=persona,
-                                 hosted=hosted, hosted_calls=settings.groq_research_calls)
+        self.coordinator = Coordinator(client, hosted=hosted, hosted_calls=settings.groq_plan_calls)
+        self.capabilities = CapabilityTools(bus, enabled=settings.digital_tools_enabled, hosted=hosted,
+                                            cricket_key=settings.cricketdata_api_key)
+        self.explorer = Explorer(client, persona=persona, hosted=hosted, hosted_calls=settings.groq_research_calls)
         self.tasks: dict[str, TaskContext] = {}
         self.active_id: str | None = None
         self.runner: asyncio.Task | None = None
-        # What people asked Kip not to do. Shared and live: it binds every task,
+        # What the person asked Kip not to do. Shared and live: it binds every task,
         # including ones already queued or running, at the moment a tool would run.
         self.restrictions = Restrictions()
         if self.memory_store:
             saved = json.loads(self.memory_store.get_state("task-restrictions") or "{}")
-            for field in ("tools", "effects", "rooms"):
-                setattr(self.restrictions, field, set(saved.get(field, [])))
+            self.restrictions.tools = set(saved.get("tools", []))
             records = json.loads(self.memory_store.get_state("task-journal") or "[]")
             for record in records[-50:]:
-                context = TaskContext.model_validate(record)
+                try:
+                    context = TaskContext.model_validate(record)
+                except ValidationError:
+                    continue  # an errand from the retired house simulation: nothing to show for it now
                 if context.status == "running":
                     context.status = "failed"
                     context.summary = ("Interrupted by restart. An in-flight action may have an unknown outcome; "
@@ -130,11 +115,10 @@ class TaskManager:
 
     def save_restrictions(self) -> None:
         if self.memory_store:
-            self.memory_store.set_state({"task-restrictions": json.dumps({
-                field: sorted(getattr(self.restrictions, field)) for field in ("tools", "effects", "rooms")})})
+            self.memory_store.set_state({"task-restrictions": json.dumps({"tools": sorted(self.restrictions.tools)})})
 
     def checkpoint(self) -> None:
-        """Bounded durable task audit. Recovery never replays potentially physical effects."""
+        """Bounded durable task audit. Recovery never replays an interrupted action."""
         if self.memory_store:
             self.memory_store.set_state({"task-journal": json.dumps([
                 task.model_dump(mode="json") for task in self.tasks.values()])})
@@ -156,22 +140,16 @@ class TaskManager:
             raise TaskBusy("One task is already running. Cancel it or wait for completion.")
         if grant is None:
             # API goals are the person's own words. Internal/model-written goals carry
-            # an explicit grant and must never change the household's restrictions.
-            rooms = {key: room.get("name", key)
-                     for key, room in self.tools._engine.snapshot().get("rooms", {}).items()}
-            self.restrictions.update(goal, rooms)
-            self.save_restrictions()
+            # an explicit grant and must never change the person's restrictions.
+            if self.restrictions.update(goal):
+                self.save_restrictions()
         grant = grant or Grant.full("api", goal)
-        context = TaskContext(goal=goal, search_stale_after=self.settings.search_stale_after, grant=grant,
-                              requested_tools=explicitly_requested_tools(grant.authorized_text))
+        context = TaskContext(goal=goal, grant=grant, requested_tools=explicitly_requested_tools(grant.authorized_text))
         context.metrics.llm_call_limit = self.settings.max_task_llm_calls
         self._sync_permissions(context)
         if self.persistent:
             context.long_term_memory = self.persistent.prompt()
             context.self_model = self.persistent.self_model_prompt()
-        # Inject NPC schedules so location evidence can be predicted from clock time.
-        context.long_term_memory["_schedules"] = self.tools._engine.people_schedules()
-        context.metrics.simulated_start = self.tools._engine.simulated_time() or ""
         # Keep recent tasks in memory only. Active task is never evicted.
         if len(self.tasks) >= 50:
             del self.tasks[next(iter(self.tasks))]
@@ -202,7 +180,6 @@ class TaskManager:
         context.status = status
         context.summary = summary
         context.metrics.tool_actions = context.tool_count
-        context.metrics.simulated_end = self.tools._engine.simulated_time() or ""
         self.checkpoint()
         report = context.metrics.model_dump()
         _log.info("task_metrics task=%s status=%s %s", context.id, status,
@@ -220,7 +197,7 @@ class TaskManager:
                 pass
             # Covers cancellation before the coroutine starts executing.
             if context.status == "running":
-                self.finish(context, "cancelled", "Task cancelled. Completed world actions are retained.")
+                self.finish(context, "cancelled", "Task cancelled.")
             if self.active_id == task_id:
                 self.active_id = None
         return context
@@ -231,16 +208,12 @@ class TaskManager:
 
     # ── permission at the point of execution ──────────────────────────────────
     def _sync_permissions(self, context: TaskContext) -> None:
-        objects = self.tools._engine.snapshot().get("objects", {})
-        context.restricted = {"tools": sorted(self.restrictions.tools), "effects": sorted(self.restrictions.effects),
-                              "rooms": sorted(self.restrictions.rooms),
-                              "objects": {key: {"name": item.get("name", key), "sensitive": True}
-                                          for key, item in objects.items() if item.get("sensitive")}}
+        context.restricted = {"tools": sorted(self.restrictions.tools)}
 
     def _refused(self, context: TaskContext, tool: str, arguments: dict) -> dict | None:
         """Checked immediately before every tool call, against the live restrictions."""
         self._sync_permissions(context)
-        reason = context.grant.deny(tool, arguments, self.restrictions, context.restricted["objects"])
+        reason = context.grant.deny(tool, arguments, self.restrictions)
         if not reason:
             return None
         error = f"Not permitted: {reason}. Choose a permitted action or report the blockage."
@@ -285,8 +258,8 @@ class TaskManager:
                 if self.restrictions.forbids_tool(tool):
                     # A tool the person ruled out is dropped from the plan rather than run.
                     self._drop_requirement(context, tool)
-        uncovered = context.grant.uncovered(context.conditions, self.restrictions)
-        ruled_out = {effect for effect in uncovered if effect in self.restrictions.effects}
+        uncovered = context.grant.uncovered(context.conditions)
+        ruled_out: set[str] = set()
         if any(c.kind == "answer" for c in context.conditions) and not any(
                 context.permits(tool, {}) for tool in ("web_search", "read_webpage", "run_python")):
             ruled_out.add(DIGITAL_LOOKUP if context.grant.effects and DIGITAL_LOOKUP in context.grant.effects
@@ -331,6 +304,30 @@ class TaskManager:
             return True
         return False
 
+    async def _feed_answer(self, context: TaskContext, goal_plan) -> bool:
+        """F1 or cricket answered from a results feed: one request, exact facts, no model call.
+        Anything the feed does not cover goes on to the web lookup."""
+        question = getattr(goal_plan, "feed", None)
+        if not question or not self.settings.digital_tools_enabled:
+            return False
+        arguments = {"query": goal_plan.initial_actions[0].arguments.get("query") or context.goal}
+        self._ensure_running(context)
+        if self._refused(context, "web_search", arguments) or context.tool_count >= self.settings.max_tool_calls:
+            return False
+        self._before_dispatch(context, "web_search", arguments)
+        result, answer = await self.capabilities.feed_answer(arguments["query"], question, context)
+        context.pending_action = None
+        if result is None:
+            return False
+        context.tool_count += 1
+        self._record_capability(context, "web_search", arguments, result)
+        finished = await self.call_capability(context, "finish_answer", {"answer": answer,
+                                                                        "evidence_ids": [result["evidence_id"]]})
+        if finished.get("success") and not [c for c in check_conditions(context) if not c["satisfied"]]:
+            self.finish(context, "completed", f"Answered from the {result['observation']['provider']} results feed.")
+            return True
+        return False
+
     async def _web_answer(self, context: TaskContext, goal_plan) -> bool:
         """A plain lookup answered in one Groq call: its browser search finds the pages and
         writes the answer in Kip's voice. Anything it cannot settle goes the usual way."""
@@ -343,12 +340,11 @@ class TaskManager:
         self._ensure_running(context)
         if self._refused(context, "web_search", arguments) or context.tool_count >= self.settings.max_tool_calls:
             return False
-        from datetime import datetime
         from app.agents.prompts import WEB_ANSWER, persona_system
-        now = datetime.now().astimezone()
+        now = clock.now()
         today = now.date()
-        clock = f"{now.strftime('%A %d %B %Y, %H:%M')} {now.tzname()} (UTC{now.strftime('%z')})"
-        system = WEB_ANSWER.format(now=clock, year=today.year)
+        stamp = f"{now.strftime('%A %d %B %Y, %H:%M')} {now.tzname()} (UTC{now.strftime('%z')})"
+        system = WEB_ANSWER.format(now=stamp, year=today.year)
         if self.persona:
             system += persona_system(self.persona.voice_view())
         # The date travels with the question too: these models otherwise search last year.
@@ -357,9 +353,11 @@ class TaskManager:
         self._before_dispatch(context, "web_search", arguments)
         # A question about today must be answered from a source about today.
         about_today = bool(re.search(r"\btoday\b|\bright now\b|\blive\b|\btonight\b", context.goal.casefold()))
+        # ...and a question about the latest one from a dated source no newer one beats.
+        about_latest = bool(re.search(r"\blatest\b|\bmost recent\b|\blast\b", context.goal.casefold()))
         result, answer = await self.capabilities.web_answer(
             arguments["query"], [{"role": "system", "content": system}, {"role": "user", "content": asked}], context,
-            about_today=about_today)
+            about_today=about_today, about_latest=about_latest)
         reported = self.capabilities.hosted.last_metrics
         context.metrics.llm_calls += 1
         context.metrics.explorer_llm_calls += 1
@@ -376,24 +374,6 @@ class TaskManager:
             self.finish(context, "completed", "Answered from Groq's web search.")
             return True
         return False
-
-    def call_tool(self, context: TaskContext, tool: str, arguments: dict) -> dict:
-        self._ensure_running(context)
-        refused = self._refused(context, tool, arguments)
-        if refused:
-            return refused
-        if context.tool_count >= self.settings.max_tool_calls:
-            raise LimitReached("Maximum total tool calls reached.")
-        context.tool_count += 1
-        self._before_dispatch(context, tool, arguments)
-        result = self.tools.execute(tool, arguments, context.id)
-        # When it was seen, on the house clock: recaps must tell fresh from old observations.
-        result["observed_at"] = self.tools._engine.simulated_time() or ""
-        context.record(tool, arguments, result)
-        context.pending_action = None
-        self.checkpoint()
-        self.bus.emit("task_updated", task=context.public())
-        return result
 
     async def review(self, context: TaskContext, proposal: str, kind: str,
                      evidence: list[dict] | None = None,
@@ -494,49 +474,29 @@ class TaskManager:
                                f"Last reason: {correction}")
         return count
 
-    def _progress_changed(self, context: TaskContext, previous: tuple | None = None) -> bool:
-        signature = context.progress_signature()
-        current = previous if previous is not None else context.last_progress_signature
-        context.last_progress_signature = signature
-        return current != signature
-
     async def _loop(self, context: TaskContext, plan=None) -> None:
-        # A web lookup known in advance never needs the house, not even when it falls back to
-        # the usual loop: its Explorer sees only the web and Python, never the robot.
-        known_lookup = plan is not None and all(c.kind == "answer" for c in plan.conditions)
-        booted = False
-
-        def bootstrap() -> None:
-            # Through a permitted tool; no agent gets an omniscient snapshot.
-            nonlocal booted
-            if not booted and not known_lookup:
-                booted = True
-                self.call_tool(context, "get_status", {})
-                self.call_tool(context, "get_map", {})
-        if not known_lookup:
-            bootstrap()
         self.bus.emit("agent_active", "coordinator", task_id=context.id)
         # A plan known in advance (a plain lookup of a live fact) needs no planning call.
-        goal_plan = plan or await self.coordinator.define_goal(context.goal, context.floor_plan,
-                                                               metrics=context.metrics)
+        # A request that only asks for Python needs just the code: one narrow call.
+        if plan is None and context.requested_tools == ["run_python"]:
+            plan = await self.coordinator.python_plan(context.goal, metrics=context.metrics)
+        goal_plan = plan or await self.coordinator.define_goal(context.goal, metrics=context.metrics)
         context.conditions = goal_plan.conditions
         if self._outside_grant(context):
             return
-        digital_only = all(c.kind == "answer" for c in context.conditions)
-        if self.settings.digital_tools_enabled and digital_only:
-            # These initial calls are explicitly independent, fully specified
-            # by the model, and validated by the same capability executor.
-            self.bus.emit("agent_active", "explorer", task_id=context.id)
-            if await self._web_answer(context, goal_plan):
+        if not self.settings.digital_tools_enabled:
+            self.finish(context, "failed", "My web and Python tools are switched off.")
+            return
+        # These initial calls are explicitly independent, fully specified
+        # by the model, and validated by the same capability executor.
+        self.bus.emit("agent_active", "explorer", task_id=context.id)
+        if await self._feed_answer(context, goal_plan) or await self._web_answer(context, goal_plan):
+            return
+        if goal_plan.initial_actions:
+            self.message(context, "explorer", "Running the model's independent tool calls together.")
+            await self.call_capability_batch(context, [action.model_dump() for action in goal_plan.initial_actions])
+            if await self._report_execution(context):
                 return
-            bootstrap()
-            if goal_plan.initial_actions:
-                self.message(context, "explorer", "Running the model's independent tool calls together.")
-                await self.call_capability_batch(context, [action.model_dump() for action in goal_plan.initial_actions])
-                if await self._report_execution(context):
-                    return
-        bootstrap()
-        self.message(context, "coordinator", "Required outcomes defined. Locating targets requires tool observations.")
         disagreements = 0
         rejections = 0                     # consecutive rejected suggestions, reset by real progress
         stagnant_cycles, last_evidence = 0, -1
@@ -544,8 +504,7 @@ class TaskManager:
             context.cycle_count = cycle + 1
             self.bus.emit("task_updated", task=context.public())
             if verified_complete(context):
-                # Every outcome is proven by tool evidence: done. No further review can add
-                # information, and extra actions could only undo verified progress.
+                # Every outcome is proven by tool evidence: done.
                 self.finish(context, "completed", "All requested outcomes are verified by tool evidence.")
                 return
             evidence_count = sum(1 for e in context.action_history if e["success"])
@@ -556,10 +515,9 @@ class TaskManager:
                                    "reasoning in circles. The task is incomplete.")
             self._check_model_budget(context)
             self.bus.emit("agent_active", "coordinator", task_id=context.id)
-            # GoalPlan already interpreted the complete goal. Hand it directly
-            # to Explorer instead of paying for a second initial planning call.
-            # Later cycles still use the Coordinator for recovery/replanning.
-            if cycle == 0 and (self.settings.direct_initial_delegation or digital_only):
+            # GoalPlan already interpreted the complete goal. Hand it directly to Explorer
+            # instead of paying for a second planning call; later cycles replan.
+            if cycle == 0:
                 decision = CoordinatorDecision(action="delegate", summary="Execute the required outcomes.",
                                                task=context.goal)
             else:
@@ -577,24 +535,16 @@ class TaskManager:
             if decision.action == "consult_critic":
                 await self.review(context, decision.plan, "plan")
             elif decision.action == "complete":
-                unmet = [condition for condition in check_conditions(context) if not condition["satisfied"]]
-                if unmet:
+                missing = unmet(context)
+                if missing:
                     context.critic_feedback.append({"source": "system", "approved": False,
                         "observed_action_count": len(context.action_history),
                         "summary": "Completion rejected: required outcomes lack tool evidence.",
-                        "unmet_conditions": unmet,
+                        "unmet_conditions": missing,
                         "suggestion": "Complete the missing outcomes using tools."})
                     self.message(context, "system", "Completion rejected: required outcomes have not been observed.")
                     continue
-                by_id = {entry["evidence_id"]: entry for entry in context.action_history
-                         if entry["success"] and entry["tool"] != "get_status"}
-                # The deterministic condition check above is authoritative; evidence IDs
-                # are advisory hints that help the Critic focus its review. If the model
-                # cited valid IDs use those; otherwise fall back to all successful
-                # observations so a hallucinated UUID cannot block a verified completion.
-                if verified_complete(context):
-                    self.finish(context, "completed", decision.summary)
-                    return
+                by_id = {entry["evidence_id"]: entry for entry in context.action_history if entry["success"]}
                 cited = [by_id[id] for id in decision.evidence_ids if id in by_id]
                 evidence = cited[-12:] if cited else relevant_evidence(context)
                 if await self.review(context, decision.summary, "completion", evidence):
@@ -606,42 +556,15 @@ class TaskManager:
                                        "stopping instead of debating. The outcome needs a person's judgment.")
             elif decision.action == "delegate":
                 context.current_plan = decision.task
-                starting_tool_count = context.tool_count
-                context.stall_count = 0
                 for step in range(self.settings.max_explorer_actions):
                     # A healthy delegation ends here, not at the action ceiling.
-                    if step and not [c for c in check_conditions(context) if not c["satisfied"]]:
-                        self.message(context, "system",
-                                     "Delegated objective satisfied; returning to Coordinator.")
+                    if step and not unmet(context):
+                        self.message(context, "system", "Delegated objective satisfied; returning to Coordinator.")
                         break
                     self._check_model_budget(context)
                     self.bus.emit("agent_active", "explorer", task_id=context.id)
                     action = await self.explorer.decide(context, decision.task)
                     if action.action == "report":
-                        if (any(condition.kind == "deliver" for condition in context.conditions)
-                            and context.robot_status.get("room") not in context.memory.rooms):
-                            rejections = self._rejected(context, rejections, "Report rejected: the current room has "
-                                                        "not been observed. Scan it before reporting or replanning.")
-                            continue
-                        if context.tool_count == starting_tool_count:
-                            previous_rejection = next((review for review in reversed(context.critic_feedback)
-                                if review.get("kind") == "delegation_report"
-                                and not review["approved"]
-                                and review.get("observed_action_count") == len(context.action_history)), None)
-                            approved = False if previous_rejection else await self.review(
-                                context, action.summary, "delegation_report")
-                            if not approved:
-                                context.consecutive_report_rejections += 1
-                                if context.consecutive_report_rejections >= 3:
-                                    raise LimitReached("Explorer repeatedly reported without acting after feedback. "
-                                                       "Stopping the unchanged decision loop; task remains incomplete.")
-                                unexplored = context.compact()["known_but_unobserved_rooms"]
-                                correction = ("Report rejected: no new tool evidence supports progress. "
-                                              "Choose a tool action to continue the unfinished work; "
-                                              "an intention to search is not an executed search. "
-                                              f"Rooms without a look observation: {unexplored}.")
-                                rejections = self._rejected(context, rejections, correction)
-                                continue
                         context.explorer_reports.append(action.summary)
                         self.message(context, "explorer", "Returning observations to Coordinator.")
                         break
@@ -652,85 +575,17 @@ class TaskManager:
                             for call in action.arguments["actions"]])
                         continue
                     previous = context.action_history[-1] if context.action_history else None
-                    if (previous and previous["success"] and action.tool != "talk_to"
+                    if (previous and previous["success"]
                             and previous["tool"] == action.tool and previous["arguments"] == action.arguments):
                         rejections = self._rejected(context, rejections, "Repeated identical command rejected. Use "
                                                     "its existing observation and choose a different action.")
                         continue
-                    conversation_move = None
-                    conversation_thread_id = None
-                    if action.tool == "talk_to":
-                        person = action.arguments["person"]
-                        verbatim_repeat = _repeats_previous_message(
-                            context, person, action.arguments["message"])
-                        conversation_move = None if verbatim_repeat else await classify_conversation_move(
-                            self.client, context, person, action.arguments["message"],
-                        )
-                        if verbatim_repeat or not conversation_move.advances_thread:
-                            context.conversation_rejections[person] = context.conversation_rejections.get(person, 0) + 1
-                            target = ("a question already put to this person" if verbatim_repeat
-                                      else conversation_move.existing_thread_id or "an existing discussion")
-                            correction = (
-                                f"Conversation move rejected: it repeats or does not advance {target}. "
-                                "Choose a movement or object action next; speech resumes after successful physical action."
-                            )
-                            rejections = self._rejected(context, rejections, correction)
-                            continue
-                        known = context.memory.people.get(action.arguments["person"])
-                        if (conversation_move.existing_thread_id and known
-                                and conversation_move.existing_thread_id in known.conversation_threads):
-                            conversation_thread_id = conversation_move.existing_thread_id
-                        else:
-                            conversation_thread_id = context.memory.next_thread_id(action.arguments["person"])
-                    if action.tool == "give" and action.source != "reflex":
-                        # Reflex give: state machine already verified object-in-inventory
-                        # AND recipient-present, so the Critic cannot add information and
-                        # only risks blocking a correct action or introducing latency that
-                        # lets the recipient move away before the tool fires.
-                        proposal = f"Execute {action.tool} with arguments {action.arguments}."
-                        if not await self.review(context, proposal, "object_transfer",
-                                                 proposed_action={"tool": action.tool, "arguments": action.arguments}):
-                            self.message(context, "system", "Object action rejected by Critic; revising the plan.")
-                            break
-                    previous_signature = context.progress_signature()
-                    # Travelling to unscanned ground is purposeful even before the
-                    # scan proves it; only re-entering cleared rooms can be a loop.
-                    on_route = (action.source == "route_executor"
-                                or (action.tool == "move_to"
-                                    and action.arguments.get("room") not in context.memory.rooms))
-                    revisit = action.arguments.get("room") in context.memory.visited_rooms
-                    if action.tool in DIGITAL_TOOLS:
-                        result = await self.call_capability(context, action.tool, action.arguments)
-                        if result.get("success"):
-                            rejections = 0
-                        if result.get("success") and not [c for c in check_conditions(context) if not c["satisfied"]]:
-                            self.finish(context, "completed", "Answer ready. All requested outcomes completed.")
-                            return
-                        continue
-                    result = self.call_tool(context, action.tool, action.arguments)
+                    result = await self.call_capability(context, action.tool, action.arguments)
                     if result.get("success"):
                         rejections = 0
-                    if result.get("success") and action.tool == "give":
-                        # Delivery conditions are machine-checkable from world tool
-                        # evidence: no LLM can add information the state machine
-                        # doesn't already have. Skip the Coordinator + Critic
-                        # round-trip (~2 min at qwen3:4b latency).
-                        if not [c for c in check_conditions(context) if not c["satisfied"]]:
-                            obj = action.arguments.get("object", "object")
-                            person = action.arguments.get("person", "recipient")
-                            context.metrics.coordinator_handoffs += 1
-                            self.finish(context, "completed",
-                                        f"{obj.capitalize()} delivered to {person}. All goal conditions met.")
+                        if not unmet(context):
+                            self.finish(context, "completed", "Answer ready. All requested outcomes completed.")
                             return
-                    if result.get("success") and action.tool == "talk_to":
-                        await interpret_conversation(
-                            self.client, context, result, conversation_thread_id,
-                            conversation_move.thread_summary,
-                        )
-                    if self._stalled(context, action, result, previous_signature, on_route, revisit):
-                        self.message(context, "system",
-                                     "No semantic progress after repeated actions; replanning with the Coordinator.")
-                        break
                     # Let cancellation, sockets and other API requests run between tools.
                     await asyncio.sleep(0)
                 else:
@@ -740,40 +595,9 @@ class TaskManager:
             self.bus.emit("task_updated", task=context.public())
         raise LimitReached("Maximum Coordinator cycles reached.")
 
-    def _stalled(self, context: TaskContext, action, result: dict,
-                 previous: tuple, on_route: bool, revisit: bool = False) -> bool:
-        """Track semantic progress and report when the current strategy is spent.
-
-        Travelling along a committed route is purposeful even though it changes
-        no task state, so hops are exempt. A leg that ends with the destination
-        scanned and the target still missing counts once, which is what turns
-        repeated fruitless room visits into a replan instead of a loop.
-        """
-        if not result.get("success"):
-            return False
-        if action.tool == "move_to" and revisit:
-            context.metrics.repeat_room_visits += 1
-        advanced = self._progress_changed(context, previous)
-        if advanced:
-            context.metrics.useful_observations += 1
-            context.stall_count = 0
-            return False
-        # Deterministic search sweeps are purposeful even when rooms are empty:
-        # don't penalise them or escalate to the Coordinator mid-frontier.
-        if on_route or action.source == "reflex_search":
-            return False
-        context.stall_count += 1
-        if context.stall_count < self.settings.max_semantic_stall:
-            return False
-        context.metrics.stall_events += 1
-        context.stall_count = 0
-        # The committed destination produced nothing; let the planner pick another.
-        context.intention = None
-        return True
-
     async def _recall_for(self, context: TaskContext) -> None:
-        # Searchable memory is advisory like the rest of long_term_memory: skills and
-        # past episodes suggest where to look, observations still decide.
+        # Searchable memory is advisory like the rest of long_term_memory: past
+        # episodes and answers suggest where to look, observations still decide.
         if not self.memory_store:
             return
         from app.memory.recall import prompt_memories
@@ -804,7 +628,7 @@ class TaskManager:
                 await self._recall_for(context)
                 await self._loop(context, plan)
         except asyncio.CancelledError:
-            self.finish(context, "cancelled", "Task cancelled. Completed world actions are retained.")
+            self.finish(context, "cancelled", "Task cancelled.")
         except TimeoutError:
             self.finish(context, "failed", "Task time limit reached.")
         except (ModelError, LimitReached) as exc:
@@ -813,16 +637,14 @@ class TaskManager:
             logging.getLogger("agentic_friend.tasks").exception("Unexpected task failure")
             self.finish(context, "failed", "Unexpected task error. Check the backend log.")
         finally:
-            # Save what this task learned BEFORE releasing the robot, so a queued or
-            # autonomous errand that starts next sees today's locations and failures.
+            # Save what this task learned BEFORE releasing the task slot, so a queued
+            # errand that starts next sees it.
             try:
                 await self._remember(context)
                 if self.persistent:
                     try:
                         self.persistent.update_from_task(context)
                         self.persistent.save()
-                        # Beliefs are computed from these tallies, so they just changed.
-                        self.bus.emit("beliefs_updated", summary="Beliefs updated from the finished task.")
                     except Exception:
                         logging.getLogger("agentic_friend.tasks").exception("Failed to save persistent memory")
             finally:

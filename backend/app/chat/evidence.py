@@ -1,15 +1,14 @@
 """What Kip can actually do and has actually done, built from state and tool evidence.
 
 Everything here is deterministic. It gives the conversation model the facts it must speak
-from (capabilities, scans, who was where and how we know), and checks its finished reply
-for claims those facts do not support.
+from (capabilities, what each errand did), and checks its finished reply for claims those
+facts do not support.
 """
 import re
 
 from app.tasks.permissions import TOOL_PLAIN
 
 DIGITAL = {"web_search": "search the web", "read_webpage": "read webpages", "run_python": "run Python"}
-HOUSE = "move around the house, look, pick up and hand over things, talk to people"
 
 
 def _tasks(manager) -> list:
@@ -41,65 +40,12 @@ def capabilities(manager, settings) -> str:
             groups["last attempt failed"].append(f"{label} ({str(last[tool].get('error', ''))[:50]})")
         else:
             groups["available"].append(label)
-    rooms = sorted(restrictions.rooms)
-    groups["available"].append(HOUSE + (f" (not the {', '.join(r.replace('_', ' ') for r in rooms)})" if rooms else ""))
     return "; ".join(f"{key}: {', '.join(values)}" for key, values in groups.items() if values)
 
 
-def room_scans(manager) -> dict[str, dict]:
-    """The latest time Kip actually looked in each room, and exactly what was there."""
-    scans: dict[str, dict] = {}
-    for _, entry in _entries(manager):
-        if entry["tool"] == "look" and entry["success"]:
-            obs = entry["observation"]
-            scans[obs["room"]] = {
-                "people": [p["id"] for p in obs.get("people", [])],
-                "objects": [o["id"] for o in obs.get("objects", [])] + [h["object"] for h in obs.get("held_objects", [])],
-                "at": entry.get("observed_at", "")}
-    return scans
-
-
-def _place(room: str) -> str:
-    return room.replace("_", " ")
-
-
-def last_seen(manager, world: dict) -> dict:
-    """Where each person was last seen, and how Kip knows: a fresh look, or an older record."""
-    scans = room_scans(manager)
-    people = world.get("people", {})
-    view = {}
-    for pid, person in people.items():
-        name = person.get("name", pid)
-        fresh = [(room, scan) for room, scan in scans.items() if pid in scan["people"]]
-        if fresh:
-            room, scan = fresh[-1]
-            view[name] = f"I saw them in the {_place(room)}" + (f" at {scan['at']}" if scan["at"] else "")
-            continue
-        record = manager.persistent.people.get(pid) if manager.persistent else None
-        if record and record.last_seen_room:
-            note = f"older record only: last seen in the {_place(record.last_seen_room)}"
-            scan = scans.get(record.last_seen_room)
-            if scan is not None:
-                note += f"; not there when I looked" + (f" at {scan['at']}" if scan["at"] else "")
-            view[name] = note
-        else:
-            view[name] = "unknown"
-    return view
-
-
-def describe_scan(room: str, scan: dict, world: dict) -> str:
-    names = {**{k: v.get("name", k) for k, v in world.get("people", {}).items()},
-             **{k: v.get("name", k).lower() for k, v in world.get("objects", {}).items()}}
-    people = [names.get(p, p) for p in scan["people"]]
-    things = [f"the {names.get(o, o)}" for o in scan["objects"]]
-    seen = people + things
-    contents = (", ".join(seen[:-1]) + " and " + seen[-1]) if len(seen) > 1 else (seen[0] if seen else "")
-    return f"the {_place(room)}: " + (contents if contents else "nobody there, and nothing I could pick out")
-
-
-def task_record(context, world: dict) -> dict:
+def task_record(context) -> dict:
     """What one errand actually did, tried, was refused and left undone."""
-    did, refused, scans = [], [], {}
+    did, refused = [], []
     for entry in context.action_history:
         tool, obs = entry["tool"], entry.get("observation") or {}
         if entry.get("refused"):
@@ -113,14 +59,6 @@ def task_record(context, world: dict) -> dict:
             did.append(f"read {obs.get('url', 'a page')}")
         elif tool == "web_search":
             did.append(f"searched the web for '{entry['arguments'].get('query', '')[:40]}'")
-        elif tool == "look":
-            scans[obs["room"]] = {"people": [p["id"] for p in obs.get("people", [])],
-                                  "objects": [o["id"] for o in obs.get("objects", [])]}
-        elif tool == "talk_to":
-            did.append(f"spoke to {obs.get('person')}")
-        elif tool == "give":
-            did.append(f"gave the {obs.get('object')} to {obs.get('person')}")
-    did += ["looked in " + describe_scan(room, scan, world) for room, scan in scans.items()]
     record = {"goal": context.goal, "outcome": context.status, "did": did[:6]}
     if refused:
         record["refused"] = sorted(set(refused))
@@ -142,9 +80,6 @@ _CODE_BLOCK = re.compile(r"```")
 _READ_PAGE = re.compile(r"\bi(?:'ve| have| just)?\s+(?:read|opened|visited|checked) (?:the |that |this )?(?:page|site|website|"
                         r"webpage|https?://)")
 _SEARCHED = re.compile(r"\bi(?:'ve| have| just)?\s+(?:searched|googled|looked (?:it|that) up online)\b")
-_HEDGE = re.compile(r"\b(?:usually|normally|often|typically|tends to|used to|earlier|before|last seen|might|may|"
-                    r"maybe|probably|perhaps|could be|older|record)\b")
-_PRESENCE = re.compile(r"\b(?:was|is|were|'s|been)\s+(?:\w+\s+){0,2}?(?:in|at|inside)\b")
 
 
 def unsupported_execution(reply: str, manager) -> list[str]:
@@ -189,26 +124,3 @@ def denied_capabilities(reply: str, manager, settings) -> list[str]:
     if not manager.restrictions.forbids_tool("run_python") and _DENIES_PYTHON.search(text):
         denied.append("run Python")
     return denied
-
-
-def contradicted_presence(reply: str, manager, world: dict) -> list[str]:
-    """'Paul was in the office' when Kip's latest look at the office found no Paul."""
-    scans = room_scans(manager)
-    people = {pid: {pid.casefold(), str(p.get("name", pid)).casefold()} for pid, p in world.get("people", {}).items()}
-    rooms = {rid: {rid.replace("_", " ").casefold(), str(r.get("name", rid)).casefold()}
-             for rid, r in world.get("rooms", {}).items()}
-    found, last_person = [], None
-    for sentence in re.split(r"(?<=[.!?])\s+", reply.casefold().replace("’", "'")):
-        named = [pid for pid, names in people.items()
-                 if any(re.search(r"\b" + re.escape(n) + r"\b", sentence) for n in names)]
-        if named:
-            last_person = named[-1]
-        subject = named or ([last_person] if last_person and re.search(r"\b(he|she|they)\b", sentence) else [])
-        if not subject or not _PRESENCE.search(sentence) or _HEDGE.search(sentence):
-            continue
-        for rid, names in rooms.items():
-            if rid in scans and any(re.search(r"\b" + re.escape(n) + r"\b", sentence) for n in names):
-                for pid in subject:
-                    if pid not in scans[rid]["people"]:
-                        found.append((pid, rid))
-    return found

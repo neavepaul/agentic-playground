@@ -2,7 +2,6 @@ import json
 import logging
 import time
 from typing import Protocol, TypeVar
-from collections.abc import AsyncIterator
 
 from pydantic import BaseModel, ValidationError
 
@@ -20,12 +19,6 @@ class ModelError(RuntimeError):
 
 class LLMClient(Protocol):
     async def generate(self, messages: list[dict], response_schema: dict) -> str: ...
-
-
-class ConversationalClient(LLMClient, Protocol):
-    """Local model boundary shared by Colibri and Ollama; no agent-specific provider API."""
-    def stream_text(self, messages: list[dict], max_tokens: int = 300,
-                    temperature: float | None = None) -> AsyncIterator[str]: ...
 
 
 def validation_summary(schema: type[BaseModel], error: ValidationError) -> str:

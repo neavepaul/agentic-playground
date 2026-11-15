@@ -9,9 +9,8 @@ from app.agents.schemas import CriticReview, GoalCondition
 from app.config import Settings
 from app.llm.base import ModelError, structured
 from app.llm.factory import create_hosted_client
-from app.llm.groq import GroqClient, HostedFirst, reset_seconds
+from app.llm.groq import GroqClient, HostedFirst, ModelQuota, reset_seconds
 from app.tasks.models import TaskContext
-from app.world.tools import WorldTools
 from tests.fakes import ScriptedLLM
 
 KEY = "gsk_private_test_key"
@@ -26,8 +25,8 @@ class Clock:
         return self.value
 
 
-async def groq(respond, models="openai/gpt-oss-120b,qwen/qwen3.8-27b", clock=None):
-    client = GroqClient(Settings(groq_api_key=KEY, groq_models=models), now=clock or Clock())
+async def groq(respond, models="openai/gpt-oss-120b,qwen/qwen3.8-27b", clock=None, sleep=None):
+    client = GroqClient(Settings(groq_api_key=KEY, groq_models=models), now=clock or Clock(), sleep=sleep)
     await client.http.aclose()
     client.http = httpx.AsyncClient(transport=httpx.MockTransport(respond), base_url="https://groq.test/v1/",
                                     headers={"Authorization": f"Bearer {KEY}"})
@@ -94,6 +93,113 @@ async def test_rate_limited_model_is_skipped_until_its_reset():
         await client.generate([{"role": "user", "content": "JSON"}], {})
         # After its reset the first model is tried again (and here is still limited).
         assert seen[-2:] == ["openai/gpt-oss-120b", "qwen/qwen3.8-27b"]
+    finally:
+        await client.close()
+
+
+def limited_for(seconds_by_call):
+    """A Groq that rate-limits the first calls for the given seconds, then answers."""
+    seen, waits = [], list(seconds_by_call)
+
+    def respond(request):
+        seen.append(json.loads(request.content)["model"])
+        if waits:
+            return httpx.Response(429, headers={"retry-after": str(waits.pop(0))},
+                                  json={"error": {"code": "rate_limit_exceeded"}})
+        return ok()
+    return respond, seen
+
+
+def sleeper(clock):
+    slept = []
+
+    async def sleep(seconds):
+        slept.append(seconds)
+        clock.value += seconds
+    return sleep, slept
+
+
+async def test_a_short_rate_limit_is_waited_out_instead_of_falling_back_to_the_local_model():
+    """Live: gpt-oss-120b was rate-limited for 14 s, the call fell back to Colibri, and Colibri
+    timed out after 600 s."""
+    clock = Clock()
+    sleep, slept = sleeper(clock)
+    respond, seen = limited_for([14])
+    client = await groq(respond, models="openai/gpt-oss-120b", clock=clock, sleep=sleep)
+    try:
+        assert await client.generate([{"role": "user", "content": "JSON"}], {}) == REVIEW
+        assert seen == ["openai/gpt-oss-120b", "openai/gpt-oss-120b"] and slept == [14]
+    finally:
+        await client.close()
+
+
+async def test_retry_after_is_trusted_over_the_token_headers_of_the_same_429():
+    """Live: gpt-oss-20b said retry in 18 s, but the same 429's token headers said the bucket is full
+    again in 55 s, so the call went to Colibri and timed out after 600 s."""
+    clock = Clock()
+    sleep, slept = sleeper(clock)
+    calls = []
+
+    def respond(request):
+        calls.append(1)
+        if len(calls) == 1:
+            return httpx.Response(429, headers={"retry-after": "18", "x-ratelimit-limit-tokens": "8000",
+                                                "x-ratelimit-remaining-tokens": "100",
+                                                "x-ratelimit-reset-tokens": "55s"})
+        return ok()
+    client = await groq(respond, models="openai/gpt-oss-20b", clock=clock, sleep=sleep)
+    try:
+        assert await client.generate([{"role": "user", "content": "JSON"}], {}) == REVIEW
+        assert slept == [18] and len(calls) == 2
+    finally:
+        await client.close()
+
+
+def test_tokens_free_up_at_the_refill_rate_not_when_the_bucket_is_full():
+    """Groq's reset-tokens is when the per-minute bucket is full again; enough for one call comes sooner."""
+    quota, now = ModelQuota(), 1000.0
+    quota.observe(httpx.Headers({"x-ratelimit-limit-tokens": "8000", "x-ratelimit-remaining-tokens": "1000",
+                                 "x-ratelimit-reset-tokens": "52.5s"}), now)
+    # 3,000 more tokens at 8,000 a minute: 22.5 s, not 52.5 s; and less as time passes.
+    assert quota.free_in(4000, now) == pytest.approx(22.5)
+    assert quota.free_in(4000, now + 10) == pytest.approx(12.5)
+    assert quota.free_in(900, now) == 0
+    # More than the whole bucket only fits once it is full.
+    assert quota.free_in(9000, now) == pytest.approx(52.5)
+
+
+async def test_a_long_rate_limit_still_hands_over_at_once_and_a_call_waits_only_once():
+    clock = Clock()
+    sleep, slept = sleeper(clock)
+    respond, seen = limited_for([300])
+    client = await groq(respond, models="openai/gpt-oss-120b", clock=clock, sleep=sleep)
+    try:
+        with pytest.raises(ModelError):
+            await client.generate([{"role": "user", "content": "JSON"}], {})
+        assert slept == [] and not client.has_capacity()
+        clock.value += 301
+        respond2, seen2 = limited_for([5, 5])
+        await client.http.aclose()
+        client.http =httpx.AsyncClient(transport=httpx.MockTransport(respond2), base_url="https://groq.test/v1/")
+        with pytest.raises(ModelError):
+            await client.generate([{"role": "user", "content": "JSON"}], {})
+        assert slept == [5] and len(seen2) == 2
+    finally:
+        await client.close()
+
+
+async def test_a_model_free_in_seconds_counts_as_capacity_so_the_task_does_not_go_local():
+    clock = Clock()
+    sleep, slept = sleeper(clock)
+    respond, seen = limited_for([])
+    client = await groq(respond, models="openai/gpt-oss-120b", clock=clock, sleep=sleep)
+    client.quota["openai/gpt-oss-120b"].blocked_until = clock.value + 12
+    local = ScriptedLLM([REVIEW])
+    try:
+        assert client.has_capacity() and client.can_search()
+        hosted = HostedFirst(client, local, limit=2, purpose="review")
+        assert await hosted.generate([{"role": "user", "content": "JSON"}], {}) == REVIEW
+        assert slept == [12] and seen == ["openai/gpt-oss-120b"] and hosted.last_metrics["provider"] == "groq"
     finally:
         await client.close()
 
@@ -189,27 +295,23 @@ async def test_goal_planning_uses_groq_and_decisions_stay_local():
         bodies.append(json.loads(request.content))
         payload = json.loads(bodies[-1]["messages"][1]["content"])
         plans.append(payload)
-        return ok(json.dumps({"summary": "Find the keys.",
-                              "conditions": [{"kind": "find_object", "object": "keys"}]}))
+        return ok(json.dumps({"summary": "Look it up.",
+                              "conditions": [{"kind": "answer", "required_tools": ["web_search"]}]}))
 
     client = await groq(respond)
     local = ScriptedLLM([])
     try:
         coordinator = Coordinator(local, hosted=client, hosted_calls=2)
-        plan = await coordinator.define_goal("Find the keys.", {"rooms": {"kitchen": {"name": "Kitchen",
-                                                                                     "outline": [[0, 0]]}}})
-        assert plan.conditions[0].object == "keys" and local.calls == []
+        plan = await coordinator.define_goal("Look up a fact.")
+        assert plan.conditions[0].required_tools == ["web_search"] and local.calls == []
         assert "tools" not in bodies[0] and "response_format" not in bodies[0]
-        # Only the goal and room names leave the machine: no geometry, memory or history.
-        assert plans == [{"goal": "Find the keys.", "floor_plan": {"rooms": {"kitchen": "Kitchen"}}}]
+        # Only the goal leaves the machine: no memory or history.
+        assert plans == [{"goal": "Look up a fact."}]
     finally:
         await client.close()
 
 
-async def test_web_research_uses_groq_but_robot_tasks_stay_local(monkeypatch):
-    import app.agents.explorer as explorer_module
-    # Skip robot reflexes (e.g. an opening get_status) so the model choice itself is tested.
-    monkeypatch.setattr(explorer_module, "reflex_action", lambda *args: None)
+async def test_web_research_uses_groq_only_with_a_hosted_budget():
     hosted_requests = []
 
     def respond(request):
@@ -218,7 +320,7 @@ async def test_web_research_uses_groq_but_robot_tasks_stay_local(monkeypatch):
 
     client = await groq(respond)
     try:
-        explorer = Explorer(ScriptedLLM([]), WorldTools.schemas(), hosted=client, hosted_calls=4)
+        explorer = Explorer(ScriptedLLM([]), hosted=client, hosted_calls=4)
         research = TaskContext(goal="Look up a fact.",
                                conditions=[GoalCondition(kind="answer", required_tools=["web_search"])])
         action = await explorer.decide(research, research.goal)
@@ -226,12 +328,11 @@ async def test_web_research_uses_groq_but_robot_tasks_stay_local(monkeypatch):
         body = json.loads(hosted_requests[0].content)
         assert "tools" not in body and "response_format" not in body
 
-        mixed = TaskContext(goal="Look up a fact and find the keys.",
-                            conditions=[GoalCondition(kind="answer", required_tools=["web_search"]),
-                                        GoalCondition(kind="find_object", object="keys")])
         local = ScriptedLLM([{"summary": "Searching.", "action": {"tool": "web_search", "query": "a fact"}}])
-        explorer.client = local
-        await explorer.decide(mixed, mixed.goal)
+        unbudgeted = Explorer(local, hosted=client, hosted_calls=0)
+        other = TaskContext(goal="Look up another fact.",
+                            conditions=[GoalCondition(kind="answer", required_tools=["web_search"])])
+        await unbudgeted.decide(other, other.goal)
         assert len(hosted_requests) == 1 and len(local.calls) == 1
     finally:
         await client.close()
@@ -343,17 +444,15 @@ async def _lookup(respond, monkeypatch, local=None):
     from app.persona import Persona
     from app.tasks.manager import TaskManager
     from app.tasks.permissions import Grant
-    from app.world.engine import WorldEngine
-    from tests.test_persona import LEGACY_WORLD
     import app.capabilities.tools as tools
     monkeypatch.setattr(tools, "web_search", lambda query: {"query": query, "results": [
         {"url": "https://example.org", "title": "Local search", "snippet": "P6"}]})
     client = await groq(respond, models="openai/gpt-oss-120b")
-    engine, bus = WorldEngine(LEGACY_WORLD), EventBus()
+    bus = EventBus()
     persona = Persona()
     persona.attach(bus)
     local = local or ScriptedLLM([])
-    manager = TaskManager(local, WorldTools(engine, bus), bus, Settings(), persona=persona, hosted=client)
+    manager = TaskManager(local, bus, Settings(), persona=persona, hosted=client)
     said = "where did lando qualify in mexico?"
     task = manager.start("web lookup: " + said, Grant.read_only(said), plan=_lookup_plan(said))
     await manager.runner
@@ -373,7 +472,7 @@ async def test_a_lookup_is_answered_by_one_groq_search_in_kips_voice(monkeypatch
     assert task.status == "completed", task.summary
     assert task.answer["answer"] == "Lando qualify sixth. Bad day. Very bad."
     assert [s["url"] for s in task.answer["sources"]] == ["https://example.com/report"]
-    assert [a["tool"] for a in task.action_history] == ["web_search", "finish_answer"]  # no house bootstrap
+    assert [a["tool"] for a in task.action_history] == ["web_search", "finish_answer"]
     assert local.calls == [] and len(bodies) == 1  # no local model call, no second search
     system = bodies[0]["messages"][0]["content"]
     assert "Browsing budget: one" in system and "never open a page to double-check" in system
@@ -392,11 +491,9 @@ async def test_an_answer_with_nothing_searched_falls_back_to_the_usual_lookup(mo
         return searched(tools=[]) if "tools" in json.loads(request.content) else ok(finish)
 
     task, local, _ = await _lookup(respond, monkeypatch)
-    # Groq's unsearched answer is a failed search; the usual search and research step take over,
-    # still without reading the house.
+    # Groq's unsearched answer is a failed search; the usual search and research step take over.
     tools_run = [(a["tool"], a["success"]) for a in task.action_history]
     assert tools_run[:2] == [("web_search", False), ("web_search", True)]
-    assert not {"get_status", "get_map"} & {tool for tool, _ in tools_run}
     assert task.status == "completed" and task.answer["answer"] == "Sixth."
 
 

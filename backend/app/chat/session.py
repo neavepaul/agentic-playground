@@ -16,16 +16,16 @@ from uuid import uuid4
 
 from app.llm.base import ModelError
 from app.memory.recall import prompt_memories
-from app.tasks.manager import TaskBusy
+from app.tasks.manager import TERMINAL, TaskBusy
 from app.tasks.permissions import READ_ONLY, TOOL_PLAIN, Grant, digital_scope, plain
 from .consent import Offer, classify_reply, is_question, is_request, task_identity  # noqa: F401 (re-exported)
-from .evidence import (capabilities, contradicted_presence, denied_capabilities, last_seen, room_scans,
-                       task_record, unsupported_execution)
-from .intent import Intent, given_name, introduced_as, is_live_fact, read_intent
+from .evidence import capabilities, denied_capabilities, task_record, unsupported_execution
+from .intent import Intent, given_name, introduced_as, read_intent
 from .router import (THRESHOLD as ROUTER_THRESHOLD, LIVE, SPORTS, Frame, Route, clock_question, default_router,
                      fast_path, frame_of, read_slots)
-from app.world.clock import spoken_time
-from app.agents.schemas import GoalCondition, GoalPlan, InitialCapability
+from app.clock import date_str, spoken_time
+from app.agents.schemas import GoalCondition, GoalPlan, InitialCapability, LookupPlan
+from app.capabilities.feeds import FEEDS
 from .prompt import ChatAction, TrailerSplitter, build_messages
 from .spoken import spoken
 from .context import ContextBudgetError, message_tokens
@@ -33,6 +33,7 @@ from .context import ContextBudgetError, message_tokens
 _log = logging.getLogger("agentic_friend.chat")
 
 HISTORY = 200
+SPEAKER_STATE = "chat-speaker"
 # Past exchanges are recalled for what the person said. Kip's own old lines are left out:
 # shown them, the model repeats them word for word.
 _OWN_OLD_LINE = re.compile(r"\s*\|\s*I replied:.*$", re.S)
@@ -61,9 +62,9 @@ _CORE_FACT = re.compile(r"\b(name|named|called|works?|job|engineer|developer|stu
 
 
 class ChatSession:
-    def __init__(self, client, bus, manager, engine, settings, store=None, persona=None,
+    def __init__(self, client, bus, manager, settings, store=None, persona=None,
                  shares_task_model: bool = True, session_id: str | None = None) -> None:
-        self.client, self.bus, self.manager, self.engine = client, bus, manager, engine
+        self.client, self.bus, self.manager = client, bus, manager
         self.settings, self.store, self.persona = settings, store, persona
         self.shares_task_model = shares_task_model
         self.name = persona.name if persona else settings.persona_name
@@ -72,10 +73,9 @@ class ChatSession:
         self._lock = asyncio.Lock()
         self._jobs: set[asyncio.Task] = set()
         self.replying = False
-        self.last_activity = 0.0
         self._closed = False
-        # Bumped by every world reset: offers, queued errands and narration from an
-        # older world are never acted on.
+        # Bumped by every reset: offers, queued errands and narration from before it
+        # are never acted on.
         self.generation = 0
         self.session_id = session_id or str(uuid4())
         if self.store:
@@ -95,8 +95,13 @@ class ChatSession:
         self._user_turns = 0
         self._offered: dict[tuple[str, ...], int] = {}  # offer identity -> user turn it was made on
         self._last_unasked_offer: tuple[int, Offer | None] = (-99, None)
-        self._introduced: str | None = None            # who said "it's Neave" when the picker was unset
-        self._given_name: str | None = None            # a name given outright by someone not in the house
+        # Who Kip is talking with: a name they gave ("my name is Neave"), kept across restarts.
+        self._speaker: str | None = None
+        self._speaker_display: str | None = None
+        if self.store:
+            saved = self.store.get_state(SPEAKER_STATE)
+            if saved:
+                self._speaker, self._speaker_display = _speaker_slug(saved), saved
         self.gate = None                               # shared-model priority (conversation first)
         # Intent router (router.py), per settings.intent_router. The app hands in one trained with
         # reviewed corrections and the embedding model; without one, the shipped TF-IDF router.
@@ -123,33 +128,22 @@ class ChatSession:
     def pending_offer(self) -> str | None:
         return self.offer.goal if self._offer_valid() else None
 
-    def quiet_seconds(self) -> float:
-        return time.monotonic() - self.last_activity if self.last_activity else float("inf")
-
     def submit(self, text: str, speaker: str | None = None) -> dict:
         text = text.strip()
         if not text:
             raise ValueError("Say something first.")
         if self._closed:
             raise ValueError("Conversation is shutting down.")
-        self.last_activity = time.monotonic()
-        # "Don't use Python", "don't go into the kitchen": binding from this moment on, for
-        # running and queued errands too. Applied before anything else reads this message.
-        world = self.engine.snapshot()
-        rooms = {key: room.get("name", key) for key, room in world.get("rooms", {}).items()}
+        # "Don't use Python": binding from this moment on, for running and queued errands too.
+        # Applied before anything else reads this message.
         before = set(self.manager.restrictions.describe())
-        if self.manager.restrictions.update(text, rooms):
+        if self.manager.restrictions.update(text):
             _log.info("Restrictions now: %s", self.manager.restrictions.describe())
             self.manager.save_restrictions()
         after = set(self.manager.restrictions.describe())
+        if not speaker:
+            self._learn_speaker(text)
         speaker_id = self._speaker_id(speaker)
-        if speaker_id is None and not speaker:
-            # The picker says "someone": a known person introducing themselves is good evidence.
-            self._introduced = introduced_as(text, world.get("people", {})) or self._introduced
-            speaker_id = self._introduced
-        if speaker_id is None:
-            # "My name is Neave" from someone not in the house: Kip still knows who he is talking to.
-            self._given_name = given_name(text) or self._given_name
         earlier = list(self.turns)
         turn = self._add_turn("user", text, speaker=speaker_id)
         self._user_turns += 1
@@ -193,7 +187,7 @@ class ChatSession:
         self._jobs.difference_update(jobs)
 
     async def reset_pending(self) -> None:
-        """Discard replies, offers and queued work tied to the old world, then accept chat again."""
+        """Discard replies, offers and queued work from before, then accept chat again."""
         await self.close()
         self.generation += 1
         self._announced.clear()
@@ -221,43 +215,33 @@ class ChatSession:
         self.bus.emit("chat_message", speaker, turn=turn, summary=f"{speaker}: {text}")
         return turn
 
+    def _learn_speaker(self, text: str) -> None:
+        """"My name is Neave", or "it's Neave" from someone Kip already knows: who is talking now."""
+        known = {key: {"name": key.title()} for key in (self.persona.state.relationships if self.persona else {})}
+        name = given_name(text) or introduced_as(text, known)
+        if not name:
+            return
+        display = name if name != name.casefold() else name.title()
+        if _speaker_slug(display) == self._speaker:
+            return
+        self._speaker, self._speaker_display = _speaker_slug(display), display
+        if self.store:
+            self.store.set_state({SPEAKER_STATE: display})
+
     def _speaker_id(self, speaker: str | None) -> str | None:
-        """A known person id, or None when we don't know who is talking."""
-        speaker = (speaker or self.settings.chat_default_speaker or "").strip().casefold()
-        people = self.engine.snapshot().get("people", {})
-        return speaker if speaker in people else None
+        """Who is talking: named by the caller, the configured default, or a name they gave."""
+        named = (speaker or self.settings.chat_default_speaker or "").strip()
+        return _speaker_slug(named) if named else self._speaker
 
     def _speaker_name(self, speaker_id: str | None) -> str:
-        people = self.engine.snapshot().get("people", {})
-        return people[speaker_id].get("name", speaker_id) if speaker_id in people else "unknown person"
+        if not speaker_id:
+            return "unknown person"
+        if speaker_id == self._speaker and self._speaker_display:
+            return self._speaker_display
+        return speaker_id.replace("_", " ").title()
 
     def _status(self, speaker_id: str | None = None) -> dict:
-        status = self.engine.get_status()
-        status["talking_with"] = self._speaker_name(speaker_id)
-        if speaker_id is None and self._given_name:
-            status["talking_with"] = f"{self._given_name} (the name they gave you)"
-        # Live senses: the room Kip is standing in, as he sees and hears it now (nothing beyond it),
-        # and who came, went or changed what they were doing since he got here.
-        around = self.engine.surroundings()
-        # Compact: every token here is read again on every reply. Full detail comes from look.
-        held = {h["object"]: h["person"] for h in around["held_objects"]}
-        view = {"room": around["room_name"], "description": around.get("description", ""),
-                "people": [p["name"] + (f" ({p['activity']})" if p.get("activity") else "") for p in around["people"]],
-                "things": [o["name"] for o in around["objects"]]
-                          + [f"{obj} (held by {person})" for obj, person in held.items()],
-                "fixtures": [f["name"] + (f": {f['state']}" if f.get("state") else "")
-                             for f in around.get("features", [])]}
-        status["around_me_now"] = {key: value for key, value in view.items() if value}
-        noticed = []
-        for event in reversed(self.bus.history):
-            if event["type"] == "robot_moved":
-                break
-            if event["type"] == "presence_noticed":
-                noticed.append(event["data"]["summary"])
-                if len(noticed) == 3:
-                    break
-        if noticed:
-            status["just_noticed"] = noticed[::-1]
+        status = {"now": date_str(), "talking_with": self._speaker_name(speaker_id)}
         active = self.manager.active()
         # "none", not null: models repeat null verbatim ("my current errand is null").
         status["current_errand"] = errand_progress(active) if active else "none"
@@ -265,14 +249,10 @@ class ChatSession:
             status["queued_errands"] = list(self.pending_goals)
         if self.pending_offer:
             status["offered_errand_awaiting_yes"] = self.pending_offer
-        world = self.engine.snapshot()
         finished = [c for c in self.manager.tasks.values() if c.status != "running"][-3:]
         if finished:
             # What each errand actually did, tried, was refused and left undone.
-            status["recent_errands"] = [task_record(c, world) for c in finished]
-        people = last_seen(self.manager, world)
-        if any(note != "unknown" for note in people.values()):
-            status["last_seen"] = people  # fresh looks vs older records, never merged
+            status["recent_errands"] = [task_record(c) for c in finished]
         status["my_tools"] = capabilities(self.manager, self.settings)
         if self.manager.restrictions:
             status["asked_not_to"] = self.manager.restrictions.describe()
@@ -321,16 +301,16 @@ class ChatSession:
             parts.append("This is live information (weather, a price, a score, news): a lookup starts now. Say so "
                          "in a few words, in character. Never state a figure yourself; the real one follows.")
         if intent.greeting:
-            parts.append("A greeting: a line or two in your own voice, from something real (the hour, where "
-                         "you are, what's happened). Asked how you are, go by your actual mood and errands, not "
+            parts.append("A greeting: a line or two in your own voice, from something real (the hour, the "
+                         "day, what's happened). Asked how you are, go by your actual mood and errands, not "
                          "an invented day. Don't ask them back unless you want to know.")
         if intent.wants_offer:
             parts.append("They want an offer, not action: put it in offer and wait for their yes.")
         if intent.about_past:
-            parts.append("They ask what you did: use only status.recent_errands and status.last_seen. Say what was "
-                         "done, tried, refused or not done, and how old each sighting is.")
+            parts.append("They ask what you did: use only status.recent_errands. Say what was "
+                         "done, tried, refused or not done.")
         if intent.small_talk:
-            parts.append("Small talk: no suggestions to do things around the house.")
+            parts.append("Small talk: just talk; don't suggest errands.")
         return " ".join(parts)
 
     async def _recall(self, text: str, speaker: str | None = None) -> list[dict]:
@@ -376,7 +356,7 @@ class ChatSession:
                         return
                     if self._asks_the_time(intent, route, said):
                         # The clock answers "what time is it?": no model call, never a guess.
-                        finished = self._finish_turn(user_turn, reply_id, spoken_time(self.engine.clock), None,
+                        finished = self._finish_turn(user_turn, reply_id, spoken_time(), None,
                                                      {"chat_model_calls": 0, "intent_router": "clock"})
                         self._intents.pop(user_turn["id"], None)
                         return
@@ -398,8 +378,15 @@ class ChatSession:
                         self._intents.pop(user_turn["id"], None)
                         return
                     self._lookup_queries[task_identity(goal)] = query
-                    self._start_or_queue(goal, user_turn["id"], Grant.read_only(said), plan=_lookup_plan(query))
+                    self._start_or_queue(goal, user_turn["id"], Grant.read_only(said), plan=_lookup_plan(query, route, said))
                     self._intents.pop(user_turn["id"], None)
+                    finished = True
+                    return
+                if self._tool_request(user_turn, intent) and self._started_errand(user_turn):
+                    # "Use Python to…", "read https://…": like a live lookup, the errand's answer is
+                    # the reply. A chat reply first can take minutes on the local model.
+                    self._intents.pop(user_turn["id"], None)
+                    self._routes.pop(user_turn["id"], None)
                     finished = True
                     return
                 self.replying = True
@@ -429,7 +416,9 @@ class ChatSession:
                                           self._status(user_turn.get("speaker")), earlier, user_turn["text"],
                                           guidance=guidance, context_tokens=min(
                                               self.settings.chat_context_tokens,
-                                              self.settings.context_tokens - self.settings.chat_max_tokens))
+                                              self.settings.context_tokens - self.settings.chat_max_tokens),
+                                          compact=self.settings.prompt_profile == "compact",
+                                          history_tokens=self.settings.compact_history_tokens)
                 splitter = TrailerSplitter()
                 try:
                     async for chunk in self.client.stream_text(messages, max_tokens=self.settings.chat_max_tokens,
@@ -463,6 +452,13 @@ class ChatSession:
                                            "history": sum(len(m["content"]) for m in messages[1:-1]),
                                            "latest": len(messages[-1]["content"])}
                 action, action_error = parsed.action, parsed.error
+                if (action and (action.task or action.offer) and not self.settings.local_chat_errands
+                        and metrics.get("provider") != "groq"):
+                    # A small local model's errands can be nonsense ("What is your favorite thing?"),
+                    # and an offer blocks lookups while it waits for a yes. Its memories are kept.
+                    _log.info("Local reply's errand ignored (LOCAL_CHAT_ERRANDS=false): task=%r offer=%r",
+                              action.task, action.offer)
+                    action = action.model_copy(update={"task": "", "offer": ""})
                 text = parsed.visible
                 if metrics.get("truncated"):
                     # A cut-off reply is shown as cut off; a half-written action never runs.
@@ -485,9 +481,11 @@ class ChatSession:
                               "question?", None, {"chat_model_calls": 0}, error=str(exc))
             finished = True
         except ModelError as exc:
-            self._finish_turn(user_turn, reply_id, "Cannot think now. My language model not "
-                                                   "answer. You check it run, question?", None, {},
-                              error=str(exc))
+            # The reply failed, not the request: what the person's own words ask for (a tool run, a
+            # live lookup, a yes to an offer) still starts, as it would with a reply that proposed nothing.
+            started = self._started_errand(user_turn)
+            self._finish_turn(user_turn, reply_id, "Cannot think now. My language model not answer. " + (
+                "But your errand I start." if started else "You check it run, question?"), None, {}, error=str(exc))
             finished = True
         except asyncio.CancelledError:
             raise
@@ -498,7 +496,6 @@ class ChatSession:
             finished = True
         finally:
             self.replying = False
-            self.last_activity = time.monotonic()
             self._offer_seen.pop(user_turn["id"], None)
             self._turn_epochs.pop(user_turn["id"], None)
             if self.gate is not None:
@@ -507,6 +504,24 @@ class ChatSession:
                 # Cancelled (reset, shutdown): release any "Thinking…" indicator.
                 self.bus.emit("chat_reply_ended", self.name, skip_history=True, reply_id=reply_id,
                               reason="cancelled")
+
+    def _tool_request(self, user_turn: dict, intent: Intent) -> bool:
+        """Their own words plainly ask for a tool to run, with nothing that needs a word first:
+        not an offer they asked for, a refusal, a cancellation, a permission change, or an answer
+        to an offer Kip made."""
+        if not intent.needs_tools or intent.cancel or intent.wants_offer or intent.declines:
+            return False
+        if intent.granted or intent.revoked:
+            return False
+        offer = self.offer if self._offer_valid() else None
+        return not (offer and self._offer_seen.get(user_turn["id"]) == offer.id)
+
+    def _started_errand(self, user_turn: dict) -> bool:
+        """Start (or queue) what the person's own words ask for, with no reply from the model.
+        True if an errand started or was queued."""
+        before = (len(self.manager.tasks), len(self.pending_goals))
+        self._decide_errands(None, user_turn)
+        return (len(self.manager.tasks), len(self.pending_goals)) != before
 
     def _finish_turn(self, user_turn, reply_id, text, action, metrics, **extra) -> dict:
         return self._add_turn("kip", text, reply_id=reply_id, in_reply_to=user_turn["id"],
@@ -599,7 +614,7 @@ class ChatSession:
             goal = next((g for g in (proposed, offered) if g and digital_scope(g)), f"{LOOKUP_PREFIX}{said}")
             route = self._routes.get(user_turn["id"])
             query = route.query if self.settings.intent_router == "on" and route and route.live else said
-            self._start_or_queue(goal, user_turn["id"], Grant.read_only(said), plan=_lookup_plan(query))
+            self._start_or_queue(goal, user_turn["id"], Grant.read_only(said), plan=_lookup_plan(query, route, said))
             return
         needs = intent.needs_tools
         if needs:
@@ -620,8 +635,10 @@ class ChatSession:
         if intent.wants_offer:
             self._make_offer(offered or proposed, user_turn, asked_for=True)
             return
+        # "Read https://…": the plan is known, so no planning call (minutes on a small local model).
+        plan = _read_plan(said) if needs == ["read_webpage"] and proposed == said else None
         if proposed and asks:
-            self._start_or_queue(proposed, user_turn["id"], Grant.full("request", said))
+            self._start_or_queue(proposed, user_turn["id"], Grant.full("request", said), plan=plan)
             return
         if proposed and self.settings.chat_autonomy == "act" and answer != "no":
             # Opted-in configuration: proposals start at once (restrictions still bind them).
@@ -629,26 +646,25 @@ class ChatSession:
             return
         if proposed and question and (needs or digital_scope(proposed)):
             # A question may start a lookup, but only ever with read-only effects.
-            self._start_or_queue(proposed, user_turn["id"], Grant.read_only(said))
+            self._start_or_queue(proposed, user_turn["id"], Grant.read_only(said), plan=plan)
             return
         refusing = answer == "no" if replying else intent.declines
         suggestion = offered or proposed
         if suggestion and not refusing and digital_scope(suggestion) and task_identity(suggestion) not in self._declined:
-            # A lookup or a calculation changes nothing in the house: Kip may simply do it,
-            # unasked. The read-only grant guarantees it, and a plan that turns out to need
-            # more stops before acting and becomes an offer.
+            # A lookup or a calculation changes nothing: Kip may simply do it, unasked.
+            # The read-only grant guarantees it, and a plan that turns out to need more
+            # stops before acting and becomes an offer.
             self._start_or_queue(suggestion, user_turn["id"], Grant.read_only(said))
             return
-        # Anything else is a suggestion: never physical without a yes.
+        # Anything else is a suggestion: never started without a yes.
         if not refusing:
             self._make_offer(suggestion, user_turn, asked_for=False, small_talk=intent.small_talk)
 
     def _pure_lookup(self, intent: Intent, said: str, live: bool | None = None) -> bool:
-        """Weather, prices, scores, news, with nothing in the house involved: a web lookup."""
+        """Weather, prices, scores, news: a web lookup."""
         live = intent.live_fact if live is None else live
         return (live and not intent.needs_tools and self.settings.digital_tools_enabled
-                and not self.manager.restrictions.forbids_tool("web_search") and not intent.wants_offer
-                and not self._involves_the_house(said))
+                and not self.manager.restrictions.forbids_tool("web_search") and not intent.wants_offer)
 
     def _direct_lookup(self, user_turn: dict, intent: Intent,
                        earlier: list[dict] = ()) -> tuple[str, str] | None:
@@ -728,8 +744,7 @@ class ChatSession:
         if seen is not None and self._offer_valid() and self.offer.id == seen:
             return False  # an answer to Kip's offer is never a fresh lookup
         allowed = self.settings.digital_tools_enabled and not self.manager.restrictions.forbids_tool("web_search")
-        return fast_path(route, intent, web_allowed=allowed,
-                         involves_house=self._involves_the_house(user_turn["text"]))
+        return fast_path(route, intent, web_allowed=allowed)
 
     def _routed_lookup(self, user_turn: dict, intent: Intent, route: Route) -> tuple[str, str] | None:
         """(goal, search query) when the router sends this straight to the lookup. The goal keeps
@@ -842,7 +857,7 @@ class ChatSession:
 
     def _asks_the_time(self, intent: Intent, route: Route, said: str) -> bool:
         """ "What time is it?" on its own, not "what time?" about the match just asked about."""
-        return (self.engine.clock is not None and not (route.followup or route.correction)
+        return (not (route.followup or route.correction)
                 and not (intent.cancel or intent.changes_state_only or self._closed) and clock_question(said))
 
     def _is_live(self, turn_id: str, intent: Intent) -> bool:
@@ -888,21 +903,6 @@ class ChatSession:
             return None
         return _clip(asked, 200)
 
-    def _involves_the_house(self, text: str) -> bool:
-        """Mentions someone or somewhere in the house ("...and tell Paul"): not a pure lookup.
-
-        Chat before the lookup question ("Let Moira enjoy her book. When's the next race?")
-        counts only if it asks for something; from the question on, any mention counts."""
-        world = self.engine.snapshot()
-        sentences = re.split(r"(?<=[.!?;])\s+", text.strip())
-        start = next((i for i, sentence in enumerate(sentences) if is_live_fact(sentence)), 0)
-        lowered = " ".join(sentence for i, sentence in enumerate(sentences)
-                           if i >= start or is_request(sentence) or is_question(sentence)).casefold().replace("_", " ")
-        names = [str(v.get("name", k)).casefold() for k, v in {**world.get("people", {}),
-                                                                 **world.get("rooms", {})}.items()]
-        names += [k.replace("_", " ") for k in {**world.get("people", {}), **world.get("rooms", {})}]
-        return any(re.search(r"\b" + re.escape(name) + r"\b", lowered) for name in names if name)
-
     def _make_offer(self, goal: str, user_turn: dict, asked_for: bool, small_talk: bool = False) -> None:
         identity = task_identity(goal)
         if not goal or identity in self._declined:
@@ -938,14 +938,11 @@ class ChatSession:
             self._spawn(stop(self.manager.active_id))
 
     def _check_claims(self, reply: str, intent: Intent | None = None, live: bool = False) -> None:
-        """Kip must not claim actions, runs or sightings his tool evidence does not support."""
-        world = self.engine.snapshot()
-        found, notes = unsupported_claims(reply, evidence_ledger(self.manager), world), []
+        """Kip must not claim runs or lookups his tool evidence does not support."""
+        notes = []
         if intent is not None and (intent.live_fact or live) and _FIGURE.search(reply.casefold()):
             # A live figure before any lookup came back is a guess wearing a number.
             notes.append("that figure was a guess; I'm looking up the real one now")
-        if found:
-            notes.append("I haven't actually done that; there's no record of it")
         running = (self.manager.active() or {}).get("requested_tools", [])
         for tool in unsupported_execution(reply, self.manager):
             what = {"run_python": "no Python has run for that", "read_webpage": "I haven't read that page",
@@ -954,11 +951,6 @@ class ChatSession:
         denied = denied_capabilities(reply, self.manager, self.settings)
         if denied:
             notes.append("I can " + " and ".join(denied) + " — that's working")
-        scans, names = room_scans(self.manager), {k: v.get("name", k) for k, v in world.get("people", {}).items()}
-        for person, room in dict.fromkeys(contradicted_presence(reply, self.manager, world)):
-            at = scans[room].get("at")
-            notes.append(f"when I looked in the {room.replace('_', ' ')}{' at ' + at if at else ''}, "
-                         f"{names.get(person, person)} wasn't there; anything older is only a record")
         if notes:
             _log.warning("Unsupported claims in reply: %s", notes)
             self._add_turn("kip", "Scratch that: " + "; ".join(notes) + ".", source="correction", claims=notes)
@@ -976,11 +968,9 @@ class ChatSession:
                                                  r"make[- ]believe|let's say)\b", said, re.I):
                 context = "pretend"  # the person framed it as not real; keep that framing
             tags = self._mentioned(text)
-            people = set(self.engine.snapshot().get("people", {}))
-            if not people & set(tags) and FIRST_PERSON.search(text.casefold()):
-                # "I like tea" belongs to whoever is speaking, never an arbitrary resident.
-                if speaker:
-                    tags.append(speaker)
+            if speaker and speaker not in tags and FIRST_PERSON.search(text.casefold()):
+                # "I like tea" belongs to whoever is speaking, never anyone else.
+                tags.append(speaker)
             meta = {"context": context, "speaker": speaker or "unknown", "said_in": user_turn["id"]}
             try:
                 added.append(await self.store.add("preference" if re.search(r"\b(prefer|like|love|favou?rite|"
@@ -1030,16 +1020,13 @@ class ChatSession:
         return " ".join(parts)
 
     def _mentioned(self, text: str) -> list[str]:
-        """Tag memories with people and objects mentioned by name or ID."""
-        world = self.engine.snapshot()
+        """Tag memories with the people Kip knows who are mentioned by name."""
         lowered = text.casefold()
-        tags = []
-        for key, item in {**world.get("people", {}), **world.get("objects", {})}.items():
-            name = str(item.get("name", key)).casefold()
-            if any(alias and re.search(r"(?<!\w)" + re.escape(alias) + r"(?!\w)", lowered)
-                   for alias in (key.casefold(), name)):
-                tags.append(key)
-        return tags
+        known = set(self.persona.state.relationships) if self.persona else set()
+        if self._speaker:
+            known.add(self._speaker)
+        return sorted(key for key in known
+                      if re.search(r"(?<!\w)" + re.escape(key.replace("_", " ")) + r"(?!\w)", lowered))
 
     # ── errands ─────────────────────────────────────────────────────────────
     def _already_planned(self, goal: str) -> bool:
@@ -1075,6 +1062,11 @@ class ChatSession:
             if plan is not None:
                 self._queued_plans[task_identity(goal)] = plan
             _log.info("Queued behind task %s: %s (queue now %d)", self.manager.active_id, goal, len(self.pending_goals))
+            active = self.manager.tasks.get(self.manager.active_id)
+            if active is None or active.status in TERMINAL:
+                # Its end was already announced and it is only saving what it learned: no task
+                # event is left to start this one, so wait for the slot here.
+                self._spawn(self._start_next_when_free(self.generation))
             if goal.startswith(LOOKUP_PREFIX):
                 self._add_turn("kip", "One errand first. Then I check this.", source="narration")
             else:
@@ -1117,14 +1109,11 @@ class ChatSession:
             if answer.get("answer"):
                 # The answer is already written in Kip's voice; no stock opener.
                 text = answer["answer"]
-            else:
+            elif outcome == "completed":
                 # Plain facts, no stock reaction: character belongs in replies, not templates.
-                found = describe_findings(task)
-                if outcome == "completed":
-                    text = found or data.get("summary", "") or "Done."
-                else:
-                    text = " ".join(part for part in ("Not finish. Bad.", found, data.get("summary", ""))
-                                    if part)
+                text = data.get("summary", "") or "Done."
+            else:
+                text = " ".join(part for part in ("Not finish. Bad.", data.get("summary", "")) if part)
             notes = list(task.get("answer_notes") or [])
             if task.get("blocked"):
                 notes.append("Not done: " + "; ".join(task["blocked"]) + ".")
@@ -1134,10 +1123,6 @@ class ChatSession:
                 self._spawn(self._start_next_when_free(self.generation))
         elif kind == "task_needs_permission":
             self._needs_permission(data)
-        elif kind == "agent_intention":
-            self._announced.add(task_identity(data.get("summary", "")))
-            self._add_turn("kip", f"I take care of something: {data.get('summary', '')}. "
-                                  f"{data.get('reason', '')}".strip(), source="narration")
 
 
     def _needs_permission(self, data: dict) -> None:
@@ -1155,11 +1140,28 @@ class ChatSession:
                        source="narration")
 
 
-def _lookup_plan(said: str) -> GoalPlan:
-    """A plain web lookup of what they asked, searched in their own words."""
+def _lookup_plan(said: str, route: Route | None = None, words: str = "") -> LookupPlan:
+    """A plain web lookup of what they asked, searched in their own words. A subject with a feed
+    (F1, cricket, weather) carries the router's reading and their words, so the feed can answer first."""
     query = re.sub(r"^\W*(?:hey |ok |so )?kip\W+", "", said.strip(), flags=re.I)[:200]
-    return GoalPlan(summary="Look it up.", conditions=[GoalCondition(kind="answer", required_tools=["web_search"])],
-                    initial_actions=[InitialCapability(tool="web_search", arguments={"query": query})])
+    feed = ({"domain": route.domain, "entities": list(route.entities), "focus": route.focus,
+             "time": route.time, "place": route.place, "said": words}
+            if route and route.domain in FEEDS else None)
+    return LookupPlan(summary="Look it up.", conditions=[GoalCondition(kind="answer", required_tools=["web_search"])],
+                      initial_actions=[InitialCapability(tool="web_search", arguments={"query": query})], feed=feed)
+
+
+_PAGE_URL = re.compile(r"https?://[^\s,;)<>\"']+")
+
+
+def _read_plan(said: str) -> GoalPlan | None:
+    """Read the one page they named and answer from it. None unless exactly one http(s) URL."""
+    urls = {url.rstrip(".!?:") for url in _PAGE_URL.findall(said)}
+    if len(urls) != 1:
+        return None
+    return GoalPlan(summary="Read the page they named.",
+                    conditions=[GoalCondition(kind="answer", required_tools=["read_webpage"])],
+                    initial_actions=[InitialCapability(tool="read_webpage", arguments={"url": urls.pop()})])
 
 
 # ── status and narration helpers (deterministic, no model calls) ───────────────
@@ -1177,137 +1179,12 @@ def _lower_first(text: str) -> str:
     return text[:1].lower() + text[1:] if text else text
 
 
-def _place(location) -> str | None:
-    if isinstance(location, dict):
-        kind, key = location.get("kind"), location.get("id")
-        if kind == "room":
-            return f"in the {key.replace('_', ' ')}"
-        if kind == "person":
-            return f"with {key.title()}"
-        if kind == "robot":
-            return "with me"
-        return None
-    return f"in the {location.replace('_', ' ')}" if location else None
+def _speaker_slug(name: str) -> str:
+    return "_".join(name.casefold().split())
 
 
 def errand_progress(task: dict) -> dict:
-    """What has actually been observed so far, so chat never invents progress."""
-    memory = task.get("task_memory") or {}
-    found = {item.get("name", key): _place(item.get("location"))
-             for key, item in (memory.get("objects") or {}).items()}
-    people = {item.get("name", key): _place(item.get("location"))
-              for key, item in (memory.get("people") or {}).items()}
-    return {"goal": task.get("goal"),
-            "rooms_looked_in": [r.replace("_", " ") for r in (memory.get("observed_rooms") or {})],
-            "objects_found": {k: v for k, v in found.items() if v},
-            "people_seen": {k: v for k, v in people.items() if v},
-            "outcomes_done": [o.get("kind") for o in memory.get("completed_outcomes", [])],
+    """What the running errand has actually done so far, so chat never invents progress."""
+    return {"goal": task.get("goal"), "outcomes_done": [c.get("kind") for c in task.get("conditions") or []
+                                                        if c.get("satisfied")],
             "latest": task.get("summary", "")}
-
-
-def recent_errands(manager, limit: int = 3) -> list[dict]:
-    """The last finished errands and what they actually found or answered."""
-    finished = [t for t in manager.tasks.values() if t.status != "running"][-limit:]
-    result = []
-    for context in finished:
-        task = context.public()
-        answer = (task.get("answer") or {}).get("answer", "")
-        result.append({"goal": task["goal"], "outcome": task["status"],
-                       "result": _clip(answer, 160) if answer else describe_findings(task) or task.get("summary", "")})
-    return result
-
-
-def known_people(persistent) -> dict:
-    if persistent is None:
-        return {}
-    people = persistent.prompt().get("people", {})
-    return {p.get("name", key): ("last seen " + _place(p["last_seen_room"]) if p.get("last_seen_room") else "")
-            for key, p in people.items()}
-
-
-def describe_findings(task: dict) -> str:
-    """A plain-language account of what an errand actually observed, room by room."""
-    memory = task.get("task_memory") or {}
-    people, objects = memory.get("people") or {}, memory.get("objects") or {}
-    rooms = [r for r in (memory.get("observed_rooms") or {})]
-    shown_people, shown_objects, parts = set(), set(), []
-    looked = []
-    for room in rooms[:5]:
-        here = [p.get("name") or key for key, p in people.items() if p.get("location") == room]
-        things = [f"the {(o.get('name') or key).lower()}" for key, o in objects.items()
-                  if (o.get("location") or {}) == {"kind": "room", "id": room}]
-        shown_people |= {key for key, p in people.items() if p.get("location") == room}
-        shown_objects |= {key for key, o in objects.items() if (o.get("location") or {}) == {"kind": "room", "id": room}}
-        seen = here + things
-        looked.append(f"the {room.replace('_', ' ')} ({', '.join(seen) if seen else 'empty'})")
-    if looked:
-        parts.append("I looked in " + (", ".join(looked[:-1]) + " and " + looked[-1] if len(looked) > 1 else looked[0]) + ".")
-    progress = errand_progress(task)
-    elsewhere = {name: where for key, name, where in
-                 ((k, o.get("name", k), _place(o.get("location"))) for k, o in objects.items())
-                 if where and key not in shown_objects}
-    if elsewhere:
-        parts.append("I found the " + ", and the ".join(f"{name.lower()} {where}"
-                                         for name, where in list(elsewhere.items())[:3]) + ".")
-    others = {name: where for name, where in progress["people_seen"].items()
-              if name not in {people[k].get("name") or k for k in shown_people}}
-    if others:
-        parts.append("I saw " + ", ".join(f"{name} {where}" for name, where in list(others.items())[:3]) + ".")
-    return " ".join(parts)
-
-
-# ── evidence for Kip's own claims ────────────────────────────────────────────
-def evidence_ledger(manager) -> dict[str, set[str]]:
-    """Everything the robot has actually done or observed in this world, from tool results."""
-    ledger = {"rooms": set(), "objects": set(), "people": set(), "gave": set(), "told": set()}
-    for context in manager.tasks.values():
-        ledger["rooms"] |= set(context.memory.rooms)
-        ledger["objects"] |= set(context.memory.objects)
-        ledger["people"] |= {key for key, person in context.memory.people.items() if person.location}
-        for entry in context.action_history:
-            if not entry.get("success"):
-                continue
-            observation = entry.get("observation") or {}
-            if entry["tool"] == "give":
-                ledger["gave"] |= {observation.get("object", ""), observation.get("person", "")}
-            elif entry["tool"] == "talk_to":
-                ledger["told"].add(observation.get("person", ""))
-    return ledger
-
-
-_CLAIM = re.compile(r"\bi(?:'ve| have| just| already|\s)*\s*(checked|looked|searched|found|delivered|brought|gave|"
-                    r"told|visited)\b(.*)")
-_HEDGE = re.compile(r"\b(n't|not|never|haven't|couldn't|didn't|will|'ll|going to|can|could|would|should|"
-                    r"if|when|before|after|yet)\b")
-
-
-def unsupported_claims(reply: str, ledger: dict[str, set[str]], world: dict) -> list[str]:
-    """First-person past-tense claims about physical actions with no matching tool evidence."""
-    rooms = {key: {key.casefold(), room.get("name", key).casefold()} for key, room in world.get("rooms", {}).items()}
-    objects = {key: {key.casefold(), obj.get("name", key).casefold()} for key, obj in world.get("objects", {}).items()}
-    people = {key: {key.casefold(), person.get("name", key).casefold()} for key, person in world.get("people", {}).items()}
-    claims = []
-    for sentence in re.split(r"(?<=[.!?])\s+", reply.casefold().replace("’", "'")):
-        match = _CLAIM.search(sentence)
-        if not match or _HEDGE.search(sentence[:match.start()] + " " + match.group(2)):
-            continue
-        verb, rest = match.group(1), match.group(2)
-        def named(table):
-            return {key for key, names in table.items() if any(re.search(r"\b" + re.escape(n) + r"\b", rest) for n in names)}
-        mentioned_rooms, mentioned_objects, mentioned_people = named(rooms), named(objects), named(people)
-        if verb in {"checked", "looked", "searched", "visited"}:
-            evidence = (mentioned_rooms & ledger["rooms"]) | (mentioned_objects & ledger["objects"]) | \
-                       (mentioned_people & ledger["people"])
-        elif verb == "found":
-            evidence = (mentioned_objects & ledger["objects"]) | (mentioned_people & ledger["people"])
-        elif verb == "told":
-            evidence = mentioned_people & ledger["told"]
-        else:  # delivered / brought / gave
-            evidence = (mentioned_objects | mentioned_people) & ledger["gave"]
-        mentioned = mentioned_rooms | mentioned_objects | mentioned_people
-        unknown_thing = re.search(r"\b(the|his|her|their|your|my)\s+(\w+)", rest)
-        if evidence:
-            continue
-        if mentioned or unknown_thing:
-            claims.append(sentence.strip())
-    return claims

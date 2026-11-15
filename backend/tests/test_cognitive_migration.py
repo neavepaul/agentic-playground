@@ -12,7 +12,7 @@ from app.llm.base import ModelError
 from app.llm.colibri import ColibriClient
 from app.chat.context import assemble, message_tokens, select_history
 from app.memory.recall import MemoryStore
-from tests.test_chat import make_session, reply, StreamingModel
+from tests.test_chat import make_session, reply
 from app.chat import ChatSession
 from app.tasks.manager import TaskManager, LimitReached
 from app.tasks.models import TaskMetrics
@@ -101,10 +101,8 @@ async def test_transcript_restart_and_id_isolation_without_replaying_actions(tmp
     await session.close()
     store.close()
     reopened = MemoryStore(path)
-    restored = ChatSession(model, session.bus, manager, session.engine, Settings(), store=reopened,
-                           session_id=stable_id)
-    other = ChatSession(model, session.bus, manager, session.engine, Settings(), store=reopened,
-                        session_id="another-conversation")
+    restored = ChatSession(model, session.bus, manager, Settings(), store=reopened, session_id=stable_id)
+    other = ChatSession(model, session.bus, manager, Settings(), store=reopened, session_id="another-conversation")
     assert restored.history() == expected
     assert other.history() == []
     assert restored.pending_offer is None and not restored.pending_goals and manager.active_id is None
@@ -118,11 +116,11 @@ async def test_transcript_restart_and_id_isolation_without_replaying_actions(tmp
 @pytest.mark.asyncio
 async def test_terminal_task_cannot_dispatch_or_increment_counters():
     session, _, manager, _ = make_session([])
-    task = manager.start("Find keys")
+    task = manager.start("Look up the weather")
     await manager.cancel(task.id)
     before = task.tool_count
     with pytest.raises(LimitReached, match="terminal"):
-        manager.call_tool(task, "move_to", {"room": "kitchen"})
+        await manager.call_capability_batch(task, [{"tool": "run_python", "arguments": {"code": "1"}}])
     with pytest.raises(LimitReached, match="terminal"):
         await manager.call_capability(task, "web_search", {"query": "weather"})
     assert task.tool_count == before
@@ -232,24 +230,25 @@ async def test_cancel_invalidates_older_reply_proposals():
 async def test_restart_retains_task_evidence_and_restrictions_without_replay(tmp_path):
     session, model, _, _ = make_session([])
     store = MemoryStore(tmp_path / "tasks.db")
-    manager = TaskManager(model, session.manager.tools, session.bus, Settings(), memory_store=store)
-    task = manager.start("Find keys")
-    manager.call_tool(task, "get_status", {})
+    manager = TaskManager(model, session.bus, Settings(), memory_store=store)
+    task = manager.start("Look up the weather")
+    task.record("web_search", {"query": "weather"}, {"success": True, "evidence_id": "ev-1", "observation": {
+        "query": "weather", "results": [{"url": "https://weather.example", "title": "Weather"}]}})
     manager.restrictions.tools.add("run_python")
     manager.save_restrictions()
     # A crash between dispatch and recording its result has an uncertain outcome.
-    manager._before_dispatch(task, "move_to", {"room": "kitchen"})
+    manager._before_dispatch(task, "read_webpage", {"url": "https://weather.example"})
     journal = store.get_state("task-journal")
     await manager.close()
     store.set_state({"task-journal": journal})  # crash image, before graceful cancellation
     store.close()
     reopened = MemoryStore(tmp_path / "tasks.db")
-    restored = TaskManager(model, session.manager.tools, session.bus, Settings(), memory_store=reopened)
+    restored = TaskManager(model, session.bus, Settings(), memory_store=reopened)
     recovered = restored.tasks[task.id]
     assert recovered.status == "failed"
     assert "nothing was replayed" in recovered.summary
-    assert recovered.action_history[0]["tool"] == "get_status"
-    assert recovered.pending_action["tool"] == "move_to"
+    assert recovered.action_history[0]["tool"] == "web_search"
+    assert recovered.pending_action["tool"] == "read_webpage"
     assert restored.restrictions.forbids_tool("run_python")
     assert restored.runner is None and restored.active_id is None
     await session.close()
