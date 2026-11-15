@@ -102,4 +102,10 @@ class TaskContext(BaseModel):
                 "cycle_count": self.cycle_count, "tool_count": self.tool_count})
 
     def public(self) -> dict:
-        return self.model_dump(mode="json", exclude={"action_history", "critic_feedback", "explorer_reports"})
+        """The task as pages, events and the API see it. A private task keeps its sources but not its
+        answer's words: those reach the person only as Kip's reply."""
+        shown = self.model_dump(mode="json", exclude={"action_history", "critic_feedback", "explorer_reports"})
+        if self.private:
+            from app.events.bus import redact
+            shown = {**shown, **redact({key: shown[key] for key in ("answer", "pending_action")})}
+        return shown

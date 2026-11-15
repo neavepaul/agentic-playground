@@ -155,9 +155,11 @@ class CapabilityTools:
                 # Provider/runtime exceptions can contain environment details.
                 error = f"{tool} failed ({type(exc).__name__}). Check the input, simplify it, or try another source."
             result, event_type = {"success": False, "error": error}, "tool_failed"
-        private = {"private": True} if getattr(context, "private", False) else {}
-        event = self.bus.emit(event_type, "explorer", task_id=context.id,
-                              tool=tool, arguments=arguments, **result, **private)
+        shown = {"tool": tool, "arguments": arguments, **result}
+        if getattr(context, "private", False):
+            from app.events.bus import _redacted
+            shown = {**_redacted(shown), "private": True}
+        event = self.bus.emit(event_type, "explorer", task_id=context.id, **shown)
         return {**result, "evidence_id": event["id"]}
 
     @staticmethod

@@ -67,3 +67,15 @@ def test_only_kips_own_pages_and_host_names_get_in():
         assert client.post("/api/tasks", json={"goal": "Find charger."}, headers=foreign).status_code == 403
         assert client.post("/api/chat", json={"message": "hi"}, headers={"origin": "http://localhost:5173"}).status_code == 202
         assert client.get("/api/health", headers={"host": "kip.attacker.example"}).status_code == 400
+
+
+def test_a_private_event_reaches_live_pages_whole_but_replays_without_its_words():
+    from app.events.bus import EventBus
+    bus = EventBus()
+    queue = bus.subscribe()
+    turn = {"id": "t1", "role": "kip", "text": "Worth 46,905.", "content": "Worth 46,905.", "private": True}
+    bus.emit("chat_message", "Kip", turn=turn, summary="Kip: Worth 46,905.")
+    assert queue.get_nowait()["data"]["turn"]["text"] == "Worth 46,905."  # the live reply shows
+    stored = bus.history[-1]["data"]
+    assert "46,905" not in str(stored) and stored["turn"]["id"] == "t1" and stored["turn"]["private"]
+    assert turn["text"] == "Worth 46,905."  # redaction copies; the live event is untouched

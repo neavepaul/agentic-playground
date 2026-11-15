@@ -626,8 +626,14 @@ async def test_portfolio_answers_stay_on_the_device(monkeypatch, caplog):
     assert all("46,905" not in m["content"] for m in select_history(session.history(), "my portfolio", 4000))
     assert "46,905" not in str(task_record(task)) and task_memories(task) == []
     assert "Your Groww portfolio" not in caplog.text and "46,905" not in caplog.text
-    fed = next(e for e in manager.bus.history if e["type"] == "capability_observed")
-    assert "46,905" not in str(fed) and fed["data"]["private"]
+    # Replay history (what a page that connects later receives), the task as events and the API show
+    # it: no figures anywhere. Kip's reply above still carried them, live and in /api/chat.
+    import json
+    replay = json.dumps(list(manager.bus.history), ensure_ascii=False)
+    assert "46,905" not in replay and "Your Groww portfolio" not in replay
+    assert {e["type"] for e in manager.bus.history} >= {"capability_observed", "task_completed", "chat_message"}
+    assert "46,905" not in json.dumps(task.public(), ensure_ascii=False)
+    assert task.answer["answer"].startswith("Your Groww portfolio")  # the task itself keeps it
     await done(session, manager)
 
 

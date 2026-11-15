@@ -1104,6 +1104,11 @@ class ChatSession:
                 self.store.set_intent_outcome(correction, "answered" if outcome == "completed" else "failed")
             answer = task.get("answer") or {}
             private = bool(task.get("private"))  # their own accounts: shown, never fed to a later prompt
+            if private:
+                # Events carry a private task without its answer's words; the reply comes from the
+                # task itself, in this process.
+                context = getattr(self.manager, "tasks", {}).get(task.get("id"))
+                answer = (context.answer if context is not None else None) or {}
             if answer.get("answer") and str(task.get("goal", "")).startswith(LOOKUP_PREFIX) and not private:
                 self._learn_from_answer(answer["answer"])
                 self._frame_evidence, self._frame_evidence_at = self._lookup_evidence(task.get("id")), time.monotonic()

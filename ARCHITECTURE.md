@@ -76,11 +76,18 @@ Some feed details:
   it expires. Only `GROWW_TOKEN_URL` and `GROWW_HOLDINGS_URL` are ever called: the key could
   place orders. Prices come from Yahoo Finance, because Groww's live-data endpoint refuses this key.
 - **Privacy.** A Groww answer sets `TaskContext.private` in `feed_answer`, before any event is
-  emitted (`feeds.PRIVATE_PROVIDERS`). The feed's event carries no figures. Every later event of
-  the task, and its chat turn, is flagged, so the bus logs "(private: not logged)". Private turns
-  are dropped from `select_history` (the history in every prompt). `task_memories` returns nothing
-  for them, and `task_record` keeps only "checked their Groww holdings". The answer is shown, and
-  kept in `kip.db` and the task journal on the device, but never sent to Groq or written to the log.
+  emitted (`feeds.PRIVATE_PROVIDERS`). From then on:
+  - The task's tool events carry no figures, and `TaskContext.public()` (every `task_*` event, the
+    snapshot, `/api/state` and `/api/tasks`) hides the answer's words but keeps its sources.
+  - The bus logs "(private: not logged)" for any private event. It delivers the chat turn whole to
+    pages already connected, but replay history keeps only a redacted copy (`events/bus.py:redact`).
+    A page that connects later rebuilds the chat from `/api/chat`.
+  - Kip's reply is written from the task in this process, not from the event.
+  - Private turns are dropped from `select_history` (the history in every prompt), `task_memories`
+    returns nothing, and `task_record` keeps only "checked their Groww holdings".
+
+  So the answer is shown to you, and kept in `kip.db` and the task journal on the device. It is
+  never sent to Groq, written to the log, or replayed from event history.
 
 **Groq browser search.** A plain live lookup the feeds can't answer skips planning: one Groq call
 searches and answers. The answer is then checked against what the search read
