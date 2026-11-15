@@ -27,6 +27,7 @@ ollama pull qwen3.5:2b-q4_K_M
 ```bash
 cd backend
 python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip   # the bundled pip has known advisories
 .venv/bin/python -m pip install -r requirements.txt
 cp .env.example .env          # then add whichever keys you have (see Configuration)
 .venv/bin/python -m app.check_model
