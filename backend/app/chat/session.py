@@ -64,11 +64,14 @@ _CORE_FACT = re.compile(r"\b(name|named|called|works?|job|engineer|developer|stu
 class ChatSession:
     def __init__(self, client, bus, manager, settings, store=None, persona=None,
                  shares_task_model: bool = True, session_id: str | None = None,
-                 speaker: str | None = None, owner: bool = True, portfolio: bool = True) -> None:
+                 speaker: str | None = None, owner: bool = True, portfolio: bool = True,
+                 household=None) -> None:
         self.session_id = session_id or str(uuid4())
         # A signed-in person's conversation: who is talking is fixed, and it sees only its own
         # errands and memories. Without one (tests, tools), Kip learns names as he always has.
         self.person, self.owner, self.portfolio = speaker, owner, portfolio
+        # Who uses this Kip: {"owner": name, "people": [names]}, read fresh for each message.
+        self.household = household
         if speaker:
             from .hub import OwnTasks
             manager = OwnTasks(manager, self.session_id, _speaker_slug(speaker), portfolio)
@@ -251,8 +254,22 @@ class ChatSession:
             return self._speaker_display
         return speaker_id.replace("_", " ").title()
 
+    def _holder(self) -> str | None:
+        """The owner's name, when someone else is talking: whose Groww portfolio it is."""
+        if not self.person or self.owner or self.household is None:
+            return None
+        return self.household().get("owner")
+
     def _status(self, speaker_id: str | None = None) -> dict:
         status = {"now": date_str(), "talking_with": self._speaker_name(speaker_id)}
+        if self.household is not None:
+            # Kip knows who has a profile and whose the Groww portfolio is; never what the others told him.
+            known = self.household()
+            names = [n + (" (owner: the Groww portfolio is theirs)" if n == known.get("owner") else "")
+                     for n in known.get("people", [])]
+            if names:
+                status["people_with_profiles"] = ", ".join(names) + ". You know their names; what each " \
+                                                 "told you stays with them."
         active = self.manager.active()
         # "none", not null: models repeat null verbatim ("my current errand is null").
         status["current_errand"] = errand_progress(active) if active else "none"
@@ -393,7 +410,7 @@ class ChatSession:
                         self._intents.pop(user_turn["id"], None)
                         return
                     self._lookup_queries[task_identity(goal)] = query
-                    self._start_or_queue(goal, user_turn["id"], Grant.read_only(said), plan=_lookup_plan(query, route, said))
+                    self._start_or_queue(goal, user_turn["id"], Grant.read_only(said), plan=_lookup_plan(query, route, said, self._holder()))
                     self._intents.pop(user_turn["id"], None)
                     finished = True
                     return
@@ -628,7 +645,7 @@ class ChatSession:
             goal = next((g for g in (proposed, offered) if g and digital_scope(g)), f"{LOOKUP_PREFIX}{said}")
             route = self._routes.get(user_turn["id"])
             query = route.query if self.settings.intent_router == "on" and route and route.live else said
-            self._start_or_queue(goal, user_turn["id"], Grant.read_only(said), plan=_lookup_plan(query, route, said))
+            self._start_or_queue(goal, user_turn["id"], Grant.read_only(said), plan=_lookup_plan(query, route, said, self._holder()))
             return
         needs = intent.needs_tools
         if needs:
@@ -760,7 +777,8 @@ class ChatSession:
         allowed = self.settings.digital_tools_enabled and not self.manager.restrictions.forbids_tool("web_search")
         # "What's the best performer in my portfolio?": the router may be unsure of the wording, but
         # their holdings are never answered from the chat model's memory of earlier lookups.
-        own = route.intent == "information.finance" and is_portfolio(_feed_question(route, user_turn["text"]))
+        own = route.intent == "information.finance" and is_portfolio(_feed_question(route, user_turn["text"],
+                                                                                    self._holder()))
         return fast_path(route, intent, web_allowed=allowed, own_data=own)
 
     def _routed_lookup(self, user_turn: dict, intent: Intent, route: Route) -> tuple[str, str] | None:
@@ -1178,19 +1196,27 @@ class ChatSession:
                        source="narration")
 
 
-def _feed_question(route: Route, words: str) -> dict:
+def _feed_question(route: Route, words: str, holder: str | None = None) -> dict:
     """What a feed reads: the router's reading and their words. A follow-up ("what about Max?")
-    or correction also carries the question it leans on, whose words say what is being asked."""
+    or correction also carries the question it leans on, whose words say what is being asked.
+    holder: someone else is asking about the owner's portfolio ("does Neave own HDFC?"); the
+    finance reader reads it in the owner's words, and the answer names them."""
     leans = bool(route.followup or route.correction)
-    return {"domain": route.domain, "entities": list(route.entities), "focus": route.focus, "time": route.time,
-            "place": route.place, "said": words, "followup": leans, "earlier": route.earlier if leans else ""}
+    earlier = route.earlier if leans else ""
+    question = {"domain": route.domain, "entities": list(route.entities), "focus": route.focus, "time": route.time,
+                "place": route.place, "said": words, "followup": leans, "earlier": earlier}
+    if holder and route.domain == "finance":
+        from app.capabilities.feeds import as_asked_by_holder
+        question.update(said=as_asked_by_holder(words, holder), earlier=as_asked_by_holder(earlier, holder),
+                        holder=holder)
+    return question
 
 
-def _lookup_plan(said: str, route: Route | None = None, words: str = "") -> LookupPlan:
+def _lookup_plan(said: str, route: Route | None = None, words: str = "", holder: str | None = None) -> LookupPlan:
     """A plain web lookup of what they asked, searched in their own words. A subject with a feed
     (F1, cricket, weather) carries the router's reading and their words, so the feed can answer first."""
     query = re.sub(r"^\W*(?:hey |ok |so )?kip\W+", "", said.strip(), flags=re.I)[:200]
-    feed = (_feed_question(route, words) if route and route.domain in FEEDS else None)
+    feed = (_feed_question(route, words, holder) if route and route.domain in FEEDS else None)
     return LookupPlan(summary="Look it up.", conditions=[GoalCondition(kind="answer", required_tools=["web_search"])],
                       initial_actions=[InitialCapability(tool="web_search", arguments={"query": query})], feed=feed)
 

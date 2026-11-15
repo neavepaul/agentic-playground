@@ -33,7 +33,7 @@ def required_tool_progress(context) -> dict:
             "successful_evidence_ids": {tool: ids[-6:] for tool, ids in evidence.items()}}
 
 
-NOT_SHARED = ("That's the owner's Groww portfolio, and they haven't shared it with you. "
+NOT_SHARED = ("That's {holder} Groww portfolio, and they haven't shared it with you. "
               "They can turn that on for your profile.")
 
 
@@ -108,7 +108,9 @@ class CapabilityTools:
         if not getattr(context, "portfolio", True) and feeds.is_portfolio(question):
             # The holdings are the owner's: only people they allow may see them, and the question
             # never goes on to a web search or a model either.
-            found = feeds.FeedAnswer(NOT_SHARED, "", "Groww holdings", "kip")
+            holder = question.get("holder")
+            found = feeds.FeedAnswer(NOT_SHARED.format(holder=f"{holder}'s" if holder else "the owner's"),
+                                     "", "Groww holdings", "kip")
             # Nothing here is worth remembering, and it is about the owner's accounts: no memory.
             context.private = True
             result = {"success": True, "observation": {
@@ -125,6 +127,10 @@ class CapabilityTools:
             return None, ""
         if found is None:
             return None, ""
+        if question.get("holder") and found.provider in feeds.PRIVATE_PROVIDERS:
+            # Someone the owner allowed, asking about the owner's holdings: "Neave holds", not "You hold".
+            from dataclasses import replace
+            found = replace(found, answer=feeds.told_about_holder(found.answer, question["holder"]))
         result = {"success": True, "observation": {
             # The feed's facts are the result's text: answer checks read evidence as titles and snippets.
             "query": query, "results": [{"title": found.title, "url": found.url, "snippet": found.answer}],

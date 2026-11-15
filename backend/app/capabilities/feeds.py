@@ -705,6 +705,33 @@ def is_portfolio(q: dict) -> bool:
     return q.get("domain") == "finance" and (_market_kind(q) or ("",))[0] == "portfolio"
 
 
+def as_asked_by_holder(text: str, holder: str) -> str:
+    """Someone else asking about the holder's portfolio, in the holder's own words, so the finance
+    reader reads it as it reads the holder: "how much HDFC does Neave own" is "how much HDFC do i
+    own", "Neave's portfolio" is "my portfolio"."""
+    name = re.escape(holder)
+    for pattern, mine in ((rf"\b{name}['’]s\b", "my"), (rf"\bdoes {name}\b", "do i"), (rf"\bis {name}\b", "am i"),
+                          (rf"\bhas {name}\b", "have i"), (rf"\b{name} (?:has|owns|holds)\b", None),
+                          (rf"\b{name}\b", "i")):
+        if mine is None:
+            text = re.sub(pattern, lambda m: "i " + {"has": "have", "owns": "own", "holds": "hold"}[m.group(0).split()[-1].casefold()],
+                          text, flags=re.I)
+        else:
+            text = re.sub(pattern, mine, text, flags=re.I)
+    return text
+
+
+def told_about_holder(text: str, holder: str) -> str:
+    """A portfolio answer for someone the holder allowed: "Neave holds", never "You hold"."""
+    for yours, theirs in (("Your Groww portfolio", f"{holder}'s Groww portfolio"),
+                          ("You hold no shares", f"{holder} holds no shares"),
+                          ("You don't hold any", f"{holder} doesn't hold any"),
+                          ("You hold ", f"{holder} holds "), ("what you paid", f"what {holder} paid"),
+                          (" you paid", f" {holder} paid")):
+        text = text.replace(yours, theirs)
+    return text
+
+
 # Where Grands Prix are held, as people name them: the F1 reader's places.
 _F1_PLACES = dict.fromkeys(
     "australia|australian|melbourne|albert park|china|chinese|shanghai|japan|japanese|suzuka|bahrain|sakhir|saudi|"

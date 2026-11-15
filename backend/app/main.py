@@ -109,10 +109,15 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
         router = IntentRouter(store.accepted_intent_examples(), embedder=embedder)
     kip_name = persona.name if persona else config.persona_name
 
+    def household() -> dict:
+        """Who has a profile, and whose the Groww portfolio is: for Kip's status line."""
+        everyone = people.profiles()
+        return {"owner": next((p.name for p in everyone if p.owner), None), "people": [p.name for p in everyone]}
+
     def open_conversation(conversation_id: str, profile: Profile) -> ChatSession:
         session = ChatSession(chat_llm, bus, manager, config, store=store, persona=persona,
                               session_id=conversation_id, speaker=profile.name, owner=profile.owner,
-                              portfolio=profile.portfolio)
+                              portfolio=profile.portfolio, household=household)
         session.gate = task_llm
         session.router = router
         session.attach()

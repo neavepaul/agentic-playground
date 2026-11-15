@@ -206,7 +206,7 @@ async def test_someone_without_access_is_told_the_portfolio_is_not_theirs(monkey
     assert feeds.is_portfolio(question)
     context = TaskContext(goal="Look up online: how is my portfolio doing", portfolio=False)
     result, answer = await tools.feed_answer("how is my portfolio doing", question, context)
-    assert answer == NOT_SHARED and result["success"] and not asked  # Groww is never asked
+    assert answer == NOT_SHARED.format(holder="the owner's") and result["success"] and not asked  # Groww is never asked
     assert tools.feed_source(question, portfolio=False) is None     # and no "Let me check Groww"
 
 
@@ -343,3 +343,45 @@ def test_an_older_kip_db_gains_the_pin_change_setting():
     assert people.get("p1").pin_change is False and people.get("p1").needs_pin
     assert people.set_access("p1", pin_change=True).pin_change
     assert isinstance(store._db, sqlite3.Connection)
+
+
+@pytest.mark.asyncio
+async def test_someone_allowed_asks_about_the_owners_holdings_by_name(monkeypatch):
+    """Minu, allowed the portfolio, asks "how much HDFC Bank does Neave own": Groww answers, about Neave."""
+    from app.capabilities import feeds
+    from app.capabilities.tools import CapabilityTools
+    from app.chat.router import Route
+    from app.chat.session import _feed_question
+    from app.events.bus import EventBus
+    from app.tasks.models import TaskContext
+    route = Route(intent="information.finance", confidence=0.9, domain="finance", entities=["HDFC Bank"], focus="price",
+                  time="now")
+    question = _feed_question(route, "How much HDFC bank stocks does Neave own", holder="Neave")
+    assert question["said"] == "How much HDFC bank stocks do i own" and question["holder"] == "Neave"
+    assert feeds.is_portfolio(question)
+    assert not feeds.is_portfolio(_feed_question(route, "How much HDFC bank stocks does Neave own"))
+
+    async def holdings(*args, **kwargs):
+        return feeds.FeedAnswer("You hold 10 HDFCBANK shares, worth ₹8,040: up ₹40 on the ₹8,000 you paid.",
+                                "https://groww.in/", "Groww holdings", "groww")
+    monkeypatch.setattr(feeds, "answer", holdings)
+    tools = CapabilityTools(EventBus(), groww=(None, None))
+    _, answer = await tools.feed_answer("q", question, TaskContext(goal="Look up online: q", portfolio=True))
+    assert answer == "Neave holds 10 HDFCBANK shares, worth ₹8,040: up ₹40 on the ₹8,000 Neave paid."
+    _, refused = await tools.feed_answer("q", question, TaskContext(goal="Look up online: q", portfolio=False))
+    assert refused.startswith("That's Neave's Groww portfolio")
+
+
+def test_kip_knows_who_has_a_profile_and_whose_the_portfolio_is():
+    app = create_app(client=WaitingLLM())
+    with TestClient(app) as client:
+        neave, asha, _, _ = two_people(client)
+        theirs = asha.post("/api/chat", json={"message": "hi"}).json()["session_id"]
+        session = app.state.hub.peek(theirs)
+        status = session._status("asha")
+        assert status["talking_with"] == "Asha"
+        assert "Neave (owner: the Groww portfolio is theirs)" in status["people_with_profiles"]
+        assert "Asha" in status["people_with_profiles"]
+        assert session._holder() == "Neave"
+        mine = neave.post("/api/chat", json={"message": "hi"}).json()["session_id"]
+        assert app.state.hub.peek(mine)._holder() is None  # the owner asks in their own words
