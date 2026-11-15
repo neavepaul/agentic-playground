@@ -230,7 +230,9 @@ async def test_on_the_router_sends_a_live_question_straight_to_a_lookup_of_what_
     assert first.action_history[0]["arguments"]["query"].startswith("George Russell finishing position")
     assert "following up on: where did russell end up?" in second.goal
     assert second.action_history[0]["arguments"]["query"].startswith("Max Verstappen finishing position")
-    assert kip_lines(session, "narration") == ["P6. Not his best day.", "Max P2."]
+    # Each lookup names the feed it tries first (offline in tests), then answers.
+    assert kip_lines(session, "narration") == ["Let me check Jolpica for that.", "P6. Not his best day.",
+                                               "Let me check Jolpica for that.", "Max P2."]
     await done(session, manager)
 
 

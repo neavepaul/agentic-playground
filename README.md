@@ -207,6 +207,7 @@ Copy `backend/.env.example` to `backend/.env`. Environment variables override it
 | `GROQ_API_KEY` | unset | Optional hosted Groq: answers first while it has quota (chat, planning, web search); unset keeps everything on the Pi |
 | `CRICKETDATA_API_KEY` | unset | Optional CricketData.org key for cricket (100 requests a day free); unset, ESPN's scoreboard answers cricket |
 | `FOOTBALLDATA_API_KEY` | unset | Optional football-data.org key for football (10 requests a minute free); unset, ESPN's league scoreboards answer football |
+| `GROWW_API_KEY` / `GROWW_API_SECRET` | unset | Optional Groww Trade API TOTP key and its TOTP secret, for portfolio questions; read-only (token and holdings only). Unset: no portfolio answers |
 | `GROQ_MODELS` | `openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b` | Preference order. Free-tier limits are per model, so a model whose quota is spent is skipped until its reset |
 | `GROQ_MAX_WAIT_SECONDS` | `20` | When every Groq model is rate-limited and one frees within this long, a call waits for it (once) instead of falling back to the local model, which can take minutes |
 | `GROQ_PLAN_CALLS` / `GROQ_RESEARCH_CALLS` | `2` / `4` | Hard caps on Groq calls per goal plan and per web-research task; past a cap, or on any Groq failure, the local model continues |
@@ -358,7 +359,8 @@ default; set it to false to disable them.
 **Data feeds.** Questions the router recognises on these subjects are answered from a feed before
 any search, with one request (two or three for some), exact facts, an answer in fixed words and no
 model call. Each is recorded like a web search, so "don't use the internet" still stops it, and
-anything a feed does not cover goes to the usual web lookup.
+anything a feed does not cover goes to the usual web lookup. Before asking, Kip says which source he is checking
+("Let me check Open-Meteo for that.").
 
 | Subject | Source | Key | Covers |
 |---|---|---|---|
@@ -368,12 +370,14 @@ anything a feed does not cover goes to the usual web lookup.
 | NBA | ESPN's scoreboard | none | yesterday's, today's and tomorrow's games |
 | Weather | [Open-Meteo](https://open-meteo.com/) | none | now, today, tomorrow, yesterday or this weekend at a named place, in °C |
 | Air quality | Open-Meteo air quality | none | AQI now (US scale, which differs from India's NAQI), PM2.5 and PM10 at a named place |
-| Markets | [CoinGecko](https://www.coingecko.com/) (crypto), Yahoo Finance (Nifty, Sensex, Bank Nifty, Nasdaq, Dow, S&P 500), [Frankfurter](https://www.frankfurter.app/) (exchange rates) | none | current prices; exchange rates are the European Central Bank's, published once per working day |
+| Markets | [CoinGecko](https://www.coingecko.com/) (crypto), Yahoo Finance (Nifty, Sensex, Bank Nifty, Nasdaq, Dow, S&P 500, and any share named, found by Yahoo's search), [Frankfurter](https://www.frankfurter.app/) (exchange rates) | none | current prices; exchange rates are the European Central Bank's, published once per working day |
+| Your portfolio | [Groww Trade API](https://groww.in/trade-api/docs) holdings, priced from Yahoo Finance | `GROWW_API_KEY` + `GROWW_API_SECRET` (a TOTP key) | "how is my portfolio doing": value, gain on what you paid, the day's move, best and worst. Read-only: Kip calls only the token and holdings endpoints, never orders, funds or positions |
 | News | Google News RSS (India) | none | the top three headlines, or on a topic they name ("news about the elections") |
 
 Keyed feeds keep one response for a minute, so follow-ups cost none of a free quota. Team names must
 match exactly ("India" is not "India Under-19s"). ESPN and Yahoo Finance are unofficial and can change
-without notice. Not covered: tennis, MotoGP, gold and silver, individual shares, past prices,
+without notice. Portfolio answers stay on the device: shown to you, but left out of every later
+prompt (so never sent to Groq), memory and task record. Not covered: tennis, MotoGP, gold and silver, past prices,
 tomorrow's air, UV, practice times, pit stops and broadcasters.
 
 The agent chooses search queries, page URLs and short programs as needed. Search

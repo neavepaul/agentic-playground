@@ -32,7 +32,9 @@ def _no_results_feeds(monkeypatch):
     A test that wants a feed patches app.capabilities.feeds.fetch itself."""
     from app.capabilities import feeds
 
-    async def offline(url):
+    async def offline(*args, **kwargs):
         raise httpx.ConnectError("results feeds are offline in tests")
     monkeypatch.setattr(feeds, "fetch", offline)
+    monkeypatch.setattr(feeds, "post", offline)
     feeds._CACHE.clear()  # no test sees another's cached scoreboard
+    feeds._GROWW_TOKEN.clear()

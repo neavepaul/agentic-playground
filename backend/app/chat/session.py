@@ -1094,6 +1094,8 @@ class ChatSession:
                 self._announced.discard(task_identity(goal))
             else:
                 self._add_turn("kip", f"Start now: {goal}", source="narration")
+        elif kind == "feed_checking":
+            self._add_turn("kip", f"Let me check {data.get('source', 'that')} for that.", source="narration")
         elif kind in {"task_completed", "task_failed"}:
             outcome = kind.removeprefix("task_")
             self._lookup_queries.pop(task_identity(task.get("goal", "")), None)
@@ -1101,7 +1103,8 @@ class ChatSession:
             if correction and self.store:
                 self.store.set_intent_outcome(correction, "answered" if outcome == "completed" else "failed")
             answer = task.get("answer") or {}
-            if answer.get("answer") and str(task.get("goal", "")).startswith(LOOKUP_PREFIX):
+            private = bool(task.get("private"))  # their own accounts: shown, never fed to a later prompt
+            if answer.get("answer") and str(task.get("goal", "")).startswith(LOOKUP_PREFIX) and not private:
                 self._learn_from_answer(answer["answer"])
                 self._frame_evidence, self._frame_evidence_at = self._lookup_evidence(task.get("id")), time.monotonic()
             if answer.get("answer"):
@@ -1116,7 +1119,8 @@ class ChatSession:
             if task.get("blocked"):
                 notes.append("Not done: " + "; ".join(task["blocked"]) + ".")
             text = " ".join([text, *notes])
-            self._add_turn("kip", text, source="narration", sources=answer.get("sources", []), outcome=outcome)
+            self._add_turn("kip", text, source="narration", sources=answer.get("sources", []), outcome=outcome,
+                           private=private)
             if self.pending_goals:
                 self._spawn(self._start_next_when_free(self.generation))
         elif kind == "task_needs_permission":

@@ -391,3 +391,25 @@ memory.update	i live in pune
 memory.update	my interview is next week
 reasoning.complex	what's 12 percent of 300
 reasoning.complex	work out 18% of 950
+information.finance	how is my portfolio doing
+information.finance	what are my holdings worth
+information.finance	how are my investments doing today
+information.finance	what is my portfolio worth
+information.finance	show me my holdings
+information.finance	how much have i made on my stocks
+information.finance	is my portfolio up or down today
+information.finance	what do i hold
+memory.update	remember that i hold reliance shares
+memory.update	remember i bought 10 tcs shares
+memory.update	note that my portfolio is mostly banks
+memory.update	remember i sold my infosys stock
+information.sports	nba scores today
+information.sports	nba results
+information.sports	basketball results today
+information.sports	who won the lakers game
+information.sports	did the warriors win last night
+information.sports	celtics score
+information.sports	nba games tonight
+information.sports	what are the basketball scores
+information.sports	how many points did lebron score
+information.sports	when do the lakers play next

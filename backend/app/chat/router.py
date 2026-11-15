@@ -121,7 +121,7 @@ _CUES = {
     "motogp": r"motogp|moto gp",
     "weather": r"weather|rain\w*|forecast|temperature|hot|cold|warm|cool(?:er)?|humid\w*|umbrella|jacket|sunny|"
                r"cloudy|wind\w*|storm\w*|snow\w*|aqi|air quality|uv|monsoon|degrees?",
-    "finance": r"stocks?|shares?|share price|markets?|trading|exchange rate|rupees?|dollars?|euros?|usd|inr|"
+    "finance": r"stocks?|shares?|share price|markets?|portfolio|holdings|investments|trading|exchange rate|rupees?|dollars?|euros?|usd|inr|"
                r"crypto|price of|prices?|fed|interest rates?",
     "news": r"news|headlines?|breaking|top stories|trending|election\w*",
 }

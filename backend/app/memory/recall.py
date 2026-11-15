@@ -585,7 +585,10 @@ def prompt_memories(memories: list[dict]) -> list[dict]:
 
 # ── deterministic memory formation from finished tasks ─────────────────────
 def task_memories(context, feeling: str | None = None) -> list[dict]:
-    """Episode and fact memories derived from a finished task. No model calls."""
+    """Episode and fact memories derived from a finished task. No model calls. None from a private
+    one (their own accounts): a memory can be recalled into any later prompt."""
+    if getattr(context, "private", False):
+        return []
     outcome = "Finished" if context.status == "completed" else "Could not finish"
     episode = f"{outcome}: {context.goal}. {context.summary}"
     if feeling:

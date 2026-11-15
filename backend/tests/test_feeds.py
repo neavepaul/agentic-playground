@@ -371,7 +371,7 @@ async def test_exchange_rates_from_the_ecb(said, url, rates, expected):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("question", [
     {"entities": ["gold"], "said": "price of gold today", "time": "today"},
-    {"entities": ["Reliance"], "said": "reliance share price", "time": "now"},
+    {"entities": ["Reliance Industries"], "said": "how was reliance last week?", "time": "last week"},
     {"entities": ["Bitcoin"], "said": "what was bitcoin last week?", "time": "last week"},
 ])
 async def test_markets_the_feeds_do_not_cover_go_to_the_web(question):
@@ -492,3 +492,171 @@ async def test_a_result_is_dated_in_ist():
     found = await feeds.answer({"domain": "football", "entities": ["Arsenal"], "focus": "match result",
                                 "time": "latest completed"}, NOW, get, football_key=FD_KEY)
     assert found.answer == "Arsenal beat SK Slavia Praha on 5 November. SK Slavia Praha 1, Arsenal 2."
+
+
+# ── shares (Yahoo search + chart) and their Groww holdings (read-only) ──────────
+@pytest.mark.asyncio
+async def test_a_named_share_is_found_on_nse_and_priced_in_rupees():
+    meta = {"regularMarketPrice": 1339.7, "chartPreviousClose": 1329.05, "regularMarketTime": 1794650400, "currency": "INR"}
+    get, asked = markets({feeds.SEARCH: {"quotes": [{"symbol": "RELIANCE.BO"}, {"symbol": "RELIANCE.NS"}]},
+                          feeds.INDEX: {"chart": {"result": [{"meta": meta}]}}})
+    found = await feeds.answer({"domain": "finance", "entities": ["Reliance Industries"], "focus": "price",
+                                "time": "now", "said": "reliance share price"}, NOW, get)
+    assert found.answer == "Reliance Industries is ₹1,339.70, up 0.80% on the day (as of Saturday 14 November, 3:30 pm)."
+    assert asked[1].startswith(f"{feeds.INDEX}/RELIANCE.NS")  # NSE before BSE
+
+
+GROWW = ("groww-key", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
+HOLDINGS = {"status": "SUCCESS", "payload": {"holdings": [
+    {"trading_symbol": "TCS", "quantity": 10, "average_price": 2000, "tradable_exchanges": ["NSE", "BSE"]},
+    {"trading_symbol": "INFY", "quantity": 20, "average_price": 1200, "tradable_exchanges": ["NSE", "BSE"]},
+    {"trading_symbol": "SOLD", "quantity": 0, "average_price": 50, "tradable_exchanges": ["NSE"]}]}}
+SPARK = {"spark": {"result": [
+    {"symbol": "TCS.NS", "response": [{"meta": {"regularMarketPrice": 2407.5, "chartPreviousClose": 2442.4}}]},
+    {"symbol": "INFY.NS", "response": [{"meta": {"regularMarketPrice": 1141.5, "chartPreviousClose": 1151.2}}]}]}}
+
+
+def groww_feed(monkeypatch):
+    calls = []
+
+    async def get(url, headers=None):
+        calls.append(("GET", url, headers))
+        return HOLDINGS if url == feeds.GROWW_HOLDINGS_URL else SPARK
+
+    async def post(url, body, headers):
+        calls.append(("POST", url, headers))
+        assert body["key_type"] == "totp" and len(body["totp"]) == 6 and headers == {"Authorization": "Bearer groww-key"}
+        return {"token": "access-token", "expiry": "2026-11-16T06:00:00"}
+    monkeypatch.setattr(feeds, "post", post)
+    return get, calls
+
+
+@pytest.mark.asyncio
+async def test_their_portfolio_from_groww_holdings_priced_from_yahoo(monkeypatch):
+    get, calls = groww_feed(monkeypatch)
+    question = {"domain": "finance", "entities": [], "time": None, "said": "how is my portfolio doing?"}
+    found = await feeds.answer(question, NOW, get, groww=GROWW)
+    # 10 x 2407.50 + 20 x 1141.50 = 46,905 against 44,000 paid; the day before it was 47,448.
+    assert found.answer == ("Your Groww portfolio: 2 holdings worth ₹46,905, up ₹2,905 (6.6%) on what you paid. "
+                            "On the day down ₹543 (1.14%); best INFY -0.8%, worst TCS -1.4%.")
+    assert found.provider == "groww"
+    await feeds.answer(question, NOW, get, groww=GROWW)
+    assert [c[0] for c in calls].count("POST") == 1  # the token is kept until it expires
+
+
+@pytest.mark.asyncio
+async def test_kip_only_ever_calls_the_groww_token_and_holdings_endpoints(monkeypatch):
+    """The key can place orders: Kip must never touch anything but these two."""
+    get, calls = groww_feed(monkeypatch)
+    for said in ("how is my portfolio doing?", "what are my holdings worth?", "what do i hold?"):
+        await feeds.answer({"domain": "finance", "entities": [], "time": "now", "said": said}, NOW, get, groww=GROWW)
+    groww_urls = {url for _, url, _ in calls if url.startswith(feeds.GROWW)}
+    assert groww_urls == {feeds.GROWW_TOKEN_URL, feeds.GROWW_HOLDINGS_URL}
+
+
+@pytest.mark.asyncio
+async def test_without_groww_keys_portfolio_questions_go_elsewhere(monkeypatch):
+    get, calls = groww_feed(monkeypatch)
+    assert await feeds.answer({"domain": "finance", "entities": [], "time": "now", "said": "how is my portfolio doing?"},
+                              NOW, get) is None and calls == []
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_share_is_flat_not_up_zero_percent():
+    meta = {"regularMarketPrice": 1339.7, "chartPreviousClose": 1339.7, "regularMarketTime": 1794650400, "currency": "INR"}
+    get, _ = markets({feeds.SEARCH: {"quotes": [{"symbol": "RELIANCE.NS"}]}, feeds.INDEX: {"chart": {"result": [{"meta": meta}]}}})
+    found = await feeds.answer({"domain": "finance", "entities": ["Reliance Industries"], "time": "now",
+                                "said": "reliance share price"}, NOW, get)
+    assert found.answer == "Reliance Industries is ₹1,339.70, flat on the day (as of Saturday 14 November, 3:30 pm)."
+
+
+@pytest.mark.parametrize("question,keys,expected", [
+    ({"domain": "f1"}, {}, "Jolpica"),
+    ({"domain": "cricket", "entities": ["India"]}, {}, "ESPN"),
+    ({"domain": "cricket", "entities": ["India"]}, {"cricket_key": "k"}, "CricketData"),
+    ({"domain": "football", "entities": ["Arsenal"]}, {}, "ESPN"),
+    ({"domain": "football", "entities": ["Arsenal"]}, {"football_key": "k"}, "football-data.org"),
+    ({"domain": "basketball", "entities": ["Los Angeles Lakers"]}, {}, "ESPN"),
+    ({"domain": "weather", "place": "London", "time": "now", "said": "weather in london"}, {}, "Open-Meteo"),
+    ({"domain": "news", "said": "any news"}, {}, "Google News"),
+    # Questions these feeds do not take go to the web lookup, so no feed is named.
+    ({"domain": "basketball", "entities": [], "said": "nba scores today"}, {}, None),
+    ({"domain": "football", "entities": ["Arsenal"], "focus": "standings"}, {"football_key": "k"}, None),
+    ({"domain": "weather", "place": None, "said": "is it going to rain"}, {}, None),
+    ({"domain": "weather", "place": "Delhi", "time": "tomorrow", "said": "aqi in delhi tomorrow"}, {}, None),
+    ({"domain": "news", "time": "last week", "said": "news from last week"}, {}, None),
+    ({"domain": "finance", "entities": ["Bitcoin"], "said": "bitcoin price"}, {}, "CoinGecko"),
+    ({"domain": "finance", "entities": ["Nifty 50"], "said": "where is the nifty"}, {}, "Yahoo Finance"),
+    ({"domain": "finance", "entities": ["Reliance Industries"], "said": "reliance share price"}, {}, "Yahoo Finance"),
+    ({"domain": "finance", "entities": [], "said": "dollar to rupee rate"}, {}, "Frankfurter"),
+    ({"domain": "finance", "entities": [], "said": "how is my portfolio doing?"}, {"groww": GROWW}, "Groww"),
+    ({"domain": "finance", "entities": [], "said": "how is my portfolio doing?"}, {}, None),
+    ({"domain": "chemistry"}, {}, None),
+])
+def test_the_callout_names_the_feed_that_will_be_asked(question, keys, expected):
+    assert feeds.source_for(question, **keys) == expected
+
+
+@pytest.mark.asyncio
+async def test_portfolio_answers_stay_on_the_device(monkeypatch):
+    """Shown to them, but never in a later prompt, a memory or a task record: nothing of it reaches Groq."""
+    from tests.test_conversation_truth import PlanningModel, done, session_with
+    from tests.test_permissions import settle
+    from app.chat.context import select_history
+    from app.chat.evidence import task_record
+    from app.config import Settings
+    from app.memory.recall import task_memories
+
+    get, _ = groww_feed(monkeypatch)
+    monkeypatch.setattr(feeds, "fetch", get)
+    model = PlanningModel([])
+    session, manager = session_with(model, settings=Settings(intent_router="on", groww_api_key=GROWW[0],
+                                                             groww_api_secret=GROWW[1]))
+    session.submit("how is my portfolio doing?")
+    await settle(session, manager)
+    task = next(iter(manager.tasks.values()))
+    assert task.status == "completed" and task.private and model.prompts == []
+    kip = [t for t in session.history() if t["role"] == "kip"]
+    assert kip[0]["text"] == "Let me check Groww for that."
+    answer = next(t for t in kip if "46,905" in t["text"])
+    assert answer["private"]
+    assert all("46,905" not in m["content"] for m in select_history(session.history(), "my portfolio", 4000))
+    assert "46,905" not in str(task_record(task)) and task_memories(task) == []
+    await done(session, manager)
+
+
+@pytest.mark.asyncio
+async def test_old_city_names_and_namesakes_find_the_big_city():
+    """"Bangalore" alone geocodes to a part of Karachi; "Hyderabad" first to the one in Sindh."""
+    asked = []
+    places = {"Bengaluru": [{"name": "Bengaluru", "latitude": 12.97, "longitude": 77.59, "population": 8495492}],
+              "Hyderabad": [{"name": "Hyderabad", "latitude": 25.39, "longitude": 68.37, "population": 1386330},
+                            {"name": "Hyderabad", "latitude": 17.38, "longitude": 78.46, "population": 6809970}]}
+
+    async def get(url):
+        asked.append(url)
+        if url.startswith(feeds.GEOCODE):
+            return {"results": next(v for k, v in places.items() if f"name={k}" in url)}
+        return FORECAST
+    for place, latitude in (("Bangalore", "12.97"), ("Hyderabad", "17.38")):
+        await feeds.answer({"domain": "weather", "place": place, "focus": "current conditions", "time": "now",
+                            "said": f"weather in {place.lower()}"}, NOW, get)
+        assert f"latitude={latitude}" in asked[-1]
+
+
+@pytest.mark.asyncio
+async def test_a_score_asked_before_the_game_says_when_it_starts():
+    board = {"events": [{"date": "2026-11-15T21:00Z", "status": {"type": {"state": "pre"}}, "competitions": [{
+        "venue": {"fullName": "Footprint Center"}, "competitors": [
+            {"homeAway": "home", "team": {"displayName": "Phoenix Suns"}},
+            {"homeAway": "away", "team": {"displayName": "Los Angeles Lakers"}}]}]}]}
+
+    async def get(url):
+        return board if "20261115" in url else {"events": []}
+    found = await feeds.answer({"domain": "basketball", "entities": ["Los Angeles Lakers"], "focus": "score",
+                                "time": "today or latest", "said": "lakers score"}, NOW.replace(day=15, hour=10), get)
+    assert found.answer.startswith("Phoenix Suns v Los Angeles Lakers starts") and "Footprint Center" in found.answer
+    # A result asked for is never answered with a game that has not happened.
+    assert await feeds.answer({"domain": "basketball", "entities": ["Los Angeles Lakers"], "focus": "match result",
+                               "time": "yesterday", "said": "did the lakers win yesterday"},
+                              NOW.replace(day=15, hour=10), get) is None

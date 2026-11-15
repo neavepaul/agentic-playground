@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     # football-data.org: ten days of matches across the competitions the key covers, 10 requests a minute
     # free. Unset: ESPN's league scoreboards (this round only) answer football.
     footballdata_api_key: SecretStr | None = None
+    # Groww Trade API, a TOTP key: "how is my portfolio doing" reads their holdings (read-only; Kip never calls
+    # order, funds or positions endpoints). The secret is the TOTP seed. Unset: no portfolio answers.
+    groww_api_key: SecretStr | None = None
+    groww_api_secret: SecretStr | None = None
     groq_base_url: str = "https://api.groq.com/openai/v1"
     groq_models: str = "openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b"
     groq_timeout_seconds: float = Field(default=60, gt=0)

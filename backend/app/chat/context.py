@@ -57,6 +57,7 @@ def select_history(turns: list[dict], query: str, budget: int,
     """
     if budget <= 0:
         return []
+    turns = [t for t in turns if not t.get("private")]  # their own accounts stay out of every prompt
     def content(turn):
         prefix = _age_label(turn) if turn.get("source") == "narration" else ""
         return prefix + turn.get("content", turn["text"])

@@ -50,6 +50,9 @@ class TaskContext(BaseModel):
     explorer_reports: list[str] = Field(default_factory=list)
     conditions: list[GoalCondition] = Field(default_factory=list)
     answer: dict | None = None
+    # Answered from their own accounts (Groww holdings): shown to them and kept on the device, but
+    # never put in a later model prompt, a memory or the status line, so it never reaches Groq.
+    private: bool = False
     # Written before dispatch and cleared only after result evidence is journaled.
     # A restart with this set has an uncertain outcome, never an automatic retry.
     pending_action: dict | None = None

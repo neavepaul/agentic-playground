@@ -89,7 +89,8 @@ class TaskManager:
         self.coordinator = Coordinator(client, hosted=hosted, hosted_calls=settings.groq_plan_calls)
         self.capabilities = CapabilityTools(bus, enabled=settings.digital_tools_enabled, hosted=hosted,
                                             cricket_key=settings.cricketdata_api_key,
-                                            football_key=settings.footballdata_api_key)
+                                            football_key=settings.footballdata_api_key,
+                                            groww=(settings.groww_api_key, settings.groww_api_secret))
         self.explorer = Explorer(client, persona=persona, hosted=hosted, hosted_calls=settings.groq_research_calls)
         self.tasks: dict[str, TaskContext] = {}
         self.active_id: str | None = None
@@ -306,8 +307,9 @@ class TaskManager:
         return False
 
     async def _feed_answer(self, context: TaskContext, goal_plan) -> bool:
-        """F1 or cricket answered from a results feed: one request, exact facts, no model call.
-        Anything the feed does not cover goes on to the web lookup."""
+        """A question a data feed covers (sport, weather, markets, news, their portfolio), answered
+        from it: one request, exact facts, no model call. Anything a feed does not cover goes on to
+        the web lookup."""
         question = getattr(goal_plan, "feed", None)
         if not question or not self.settings.digital_tools_enabled:
             return False
@@ -315,11 +317,16 @@ class TaskManager:
         self._ensure_running(context)
         if self._refused(context, "web_search", arguments) or context.tool_count >= self.settings.max_tool_calls:
             return False
+        source = self.capabilities.feed_source(question)
+        if source:  # "Let me check Groww for that."
+            self.bus.emit("feed_checking", "explorer", task_id=context.id, source=source)
         self._before_dispatch(context, "web_search", arguments)
         result, answer = await self.capabilities.feed_answer(arguments["query"], question, context)
         context.pending_action = None
         if result is None:
             return False
+        # Their own accounts stay on the device: never in a later prompt, memory or status line.
+        context.private = result["observation"]["provider"] == "groww"
         context.tool_count += 1
         self._record_capability(context, "web_search", arguments, result)
         finished = await self.call_capability(context, "finish_answer", {"answer": answer,

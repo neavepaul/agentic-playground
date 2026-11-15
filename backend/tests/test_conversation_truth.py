@@ -474,7 +474,9 @@ async def test_live_facts_go_straight_to_the_lookup_and_its_answer_is_the_reply(
     assert ran[:1] == ["web_search"]
     assert "GoalPlan" not in model.titles  # the plan was known: no planning call
     lines = [t for t in session.history() if t["role"] == "kip"]
-    assert [t["text"] for t in lines] == ["31°C and muggy, says the forecast. Umbrella optional."]
+    # Kip names the feed he tries first (offline in tests), then the lookup's answer is the reply.
+    assert [t["text"] for t in lines] == ["Let me check Open-Meteo for that.",
+                                          "31°C and muggy, says the forecast. Umbrella optional."]
     await done(session, manager)
 
 

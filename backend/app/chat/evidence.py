@@ -45,6 +45,8 @@ def capabilities(manager, settings) -> str:
 
 def task_record(context) -> dict:
     """What one errand actually did, tried, was refused and left undone."""
+    if getattr(context, "private", False):  # their own accounts: not even a hint of the figures
+        return {"goal": context.goal, "outcome": context.status, "did": ["checked their Groww holdings"]}
     did, refused = [], []
     for entry in context.action_history:
         tool, obs = entry["tool"], entry.get("observation") or {}
