@@ -352,3 +352,69 @@ def test_answer_citing_the_page_but_not_the_search_is_accepted():
         AnswerAction(tool='finish_answer', answer='29.3°C at 7:30 PM', evidence_ids=['page-id']), context)
     assert result['evidence_ids'] == ['page-id', 'search-id']
     assert [s['url'] for s in result['sources']] == ['https://toi.example/mumbai']
+
+
+# ── P3 hardening: feed requests, rare IPv6 forms, non-text charsets ─────────────
+from app.capabilities import feeds as _feeds  # noqa: E402
+
+REAL_FETCH = _feeds.fetch  # captured before the autouse fixture takes the feeds offline
+REAL_CLIENT = httpx.AsyncClient
+
+
+def _feed_transport(monkeypatch, respond):
+    asked = []
+    original = REAL_CLIENT
+
+    def handler(request):
+        asked.append(str(request.url))
+        return respond(request)
+    monkeypatch.setattr(_feeds.httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
+    return asked
+
+
+@pytest.mark.asyncio
+async def test_a_feed_key_never_follows_a_redirect_to_another_host(monkeypatch):
+    def respond(request):
+        if request.url.host == "api.football-data.org":
+            return httpx.Response(302, headers={"location": "https://elsewhere.example/steal"})
+        return httpx.Response(200, json={"ok": True})
+    asked = _feed_transport(monkeypatch, respond)
+    with pytest.raises(httpx.HTTPStatusError):
+        await REAL_FETCH("https://api.football-data.org/v4/matches", headers={"X-Auth-Token": "key"})
+    assert asked == ["https://api.football-data.org/v4/matches"]  # the key went nowhere else
+    # Without a key, a redirect is followed as before (Google News moves things around).
+    assert await REAL_FETCH("https://api.football-data.org/v4/matches") == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_a_feed_response_is_bounded_in_size_and_time(monkeypatch):
+    _feed_transport(monkeypatch, lambda request: httpx.Response(200, content=b"x" * (_feeds.FEED_BYTES + 1)))
+    with pytest.raises(ValueError, match="too large"):
+        await REAL_FETCH("https://api.open-meteo.com/v1/forecast")
+
+    class Trickle(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            while True:  # a server that sends a byte now and then, forever
+                await asyncio.sleep(0.05)
+                yield b" "
+    monkeypatch.setattr(_feeds, "FEED_SECONDS", 0.3)
+    _feed_transport(monkeypatch, lambda request: httpx.Response(200, stream=Trickle()))
+    with pytest.raises(TimeoutError):
+        await REAL_FETCH("https://api.open-meteo.com/v1/forecast")
+    assert TimeoutError in _feeds.FEED_ERRORS  # so the web lookup takes over
+
+
+@pytest.mark.parametrize("address", ["::127.0.0.1", "::ffff:0:7f00:1", "fec0::1"])
+def test_obsolete_ipv6_forms_are_never_public(address):
+    import ipaddress
+    assert not web.is_public(ipaddress.ip_address(address))
+
+
+def test_a_normal_public_ipv6_address_is_still_public():
+    import ipaddress
+    assert web.is_public(ipaddress.ip_address("2606:4700:4700::1111"))
+
+
+def test_a_charset_that_is_not_for_text_reads_as_utf8():
+    assert _feeds.text_encoding("base64") == "utf-8" and _feeds.text_encoding("no-such-charset") == "utf-8"
+    assert _feeds.text_encoding("iso-8859-1") == "iso-8859-1" and _feeds.text_encoding(None) == "utf-8"

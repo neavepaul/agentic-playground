@@ -67,7 +67,9 @@ search evidence, with its provider and the answer as the snippet, so the usual a
 and "don't use the internet" apply unchanged. `source_for()` applies each feed's own entry checks,
 so the "Let me check Jolpica for that." callout is spoken only when that feed will really be asked.
 Keyed feeds cache a response for 60 seconds, so follow-ups cost no free quota. Dates and times are
-converted to `TIMEZONE`, temperatures to °C.
+converted to `TIMEZONE`, temperatures to °C. Every feed request is bounded: 15 seconds in all
+(`FEED_SECONDS`) and 5 MB (`FEED_BYTES`). A request that carries a key in its headers
+(football-data.org, Groww) never follows a redirect, which would hand the key to wherever it points.
 
 Some feed details:
 
@@ -87,6 +89,8 @@ Some feed details:
     pages already connected, but replay history keeps only a redacted copy (`events/bus.py:redact`).
     A page that connects later rebuilds the chat from `/api/chat`.
   - Kip's reply is written from the task in this process, not from the event.
+  - If the answer can't be finished, the task fails there. It never goes on to Groq search or
+    the agent loop, whose prompts would carry the figures.
   - Private turns are dropped from `select_history` (the history in every prompt) and from the
     conversation episode saved as a memory (`_session_summary`). `task_memories` returns nothing,
     and `task_record` keeps only "checked their Groww holdings".
@@ -97,22 +101,26 @@ Some feed details:
 **Groq browser search.** A plain live lookup the feeds can't answer skips planning: one Groq call
 searches and answers. The answer is then checked against what the search read
 (`capabilities/grounding.py`). The checks are: the right day, not a stale "latest", the right
-winner and event, and °F converted to °C.
+winner and event, and °F converted to °C. Groq's search opens the pages it finds, so after "don't
+read webpages" it isn't used; the usual lookup searches without reading.
 
 **The agent loop**, for everything else, or when Groq is unavailable. The Coordinator turns the
 request into required outcomes. The Explorer picks tool calls, singly or as an independent batch,
 until it can cite successful evidence in `finish_answer`. The Coordinator replans, or fails the
 errand when progress stops. The Critic reviews plans on request, and any completion the
 deterministic checks can't settle. Budgets on cycles, tool calls, model calls and time bound every
-errand. A restart turns unfinished runs into explicit failures, never replays.
+errand. The task journal (the latest 50 tasks, saved several times per tool call) keeps
+the first 2,000 characters of any tool output (`JOURNAL_TEXT`), so it stays small on a microSD
+card. A restart turns unfinished runs into explicit failures, never replays.
 
 **Tools.**
 
 - **Web search** uses DDGS, trying DuckDuckGo, Yahoo, Brave and Mojeek in turn. Errors are
   reported, never replaced with invented results.
 - **The page reader** reads public HTML and plain text. It validates every redirect, pins the
-  connection to a checked public address, rejects private networks and limits download size and
-  time. It parses in a worker thread, so a heavy page never stalls chat or the WebSocket. It runs
+  connection to a checked public address, rejects private networks (including obsolete IPv6
+  forms such as `::127.0.0.1`) and limits download size and time. A charset that isn't for text
+  reads as UTF-8. It parses in a worker thread, so a heavy page never stalls chat or the WebSocket. It runs
   no JavaScript and reads no PDFs. Long pages are read in windows.
 - **Python** runs in Monty 1.3.0, a restricted interpreter in a separate worker: a fresh session,
   3 seconds, 64 MB, no filesystem, network, shell or credentials. It suits small calculations,

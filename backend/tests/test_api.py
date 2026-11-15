@@ -93,3 +93,23 @@ def test_a_task_from_the_api_is_its_public_view():
         shown = client.get(f"/api/tasks/{task.id}").json()
         assert "46,905" not in str(shown) and "action_history" not in shown
         assert shown["answer"]["sources"][0]["url"] == "https://groww.in/"
+
+
+def test_the_task_journal_keeps_tool_output_short():
+    """Saved several times per tool call: a page's text is not rewritten in full each time."""
+    import json
+    from app.events.bus import EventBus
+    from app.config import Settings
+    from app.memory.recall import MemoryStore
+    from app.tasks.manager import JOURNAL_TEXT, TaskManager
+    from app.tasks.models import TaskContext
+    store = MemoryStore(":memory:")
+    manager = TaskManager(WaitingLLM(), EventBus(), Settings(), memory_store=store)
+    task = TaskContext(goal="read a long page", status="completed",
+                       action_history=[{"tool": "read_webpage", "success": True, "observation": {"text": "x" * 200_000}}])
+    manager.tasks[task.id] = task
+    manager.checkpoint()
+    saved = json.loads(store.get_state("task-journal"))[-1]
+    assert len(saved["action_history"][0]["observation"]["text"]) <= JOURNAL_TEXT + 2
+    assert len(task.action_history[0]["observation"]["text"]) == 200_000  # the live task is untouched
+    assert TaskContext.model_validate(saved).status == "completed"  # and it still loads after a restart

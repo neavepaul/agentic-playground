@@ -42,7 +42,11 @@ FEEDS = {"f1": "jolpica", "cricket": "cricketdata, then espn", "weather": "open-
 # What a feed that is down, changed shape or sent something else (an HTML bot check, JSON null, a cut-off
 # RSS body) can raise. Any of them means: not answered from the feed; the web lookup takes over.
 FEED_ERRORS = (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError, AttributeError, ArithmeticError,
-               ElementTree.ParseError)
+               ElementTree.ParseError, TimeoutError)
+# A whole feed request, however slowly the server sends it, and the most it may send. The largest
+# real response (a football-data.org fortnight) is well under a megabyte.
+FEED_SECONDS = 15
+FEED_BYTES = 5_000_000
 
 
 @dataclass
@@ -53,15 +57,35 @@ class FeedAnswer:
     provider: str
 
 
+def text_encoding(name: str | None) -> str:
+    """The charset a response names, if it is one for text; else utf-8 ("base64" names a codec, not text)."""
+    import codecs
+    try:
+        return name if name and codecs.lookup(name)._is_text_encoding else "utf-8"
+    except LookupError:
+        return "utf-8"
+
+
 async def fetch(url: str, headers: dict | None = None) -> dict | str:
-    """JSON as a dict; anything else (RSS) as text."""
-    async with httpx.AsyncClient(timeout=10, headers={"User-Agent": "kip-companion"}, follow_redirects=True) as client:
-        response = await client.get(url, headers=headers)
-        response.raise_for_status()
-        try:
-            return response.json()
-        except ValueError:
-            return response.text
+    """JSON as a dict; anything else (RSS) as text. A request carrying a key in its headers
+    (football-data.org, Groww) never follows a redirect, which would hand the key to wherever it
+    points; the whole request is bounded in time and size."""
+    import json
+    async with asyncio.timeout(FEED_SECONDS):
+        async with httpx.AsyncClient(timeout=10, headers={"User-Agent": "kip-companion"},
+                                     follow_redirects=not headers) as client:
+            async with client.stream("GET", url, headers=headers) as response:
+                response.raise_for_status()  # an unfollowed redirect is an error too
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > FEED_BYTES:
+                        raise ValueError("Feed response too large.")
+                text = bytes(body).decode(text_encoding(response.encoding), errors="replace")
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
 
 
 async def answer(question: dict, now: datetime, get=None, cricket_key: str = "",
@@ -639,10 +663,12 @@ def _percent(now: float, then: float, places: int) -> str:
 
 
 async def post(url: str, body: dict, headers: dict) -> dict:
-    async with httpx.AsyncClient(timeout=10, headers={"User-Agent": "kip-companion"}) as client:
-        response = await client.post(url, json=body, headers=headers)
-        response.raise_for_status()
-        return response.json()
+    """The Groww token request: no redirects (httpx's default) and bounded like fetch."""
+    async with asyncio.timeout(FEED_SECONDS):
+        async with httpx.AsyncClient(timeout=10, headers={"User-Agent": "kip-companion"}) as client:
+            response = await client.post(url, json=body, headers=headers)
+            response.raise_for_status()
+            return response.json()
 
 
 # ── news ────────────────────────────────────────────────────────────────────────

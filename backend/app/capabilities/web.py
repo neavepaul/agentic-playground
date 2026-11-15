@@ -20,6 +20,10 @@ def public_url(value: str) -> httpx.URL:
 
 
 _NAT64 = (ipaddress.ip_network("64:ff9b::/96"), ipaddress.ip_network("64:ff9b:1::/48"))
+# Obsolete forms ipaddress still calls global: IPv4-compatible (::127.0.0.1), SIIT-translated
+# (::ffff:0:7f00:1) and site-local (fec0::1). No public site uses them, so they are never public.
+_NEVER_PUBLIC = (ipaddress.ip_network("::/96"), ipaddress.ip_network("::ffff:0:0:0/96"),
+                 ipaddress.ip_network("fec0::/10"))
 
 
 def embedded_ipv4(ip) -> list:
@@ -35,6 +39,8 @@ def embedded_ipv4(ip) -> list:
 def is_public(ip) -> bool:
     # ipaddress calls 64:ff9b::7f00:1 "global", but on a NAT64 network it reaches
     # 127.0.0.1. Judge translated addresses by the IPv4 address they carry.
+    if ip.version == 6 and any(ip in network for network in _NEVER_PUBLIC):
+        return False
     return ip.is_global and all(inner.is_global for inner in embedded_ipv4(ip))
 
 
@@ -80,7 +86,8 @@ async def read_webpage(url: str, start_char: int = 0) -> dict:
                         body.extend(chunk)
                         if len(body) > 1_000_000:
                             raise ValueError("Page exceeds the 1 MB reading limit.")
-                    text = bytes(body).decode(response.encoding or "utf-8", errors="replace")
+                    from .feeds import text_encoding  # charset=base64 names a codec, not text
+                    text = bytes(body).decode(text_encoding(response.encoding), errors="replace")
                     # Parsing a heavy page takes seconds (more on a Pi): off the event loop, so chat,
                     # the WebSocket and every timeout keep running meanwhile.
                     return await asyncio.to_thread(extract_page, text, str(current), start_char,

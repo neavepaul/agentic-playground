@@ -721,3 +721,30 @@ def test_the_conversation_episode_never_carries_a_private_answer():
     session._add_turn("kip", "Bitcoin is ₹60,00,000.", source="narration", outcome="completed")
     summary = session._session_summary()
     assert "46,905" not in summary and "Bitcoin" in summary
+
+
+@pytest.mark.asyncio
+async def test_a_portfolio_answer_that_cannot_finish_never_goes_on_to_a_model(monkeypatch):
+    """Its evidence holds their figures: a model prompt built from it would carry them."""
+    from tests.test_conversation_truth import PlanningModel, done, session_with
+    from tests.test_permissions import settle
+    from app.config import Settings
+
+    get, _ = groww_feed(monkeypatch)
+    monkeypatch.setattr(feeds, "fetch", get)
+    model = PlanningModel([])
+    session, manager = session_with(model, settings=Settings(intent_router="on", groww_api_key=GROWW[0],
+                                                             groww_api_secret=GROWW[1]))
+    real = manager.call_capability
+
+    async def failing_finish(context, tool, arguments):
+        if tool == "finish_answer":
+            return {"success": False, "error": "stub"}
+        return await real(context, tool, arguments)
+    monkeypatch.setattr(manager, "call_capability", failing_finish)
+    session.submit("how is my portfolio doing?")
+    await settle(session, manager)
+    task = next(iter(manager.tasks.values()))
+    assert task.status == "failed" and task.private
+    assert model.prompts == [] and model.titles == []  # no model ever saw the evidence
+    await done(session, manager)

@@ -60,6 +60,18 @@ class LimitReached(RuntimeError):
 
 
 TERMINAL = {"completed", "failed", "cancelled"}
+JOURNAL_TEXT = 2000  # characters of any one tool-output string the task journal keeps
+
+
+def _clipped(value):
+    """A copy with every string longer than JOURNAL_TEXT cut to it (for the task journal)."""
+    if isinstance(value, str):
+        return value if len(value) <= JOURNAL_TEXT else value[:JOURNAL_TEXT] + " …"
+    if isinstance(value, list):
+        return [_clipped(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _clipped(item) for key, item in value.items()}
+    return value
 
 
 def verified_complete(context: TaskContext) -> bool:
@@ -120,10 +132,18 @@ class TaskManager:
             self.memory_store.set_state({"task-restrictions": json.dumps({"tools": sorted(self.restrictions.tools)})})
 
     def checkpoint(self) -> None:
-        """Bounded durable task audit. Recovery never replays an interrupted action."""
+        """Bounded durable task audit. Recovery never replays an interrupted action.
+
+        Saved several times per tool call, so long tool output (a page's text, a program's output)
+        is kept to its first JOURNAL_TEXT characters: tens of kilobytes, not tens of megabytes, to
+        rewrite on a Pi's microSD card. A recovered task is finished; its record is for reading."""
         if self.memory_store:
-            self.memory_store.set_state({"task-journal": json.dumps([
-                task.model_dump(mode="json") for task in self.tasks.values()])})
+            records = []
+            for task in self.tasks.values():
+                record = task.model_dump(mode="json")
+                record["action_history"] = _clipped(record["action_history"])
+                records.append(record)
+            self.memory_store.set_state({"task-journal": json.dumps(records)})
 
     def _before_dispatch(self, context: TaskContext, tool: str, arguments: dict) -> None:
         self._ensure_running(context)
@@ -333,6 +353,10 @@ class TaskManager:
         if finished.get("success") and not [c for c in check_conditions(context) if not c["satisfied"]]:
             self.finish(context, "completed", f"Answered from the {result['observation']['provider']} results feed.")
             return True
+        if context.private:
+            # Their own accounts never go on to a model: its prompt would carry the figures.
+            self.finish(context, "failed", "Could not finish the answer from their own accounts.")
+            return True
         return False
 
     async def _web_answer(self, context: TaskContext, goal_plan) -> bool:
@@ -342,6 +366,10 @@ class TaskManager:
         if (len(context.conditions) != 1 or context.conditions[0].required_tools != ["web_search"]
                 or len(actions) != 1 or actions[0].tool != "web_search"
                 or not self.capabilities.can_answer_from_web()):
+            return False
+        if self.restrictions.forbids_tool("read_webpage") or "read_webpage" in context.restricted.get("tools", []):
+            # Groq's browser search opens the pages it finds: not after "don't read webpages".
+            # The usual lookup searches without reading.
             return False
         arguments = {"query": actions[0].arguments.get("query") or context.goal}
         self._ensure_running(context)

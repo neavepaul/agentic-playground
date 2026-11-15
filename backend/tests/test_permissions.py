@@ -347,3 +347,29 @@ def test_a_message_that_also_forbids_or_defers_lifts_nothing(said):
     assert restrictions.tools == {"run_python"}
     restrictions.update("Fine. You can use Python again.")
     assert restrictions.tools == set()
+
+
+@pytest.mark.asyncio
+async def test_groq_browser_search_is_not_used_after_dont_read_webpages():
+    """It opens the pages it finds; after "don't read webpages" the usual search-only lookup answers."""
+    from types import SimpleNamespace
+    from app.agents.schemas import GoalCondition
+    from app.tasks.models import TaskContext
+    from tests.test_conversation_truth import PlanningModel, done, session_with
+    session, manager = session_with(PlanningModel([]))
+    asked = []
+
+    async def web_answer(*args, **kwargs):
+        asked.append(args)
+        return {"success": False, "error": "stub"}, ""
+    manager.capabilities.can_answer_from_web = lambda: True
+    manager.capabilities.hosted = SimpleNamespace(last_metrics={})
+    manager.capabilities.web_answer = web_answer
+    plan = SimpleNamespace(initial_actions=[SimpleNamespace(tool="web_search", arguments={"query": "f1 results"})])
+    context = TaskContext(goal="f1 results", conditions=[GoalCondition(required_tools=["web_search"])])
+    manager.restrictions.update("don't read any webpages")
+    assert await manager._web_answer(context, plan) is False and asked == []
+    manager.restrictions.update("you can read webpages again")
+    await manager._web_answer(context, plan)
+    assert len(asked) == 1  # allowed again: Groq is asked
+    await done(session, manager)
