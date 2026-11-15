@@ -2,7 +2,7 @@
 humour that adapts to people and moments, boundaries, curiosity, and identity continuity.
 
 These test the deterministic layer that shapes behaviour. Whether the model's words are
-actually funny or kind is not testable here; see PERSONA.md for what is and isn't covered.
+actually funny or kind is not testable here; see ARCHITECTURE.md for what is and isn't covered.
 """
 import json
 
