@@ -16,3 +16,9 @@ venv/
 backend/memory/kip.db*
 backend/memory/models/
 backend/memory/backups/
+
+# Local agent tooling (Claude Code, Codex)
+.claude/
+.codex/
+AGENTS.md
+CLAUDE.md
