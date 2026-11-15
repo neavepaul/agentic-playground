@@ -34,6 +34,19 @@ _FILLER = frozenset("a an the please pls can could would you tell me know let us
                     "and or of to in on at for i me my it is are was do does did".split())
 
 
+# "What's" and "what is" are one question: contractions read as their words, in examples and questions.
+_CONTRACTIONS = {"what's": "what is", "who's": "who is", "where's": "where is", "when's": "when is",
+                 "how's": "how is", "it's": "it is", "that's": "that is", "there's": "there is",
+                 "isn't": "is not", "aren't": "are not", "wasn't": "was not", "didn't": "did not",
+                 "don't": "do not", "doesn't": "does not", "won't": "will not", "can't": "can not",
+                 "haven't": "have not", "hasn't": "has not", "i'm": "i am", "i've": "i have", "they're": "they are"}
+_CONTRACTION = re.compile(r"(?<![a-z])(" + "|".join(map(re.escape, _CONTRACTIONS)) + r")(?![a-z])")
+
+
+def _expand(text: str) -> str:
+    return _CONTRACTION.sub(lambda m: _CONTRACTIONS[m.group(1)], text)
+
+
 def _stem(word: str) -> str:
     """A word without its ending: "leads", "leading" and "leaded" alike; "leaving" is not "leading"."""
     word = word.removesuffix("'s")
@@ -92,7 +105,7 @@ class Reader:
 
     def _masked(self, text: str) -> tuple[str, list[str]]:
         """The text with names known by kind replaced, and those names as said."""
-        text, found = self._normalize(text), []
+        text, found = _expand(self._normalize(text)), []
         if self._mask is None:
             return text, found
 
