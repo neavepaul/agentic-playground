@@ -11,6 +11,8 @@ from pathlib import Path
 _SANDBOX = Path(tempfile.mkdtemp(prefix="kip-tests-"))
 os.environ["MEMORY_DB_FILE"] = str(_SANDBOX / "kip.db")
 os.environ["EMBEDDINGS_ENABLED"] = "false"
+# No built page unless a test makes one: the apps under test serve only /api and /ws.
+os.environ["FRONTEND_DIST"] = str(_SANDBOX / "no-dist")
 # Scripted test models stand in for any model, Groq included, whose action lines are acted on: the
 # offer, consent and errand tests need that. Tests of LOCAL_CHAT_ERRANDS=false set it themselves.
 os.environ["LOCAL_CHAT_ERRANDS"] = "true"

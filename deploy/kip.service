@@ -1,0 +1,24 @@
+# Kip as a service on the Raspberry Pi: starts on boot, restarts if it crashes.
+# deploy/install.sh fills in @USER@ and @REPO@ and installs this as /etc/systemd/system/kip.service.
+[Unit]
+Description=Kip, a companion you can talk to
+After=network-online.target ollama.service
+Wants=network-online.target ollama.service
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@REPO@/backend
+# One worker: Kip keeps live state in memory. Loopback only: there is no login.
+ExecStart=@REPO@/backend/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+Restart=on-failure
+RestartSec=5
+# The embedding model's download cache stays next to kip.db.
+Environment=HF_HOME=@REPO@/backend/memory/models/hf
+# Kip reads web pages and runs small programs: give him no way to change the system.
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

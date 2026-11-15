@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -237,6 +238,10 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
             await asyncio.gather(sender, return_exceptions=True)
             bus.unsubscribe(queue)
 
+    # The built page (pnpm build), when there is one: on the Pi one service serves Kip whole, with no
+    # Vite dev server. Mounted last, so /api and /ws always win.
+    if (config.frontend_dist / "index.html").is_file():
+        app.mount("/", StaticFiles(directory=config.frontend_dist, html=True), name="frontend")
     return app
 
 

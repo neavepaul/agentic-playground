@@ -10,10 +10,63 @@ calculation. He is built to run on a **Raspberry Pi 4 (8 GB)**:
 
 How it works inside, including his character, is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## Start
+## Run it on the Raspberry Pi
+
+On a Pi 4 with Raspberry Pi OS 13 (Trixie, 64-bit), install [Ollama](https://ollama.com/download) once:
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+Then clone this repository and run the installer as your normal user:
+
+```bash
+git clone https://github.com/neavepaul/agentic-playground.git
+```
+
+```bash
+bash agentic-playground/deploy/install.sh
+```
+
+The installer:
+1. Installs whatever is missing from `python3-venv`, `nodejs` and `npm`.
+2. Pulls the model.
+3. Sets up the backend's Python environment and creates `backend/.env` from the example.
+4. Builds the page and checks the model.
+5. Installs `kip` as a systemd service that starts on boot and restarts if it crashes.
+
+After that, add your keys to `backend/.env` and run `sudo systemctl restart kip`. To update, run
+`git pull` and the installer again; it keeps `.env` and `kip.db`.
+
+One service serves everything on port 8000, bound to the Pi itself: there is no login (see
+Configuration). Open **http://127.0.0.1:8000** in the Pi's browser. From another computer, forward
+the port over SSH, then open **http://localhost:8000** there:
+
+```bash
+ssh -L 8000:127.0.0.1:8000 pi@raspberrypi.local
+```
+
+Replace `pi@raspberrypi.local` with your Pi's user and hostname; the installer prints the exact
+command.
+
+**Bringing Kip's memories.** Everything Kip remembers is in `backend/memory/kip.db`. Stop Kip on
+both machines, copy it across, then start Kip on the Pi:
+
+```bash
+scp backend/memory/kip.db pi@raspberrypi.local:agentic-playground/backend/memory/kip.db
+```
+
+```bash
+sudo systemctl restart kip
+```
+
+Logs: `journalctl -u kip -f`. Keep `kip.db` on a USB 3 SSD if you can (set `MEMORY_DB_FILE`):
+it is written constantly, which wears microSD cards.
+
+## Develop
 
 Prerequisites: Python **3.12+**, Node.js **20.19+ or 22.12+**, and [Ollama](https://ollama.com/download).
-Install dependencies once while online. Commands are for Raspberry Pi OS; on Windows use
+Install dependencies once while online. Commands are for Linux; on Windows use
 `.venv\Scripts\python.exe` and `Copy-Item`.
 
 **The model** (once; the Ollama installer keeps `ollama serve` running as a service):
@@ -122,6 +175,7 @@ Copy `backend/.env.example` to `backend/.env`; environment variables override it
 | `DIGITAL_TOOLS_ENABLED` | `true` | Web search, page reading and Python |
 | `TIMEZONE` | `Asia/Kolkata` | Every time Kip says or reasons with, whatever the device clock is set to |
 | `MEMORY_DB_FILE` | `backend/memory/kip.db` | Kip's memories and state |
+| `FRONTEND_DIST` | `frontend/dist` | The built page the backend serves at `/` when it exists (the installer builds it); in development Vite serves it instead |
 | `EMBEDDINGS_ENABLED` / `EMBEDDING_MODEL` | `true` / `BAAI/bge-small-en-v1.5` | Meaning search in memory recall; off means keyword only |
 | `PERSONA_ENABLED` / `PERSONA_NAME` | `true` / `Kip` | Personality layer |
 | `PERSONA_MAKER` | unset | Who built Kip, as he should know it; unset, he says he doesn't know |
@@ -144,9 +198,9 @@ second and writes about 3.
   "read https://…"), which start at once.
 - **Tens of seconds**: anything the local model writes.
 
-Measure real numbers with `python -m app.bench` from `backend` while Kip runs (point
-`MEMORY_DB_FILE` at a copy of `kip.db` if the test conversation shouldn't be kept). Keep `kip.db` on a
-USB 3 SSD if you can: it is written constantly, which wears microSD cards.
+Measure real numbers on the Pi with `.venv/bin/python -m app.bench` from `backend` while Kip runs.
+The benchmark talks to Kip like the browser does, so its messages join the conversation; point
+`MEMORY_DB_FILE` at a copy of `kip.db` for the run if they shouldn't be kept.
 
 ## API
 
@@ -186,5 +240,6 @@ cd frontend && npm test && npm run build
 - **Truncated model output:** raise `CONTEXT_TOKENS`. A partial reply is a task failure, never a decision.
 - **Disconnected UI:** it reconnects and fetches a fresh snapshot.
 - **Port conflict:** free 8000 or 5173, or change both the Vite proxy and the backend command.
+- **Kip won't start on the Pi:** `journalctl -u kip -n 50` shows why; `sudo systemctl restart kip`
+  after fixing it.
 - **Forget everything:** stop the backend and delete `backend/memory/kip.db`.
-- **Move Kip to the Pi with his memories:** stop the backend and copy `backend/memory/kip.db` across.

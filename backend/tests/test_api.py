@@ -113,3 +113,20 @@ def test_the_task_journal_keeps_tool_output_short():
     assert len(saved["action_history"][0]["observation"]["text"]) <= JOURNAL_TEXT + 2
     assert len(task.action_history[0]["observation"]["text"]) == 200_000  # the live task is untouched
     assert TaskContext.model_validate(saved).status == "completed"  # and it still loads after a restart
+
+
+def test_the_backend_serves_the_built_page_and_the_api_still_wins(tmp_path):
+    """On the Pi one service serves Kip whole: the page at /, with /api and /ws untouched."""
+    from app.config import Settings
+    (tmp_path / "index.html").write_text("<title>Kip</title>", encoding="utf-8")
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "app.js").write_text("console.log('kip')", encoding="utf-8")
+    app = create_app(client=WaitingLLM(), settings=Settings(frontend_dist=tmp_path))
+    with TestClient(app) as client:
+        assert "<title>Kip</title>" in client.get("/").text
+        assert client.get("/assets/app.js").status_code == 200
+        assert client.get("/api/health").json()["status"] == "ok"
+        with client.websocket_connect("/ws") as socket:
+            assert socket.receive_json()["type"] == "snapshot"
+        assert client.post("/api/chat", json={"message": "hi"},
+                           headers={"origin": "http://127.0.0.1:8000"}).status_code == 202  # the page's own origin

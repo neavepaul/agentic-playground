@@ -104,6 +104,8 @@ class Settings(BaseSettings):
     intent_router: Literal["off", "shadow", "on"] = "on"
     # Kip's durable store: searchable memories (FTS5 + sqlite-vec) and structured state
     memory_db_file: Path = _BACKEND_DIR / "memory" / "kip.db"
+    # The built page the backend serves at / when present (pnpm build); none in development (Vite).
+    frontend_dist: Path = _BACKEND_DIR.parent / "frontend" / "dist"
     embeddings_enabled: bool = True
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     embedding_cache_dir: Path = _BACKEND_DIR / "memory" / "models"
