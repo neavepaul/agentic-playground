@@ -109,9 +109,12 @@ def score(expect: dict, got: dict) -> list[str]:
 def reader_reading(domain: str, route, said: str) -> tuple[dict, bool]:
     """The example-trained reader's form (app/capabilities/readers.py), as the feed would use it,
     and whether it is sure enough to be used (unsure: the web lookup answers instead)."""
-    reading = feeds.reader(domain).read(said)
+    sport = domain in feeds.MATCH_SPORTS
+    reading = feeds.reader("match" if sport else domain).read(said)
     if reading.untaught:
         print(f"        untaught words: {' '.join(reading.untaught)}")
+    if sport:
+        return dict(reading.form), reading.confident
     if domain == "finance":
         name = reading.known[0] if reading.known else feeds._holding_name(reading, {"entities": route.entities})
         # The feed uses a name only where the kind asks about one.
@@ -175,7 +178,7 @@ def _pct(values: list[float], p: float) -> float:
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--runs", type=int, default=1, help="ask each question this many times (timing spread)")
-    parser.add_argument("--only", choices=sorted(FORMS), help="one domain")
+    parser.add_argument("--only", choices=sorted({*FORMS, *feeds.MATCH_SPORTS}), help="one domain")
     parser.add_argument("--out", type=Path, help="write every result here as JSON")
     parser.add_argument("--cases", type=Path, default=CASES,
                         help="questions to score (slot_cases_independent.jsonl: written blind, never trained on)")

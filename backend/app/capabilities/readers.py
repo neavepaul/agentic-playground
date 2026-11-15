@@ -26,7 +26,7 @@ from pathlib import Path
 
 DATA = Path(__file__).parent / "reader_data"
 # Below this on the form's first field the reader has no opinion, and the web lookup answers.
-SURE = 0.4
+SURE = 0.4  # a reader's default; one with many answers to choose from may need more
 _BRACKET = re.compile(r"\[([^\]]+)\]")
 _TOKEN = re.compile(r"[a-z0-9&]+(?:'[a-z]+)?|[^\sa-z0-9]")
 # Words that ask nothing by themselves: never a sign of an untaught question.
@@ -51,21 +51,22 @@ class Reading:
     name: str | None = None      # the first run of left-over words, as said ("tata motors")
     known: list[str] = field(default_factory=list)  # names recognised by kind, as said ("nifty")
     untaught: list[str] = field(default_factory=list)  # words no example uses, beyond the name
+    cutoff: float = SURE         # how sure the main field must be for the reading to be used
 
     @property
     def confident(self) -> bool:
-        return self.sure[self.main] >= SURE and not self.untaught
+        return self.sure[self.main] >= self.cutoff and not self.untaught
 
 
 class Reader:
     def __init__(self, domain: str, masks: dict[str, str] | None = None, name_mask: str = "xname",
-                 unknown_names: bool = True) -> None:
+                 unknown_names: bool = True, sure: float = SURE) -> None:
         """masks: alias -> placeholder for names known by kind. name_mask: what a [bracketed] name
         in an example becomes; the router's own placeholder for the kind of name the domain asks
         about ("xticker"), so an example name and a name the router knows read alike.
         unknown_names: whether a name may be a word no list knows (any company); False when every
         name is in masks (drivers, teams, places), so any left-over word is untaught."""
-        self.unknown_names, self.name_mask = unknown_names, name_mask
+        self.unknown_names, self.name_mask, self.cutoff = unknown_names, name_mask, sure
         from app.chat.router import TfidfLogistic, bare, normalize  # here: app.chat imports the feeds
         self._normalize, self._bare = normalize, bare
         self.masks = {alias.casefold(): mask for alias, mask in (masks or {}).items()}
@@ -147,7 +148,7 @@ class Reader:
                 form, sure = other
         beyond = names[1:] if self.unknown_names else names
         untaught = [w for run in beyond for w in run.split() if w not in _FILLER]
-        return Reading(form, sure, self.fields[0], names[0] if names else None, known, untaught)
+        return Reading(form, sure, self.fields[0], names[0] if names else None, known, untaught, self.cutoff)
 
     def _classify(self, text: str) -> tuple[dict[str, str], dict[str, float]]:
         form, sure = {}, {}

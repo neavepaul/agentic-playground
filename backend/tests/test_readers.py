@@ -43,3 +43,25 @@ def test_names_are_the_words_no_example_uses():
     reading = feeds.reader("finance").read("do i have any tata motors")
     assert reading.form["kind"] == "my holding" and reading.name == "tata motors"
     assert feeds.reader("f1").read("how many points does russel have").known == ["russell"]  # a typo
+
+
+@pytest.mark.parametrize("said,domain,entities", [
+    ("is kohli injured?", "cricket", ["Virat Kohli"]),
+    ("did arsenal sign anyone", "football", ["Arsenal"]),
+    ("are the lakers going to trade lebron", "basketball", ["Los Angeles Lakers", "LeBron James"]),
+])
+def test_a_sports_question_the_scoreboards_do_not_cover_goes_to_the_web_lookup(said, domain, entities):
+    """These once got the side's latest score: the feeds answered anything that named a side."""
+    assert feeds.source_for({"domain": domain, "entities": entities, "said": said}) is None
+
+
+@pytest.mark.parametrize("said,domain,entities,focus", [
+    ("what's the score in the india match", "cricket", ["India"], "score"),
+    ("when do arsenal play next", "football", ["Arsenal"], "schedule"),
+    ("premier league results today", "football", [], "match result"),
+    ("did the lakers win", "basketball", ["Los Angeles Lakers"], "match result"),
+])
+def test_the_match_reader_says_which_match_is_asked_about(said, domain, entities, focus):
+    q = feeds._match_read({"domain": domain, "entities": entities, "said": said})
+    assert q is not None and q["focus"] == focus
+    assert feeds.source_for({"domain": domain, "entities": entities, "said": said}) is not None

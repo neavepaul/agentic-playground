@@ -1,0 +1,185 @@
+# The match reader's examples (cricket, football, NBA): ask, sentence. Players and teams on the
+# router's lists, leagues and cities are recognised by name; other teams in [brackets]. The feeds
+# answer score, result, status, start time, teams, venue and schedule; standings, broadcast and
+# other go to the web lookup. Not the evaluation questions (evaluations/slot_cases*.jsonl).
+ask	text
+score	what's the score in the india match
+score	india score
+score	how is india doing
+score	what's the score
+score	how many runs has kohli scored
+score	how many wickets has bumrah taken
+score	is india batting or bowling
+score	what's arsenal's score
+score	arsenal score
+score	how's the lakers game going
+score	lakers score
+score	how many goals has haaland scored today
+score	how many points has lebron got tonight
+score	score update for csk
+score	what's the live score
+score	is india winning
+score	are arsenal winning
+score	how many overs are left
+score	what's the run rate
+score	is kohli still batting
+score	who's batting right now
+score	what's the target
+score	how many runs do they need
+score	how much time is left in the game
+score	how's rcb doing
+score	premier league scores
+score	nba scores today
+score	ipl score
+score	what's happening in the india match
+score	give me the score
+score	how are the celtics doing
+score	how's the match going
+score	is it still level in the chelsea game
+score	who's ahead in the [brentford] game
+score	how many runs did india make in the first innings
+score	what's australia's total
+result	who won the india match
+result	did india win
+result	did arsenal win yesterday
+result	how did india do
+result	how did kohli do
+result	who won last night's lakers game
+result	did liverpool lose
+result	what was the result of the chelsea game
+result	final score of the arsenal match
+result	did csk beat mi
+result	how did the warriors do last night
+result	result of the last india match
+result	did real madrid win their last game
+result	premier league results
+result	nba results last night
+result	ipl results
+result	champions league results
+result	did barca win
+result	how many did kohli score yesterday
+result	what did india score in the last match
+result	by how many runs did india win
+result	who won between rcb and kkr
+result	did man city win at the weekend
+result	did the celtics beat the lakers
+result	how did australia do in the test
+result	la liga results today
+result	did salah score
+result	did messi score yesterday
+result	who scored for arsenal
+result	was it a draw between chelsea and [everton]
+result	what was the final score last night
+status	has the india match started
+status	is the arsenal game over
+status	is the lakers game on right now
+status	has the match finished
+status	is the game still on
+status	is it half time
+status	has play started in the test
+status	is the csk game live
+start time	when does the india match start
+start time	what time is the arsenal game
+start time	what time does the lakers game start
+start time	when is kick off for chelsea
+start time	what time is the toss
+start time	when does the csk match begin
+start time	what time is india playing today
+start time	is the india match today
+start time	what time is the game tonight
+start time	when is the liverpool match
+start time	when do the warriors play
+start time	what time is the premier league game today
+start time	what time does play start in the test
+teams	who is india playing
+teams	who are arsenal playing today
+teams	who are the lakers playing tonight
+teams	who's playing today in the ipl
+teams	who is csk playing next
+teams	which teams are playing tonight
+teams	who is the opponent for liverpool
+teams	who is real madrid up against
+teams	india vs who today
+teams	who are they playing against
+venue	where is the india match
+venue	which stadium is the arsenal game at
+venue	where are the lakers playing
+venue	which ground is the csk match at
+venue	is the india match in mumbai
+venue	where is the match being played
+venue	what's the venue for the final
+venue	is it a home game for liverpool
+schedule	when is india's next match
+schedule	when do arsenal play next
+schedule	next lakers game
+schedule	when is the next ipl match
+schedule	when does india's next series start
+schedule	upcoming arsenal fixtures
+schedule	when is the next premier league game
+schedule	what's the schedule for india
+schedule	when is the next chelsea game
+schedule	when does rcb play again
+schedule	next match for mumbai indians
+schedule	premier league fixtures this weekend
+schedule	nba games tomorrow
+schedule	ipl fixtures
+schedule	when is the next test
+standings	premier league table
+standings	where are arsenal in the table
+standings	ipl points table
+standings	who's top of the league
+standings	nba standings
+standings	where are the lakers in the standings
+standings	how many points do liverpool have
+standings	which team is top of the ipl table
+standings	la liga standings
+standings	who's leading the premier league
+standings	how many points are arsenal behind
+standings	will rcb make the playoffs
+broadcast	which channel is the india match on
+broadcast	where can i watch the arsenal game
+broadcast	is the lakers game on tv
+broadcast	where to stream the ipl
+broadcast	which app shows the premier league
+broadcast	what channel is showing liverpool
+other	is bumrah fit to play
+other	has chelsea signed a new striker
+other	is haaland moving to real madrid
+other	who is the best batter in the world
+other	how old is lebron
+other	who is india's captain
+other	who is the arsenal manager
+other	how much does messi earn
+other	when will dhoni retire
+other	what is a googly
+other	how does the offside rule work
+other	what is drs in cricket
+other	who has the most centuries
+other	who won the world cup in 2011
+other	which team has won the most ipl titles
+other	is kohli playing in the next match
+other	who is in the india squad
+other	what's kohli's average
+other	how tall is curry
+other	why did india lose
+other	is ronaldo still playing
+other	who's the best team in europe
+score	what's the score so far in the arsenal game
+score	has kohli got a fifty yet
+score	chelsea score rn
+status	is the arsenal game over yet
+start time	what time is kickoff for liverpool
+start time	india ka match kab hai
+schedule	arsenal ka next match kab hai
+other	how many players are in a cricket team
+other	how many clubs play in the premier league
+result	ipl scores last night
+result	premier league scores from the weekend
+result	nba results from yesterday
+result	how did the la liga games go yesterday
+result	champions league scores last night
+schedule	what premier league games are on tonight
+schedule	ipl matches tonight
+schedule	any nba games today
+schedule	la liga games this weekend
+schedule	which nba games are on tomorrow

@@ -18,6 +18,7 @@ from datetime import date, datetime, timedelta
 
 import httpx
 
+from app.capabilities import readers
 from app.capabilities.readers import Reader, Reading
 
 _log = logging.getLogger("agentic_friend.capabilities")
@@ -278,7 +279,8 @@ async def _cricket(q: dict, now: datetime, get, key: str) -> FeedAnswer | None:
     """CricketData's cricScore first (a week or more of results and fixtures, 100 requests a day),
     then ESPN's scoreboard (a few days, no key) when there is no key, the day's quota is used up,
     or the match is not in it."""
-    if not _match_question(q):
+    q = _match_read(q)
+    if q is None or not q.get("entities"):
         return None
     if key:
         try:
@@ -440,10 +442,13 @@ async def _football(q: dict, now: datetime, get, key: str) -> FeedAnswer | None:
     """football-data.org first (ten days of matches in the competitions the key covers, 10 requests a
     minute free), then ESPN's league scoreboards (this round only, no key). With no team named, a
     named league's games for the day ("premier league results")."""
+    q = _match_read(q)
+    if q is None:
+        return None
     league = None if q.get("entities") else _league(q)
     if league:
         return await _football_roundup(q, now, get, key, league)
-    if not _match_question(q):
+    if not q.get("entities"):
         return None
     if key:
         # A request covers at most ten days: the last ten and the next ten, so an international
@@ -466,8 +471,6 @@ async def _football(q: dict, now: datetime, get, key: str) -> FeedAnswer | None:
 
 async def _football_roundup(q: dict, now: datetime, get, key: str, league) -> FeedAnswer | None:
     espn, code, name = league
-    if q.get("focus") in ("broadcast", "standings"):
-        return None
     if key and code:
         today = now.date()
         urls = [f"{FOOTBALL}?dateFrom={today - timedelta(days=10)}&dateTo={today}",
@@ -488,7 +491,8 @@ async def _football_roundup(q: dict, now: datetime, get, key: str, league) -> Fe
 async def _basketball(q: dict, now: datetime, get) -> FeedAnswer | None:
     """NBA from ESPN: yesterday's, today's and tomorrow's games (no key). With no team named, the
     day's games across the league ("nba scores today")."""
-    if q.get("focus") in ("broadcast", "standings"):
+    q = _match_read(q)
+    if q is None:
         return None
     days = [now.date() + timedelta(days=d) for d in (-2, -1, 0, 1)]
     boards = await asyncio.gather(*(get(f"{ESPN_SPORTS}/basketball/nba/scoreboard?dates={d:%Y%m%d}") for d in days),
@@ -499,9 +503,25 @@ async def _basketball(q: dict, now: datetime, get) -> FeedAnswer | None:
     return _pick(q, now, matches, "espn")
 
 
-def _match_question(q: dict) -> bool:
-    """Cricket, football and NBA feeds answer about a named side or player, not standings or broadcasters."""
-    return bool(q.get("entities")) and q.get("focus") not in ("broadcast", "standings")
+MATCH_SPORTS = ("cricket", "football", "basketball")
+_LEAGUE_NAMES = dict.fromkeys("premier league|epl|la liga|laliga|serie a|bundesliga|ligue 1|champions league|ucl|"
+                              "isl|indian super league|nba|ipl|world cup|t20 world cup".split("|"), "")
+# What the match reader asks for, as the router names it: the feeds pick the match by it.
+_MATCH_FOCUS = {"score": "score", "result": "match result", "status": "match status", "start time": "start time",
+                "teams": "teams", "venue": "venue", "schedule": "schedule"}
+
+
+def _match_read(q: dict) -> dict | None:
+    """The question with what it asks for read by the match reader, for the cricket, football and
+    NBA feeds; None for what they do not answer (standings, TV channels, injuries, transfers,
+    anything the reader is unsure of): the web lookup does. A follow-up ("and tomorrow?"), or a
+    question with no words to read, keeps the router's focus."""
+    if q.get("said") and not q.get("followup"):
+        reading = reader("match").read(q["said"])
+        if not reading.confident or reading.form["ask"] not in _MATCH_FOCUS:
+            return None
+        q = {**q, "focus": _MATCH_FOCUS[reading.form["ask"]]}
+    return None if q.get("focus") in ("broadcast", "standings") else q
 
 
 def _club(name: str) -> str:
@@ -668,13 +688,10 @@ def source_for(q: dict, cricket_key: str = "", football_key: str = "", groww: tu
     if domain == "f1" and _f1_ask(q) is None:
         return None
     league = domain == "football" and not q.get("entities") and _league(q)
-    if domain == "cricket" and not _match_question(q):
+    if domain in MATCH_SPORTS and _match_read(q) is None:
         return None
-    if domain == "football" and not (league and q.get("focus") not in ("broadcast", "standings")) \
-            and not _match_question(q):
-        return None
-    if domain == "basketball" and q.get("focus") in ("broadcast", "standings"):
-        return None  # a named team or the whole league's games are both answered
+    if domain == "cricket" and not q.get("entities") or domain == "football" and not (league or q.get("entities")):
+        return None  # basketball: a named team or the whole league's games are both answered
     if domain == "weather" and _weather_days(q) is None or domain == "news" and not _news_question(q):
         return None
     football = "football-data.org" if football_key and not (league and league[1] is None) else "ESPN"
@@ -706,21 +723,27 @@ def reader(domain: str) -> Reader:
     """The domain's form reader (reader_data/<domain>.tsv), trained once on first use. Names it
     knows by kind are masked so one example covers them all: a driver, a team, an index, a coin."""
     if domain not in _READERS:
-        from app.chat.router import F1_DRIVERS, F1_TEAMS
+        from app.chat.router import F1_DRIVERS, F1_TEAMS, LEXICON
+        # The match reader's sides: every player and team the router knows in these sports.
+        sides = {alias: "" for alias, (_, sport) in LEXICON.items() if sport in MATCH_SPORTS}
         kinds = {"f1": ((F1_DRIVERS, "xdriver"), (F1_TEAMS, "xteam"), (_F1_PLACES, "xplace")),
-                 "finance": ((_INDICES, "xindex"), (_COINS, "xcoin"), (_METALS, "xmetal"))}[domain]
-        # A [bracketed] example name reads like a name the router knows: a company, a place. Any
-        # company may be asked about; an F1 name is a driver, team or place on these lists.
+                 "finance": ((_INDICES, "xindex"), (_COINS, "xcoin"), (_METALS, "xmetal")),
+                 "match": ((sides, "xside"), (_LEAGUE_NAMES, "xleague"))}[domain]
+        # A [bracketed] example name reads like a name the router knows: a company, a place, a side.
+        # Any company may be asked about; an F1 or match name is one on these lists.
         _READERS[domain] = Reader(domain, {alias: mask for names, mask in kinds for key in names
                                            for alias in key.split("|")},
-                                  name_mask={"f1": "xplace", "finance": "xticker"}[domain],
-                                  unknown_names=domain == "finance")
+                                  name_mask={"f1": "xplace", "finance": "xticker", "match": "xside"}[domain],
+                                  unknown_names=domain == "finance",
+                                  # Measured on evaluations/slot_cases*.jsonl: with nine answers, the
+                                  # match reader is wrong 7 times at 0.4 and 3 at 0.55 (15 Nov 2026).
+                                  sure=0.55 if domain == "match" else readers.SURE)
     return _READERS[domain]
 
 
 def warm_readers() -> None:
     """Train every reader ahead of the first question (Kip's startup, in a worker thread)."""
-    for domain in ("f1", "finance"):
+    for domain in ("f1", "finance", "match"):
         reader(domain)
 
 

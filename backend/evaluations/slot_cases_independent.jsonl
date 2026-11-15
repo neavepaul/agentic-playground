@@ -44,3 +44,47 @@
 {"say": "hdfc bank share price today, not my holding just the market price", "domain": "finance", "expect": {"kind": "share price", "name": "hdfc bank"}, "tags": ["independent"]}
 {"say": "infy stock is at what rate", "domain": "finance", "expect": {"kind": "share price", "name": "infy"}, "tags": ["independent"]}
 {"say": "which is higher right now, sensex or nifty, and by how much", "domain": "finance", "expect": {"kind": "index"}, "tags": ["independent"]}
+{"say": "what's the score in the india match", "domain": "cricket", "expect": {"ask": "score"}, "tags": ["independent"]}
+{"say": "who won the rcb game", "domain": "cricket", "expect": {"ask": "result"}, "tags": ["independent"]}
+{"say": "is csk playing today", "domain": "cricket", "expect": {"ask": "status"}, "tags": ["independent"]}
+{"say": "what time does the mi match start", "domain": "cricket", "expect": {"ask": "start time"}, "tags": ["independent"]}
+{"say": "who is india playing next", "domain": "cricket", "expect": {"ask": "teams"}, "tags": ["independent"]}
+{"say": "where is the kkr match being played", "domain": "cricket", "expect": {"ask": "venue"}, "tags": ["independent"]}
+{"say": "when is india's next match", "domain": "cricket", "expect": {"ask": "schedule"}, "tags": ["independent"]}
+{"say": "how many runs has kohli scored so far", "domain": "cricket", "expect": {"ask": "score"}, "tags": ["independent"]}
+{"say": "did rcb win or lose", "domain": "cricket", "expect": {"ask": "result"}, "tags": ["independent"]}
+{"say": "has the india game started yet", "domain": "cricket", "expect": {"ask": "status"}, "tags": ["independent"]}
+{"say": "rohit ka match kab shuru hoga", "domain": "cricket", "expect": {"ask": "start time"}, "tags": ["independent"]}
+{"say": "how many wickets has bumrah got today", "domain": "cricket", "expect": {"ask": "score"}, "tags": ["independent"]}
+{"say": "which stadium is csk playing at tonight", "domain": "cricket", "expect": {"ask": "venue"}, "tags": ["independent"]}
+{"say": "ipl points table kya hai", "domain": "cricket", "expect": {"ask": "standings"}, "tags": ["independent", "off-topic"]}
+{"say": "which channel is india match on", "domain": "cricket", "expect": {"ask": "broadcast"}, "tags": ["independent", "off-topic"]}
+{"say": "is kohli going to retire", "domain": "cricket", "expect": {"ask": "other"}, "tags": ["independent", "off-topic"]}
+{"say": "how many centuries does rohit have in odis", "domain": "cricket", "expect": {"ask": "other"}, "tags": ["independent", "off-topic"]}
+{"say": "can i watch mi vs kkr on hotstar", "domain": "cricket", "expect": {"ask": "broadcast"}, "tags": ["independent", "off-topic"]}
+{"say": "arsenal score", "domain": "football", "expect": {"ask": "score"}, "tags": ["independent"]}
+{"say": "did liverpool win last night", "domain": "football", "expect": {"ask": "result"}, "tags": ["independent"]}
+{"say": "is the man city game over", "domain": "football", "expect": {"ask": "status"}, "tags": ["independent"]}
+{"say": "what time is real madrid kickoff", "domain": "football", "expect": {"ask": "start time"}, "tags": ["independent"]}
+{"say": "who are barca playing", "domain": "football", "expect": {"ask": "teams"}, "tags": ["independent"]}
+{"say": "where is the chelsea match", "domain": "football", "expect": {"ask": "venue"}, "tags": ["independent"]}
+{"say": "when do man united play next", "domain": "football", "expect": {"ask": "schedule"}, "tags": ["independent"]}
+{"say": "has haaland scored yet", "domain": "football", "expect": {"ask": "score"}, "tags": ["independent"]}
+{"say": "how did salah's team do", "domain": "football", "expect": {"ask": "result"}, "tags": ["independent"]}
+{"say": "is messi playing today", "domain": "football", "expect": {"ask": "status"}, "tags": ["independent"]}
+{"say": "ronaldo match kab hai", "domain": "football", "expect": {"ask": "schedule"}, "tags": ["independent"]}
+{"say": "premier league table pls", "domain": "football", "expect": {"ask": "standings"}, "tags": ["independent", "off-topic"]}
+{"say": "where can i stream the arsenal game in india", "domain": "football", "expect": {"ask": "broadcast"}, "tags": ["independent", "off-topic"]}
+{"say": "is haaland injured", "domain": "football", "expect": {"ask": "other"}, "tags": ["independent", "off-topic"]}
+{"say": "will messi join man united", "domain": "football", "expect": {"ask": "other"}, "tags": ["independent", "off-topic"]}
+{"say": "how many teams are in the premier league", "domain": "football", "expect": {"ask": "other"}, "tags": ["independent", "off-topic"]}
+{"say": "lakers score rn", "domain": "basketball", "expect": {"ask": "score"}, "tags": ["independent"]}
+{"say": "did the warriors win", "domain": "basketball", "expect": {"ask": "result"}, "tags": ["independent"]}
+{"say": "is the celtics game on right now", "domain": "basketball", "expect": {"ask": "status"}, "tags": ["independent"]}
+{"say": "what time does lebron play tonight", "domain": "basketball", "expect": {"ask": "start time"}, "tags": ["independent"]}
+{"say": "who are the warriors playing", "domain": "basketball", "expect": {"ask": "teams"}, "tags": ["independent"]}
+{"say": "when is curry's next game", "domain": "basketball", "expect": {"ask": "schedule"}, "tags": ["independent"]}
+{"say": "nba standings west", "domain": "basketball", "expect": {"ask": "standings"}, "tags": ["independent", "off-topic"]}
+{"say": "which channel shows the lakers game", "domain": "basketball", "expect": {"ask": "broadcast"}, "tags": ["independent", "off-topic"]}
+{"say": "how many points did curry average last season", "domain": "basketball", "expect": {"ask": "other"}, "tags": ["independent", "off-topic"]}
+{"say": "is lebron retiring this year", "domain": "basketball", "expect": {"ask": "other"}, "tags": ["independent", "off-topic"]}

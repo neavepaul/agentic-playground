@@ -56,3 +56,16 @@
 {"say": "is it a good time to invest in the market", "domain": "finance", "expect": {"kind": "other"}, "tags": ["off-topic"]}
 {"say": "why is my portfolio down so much", "domain": "finance", "expect": {"kind": "my portfolio"}, "tags": ["fresh"]}
 {"say": "who won in baku", "domain": "f1", "expect": {"ask": "race result", "race": "Baku"}, "tags": ["fresh"]}
+{"say": "is kohli injured?", "domain": "cricket", "expect": {"ask": "other"}, "tags": ["off-topic"]}
+{"say": "is rohit going to retire", "domain": "cricket", "expect": {"ask": "other"}, "tags": ["off-topic"]}
+{"say": "did arsenal sign anyone", "domain": "football", "expect": {"ask": "other"}, "tags": ["off-topic"]}
+{"say": "is salah leaving liverpool", "domain": "football", "expect": {"ask": "other"}, "tags": ["off-topic"]}
+{"say": "are the lakers going to trade lebron", "domain": "basketball", "expect": {"ask": "other"}, "tags": ["off-topic"]}
+{"say": "how's india doing in the test", "domain": "cricket", "expect": {"ask": "score"}, "tags": ["fresh"]}
+{"say": "did csk lose yesterday", "domain": "cricket", "expect": {"ask": "result"}, "tags": ["fresh"]}
+{"say": "what time is the arsenal match tonight", "domain": "football", "expect": {"ask": "start time"}, "tags": ["fresh"]}
+{"say": "who do liverpool play this weekend", "domain": "football", "expect": {"ask": "teams"}, "tags": ["fresh"]}
+{"say": "premier league results today", "domain": "football", "expect": {"ask": "result"}, "tags": ["fresh"]}
+{"say": "how did the lakers do", "domain": "basketball", "expect": {"ask": "result"}, "tags": ["fresh"]}
+{"say": "nba scores last night", "domain": "basketball", "expect": {"ask": "result"}, "tags": ["fresh"]}
+{"say": "which channel has the ipl", "domain": "cricket", "expect": {"ask": "broadcast"}, "tags": ["off-topic"]}
