@@ -15,7 +15,6 @@ venv/
 # Kip memory store and embedding model cache
 backend/memory/kip.db*
 backend/memory/models/
-backend/memory/backups/
 
 # Local agent tooling (Claude Code, Codex)
 .claude/

@@ -45,9 +45,6 @@ class Settings(BaseSettings):
     # How hard Groq's browser search thinks. Each extra step re-reads every page read so far.
     groq_search_reasoning: Literal["low", "medium", "high"] = "low"
     groq_chat_models: str = "qwen/qwen3.8-27b,openai/gpt-oss-20b"
-    # Legacy JSON stores: imported into memory_db_file once, then never read or written.
-    memory_file: Path = _BACKEND_DIR / "memory" / "persistent.json"
-    graph_file: Path = _BACKEND_DIR / "memory" / "beliefs.json"
     # How long Ollama keeps the model loaded after a call: -1 always (a Pi reloading ~2 GB from a
     # microSD card takes tens of seconds), "30m" and so on, or empty for Ollama's 5 minutes.
     ollama_keep_alive: str = "-1"

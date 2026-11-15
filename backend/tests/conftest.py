@@ -9,8 +9,6 @@ import tempfile
 from pathlib import Path
 
 _SANDBOX = Path(tempfile.mkdtemp(prefix="kip-tests-"))
-os.environ["MEMORY_FILE"] = str(_SANDBOX / "persistent.json")
-os.environ["GRAPH_FILE"] = str(_SANDBOX / "beliefs.json")
 os.environ["MEMORY_DB_FILE"] = str(_SANDBOX / "kip.db")
 os.environ["EMBEDDINGS_ENABLED"] = "false"
 # Scripted test models stand in for any model, Groq included, whose action lines are acted on: the

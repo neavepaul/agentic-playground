@@ -6,7 +6,6 @@ All use deterministic test doubles; no live model is called.
 import asyncio
 import ipaddress
 import json
-import os
 
 import pytest
 
@@ -14,7 +13,6 @@ from app.chat.consent import classify_reply, is_request, task_identity
 from app.chat.prompt import TrailerSplitter, build_messages, parse_reply
 from app.config import Settings
 from app.events.bus import EventBus
-from app.memory.durable import UnreadableStoreError, atomic_write_text
 from app.memory.recall import MemoryStore, prompt_memories
 from app.memory.store import PersistentMemory, TaskRecord
 from app.tasks.manager import TaskManager
@@ -344,26 +342,8 @@ async def test_conversation_summary_survives_a_restart(tmp_path):
     reopened.close()
 
 
-def test_corrupt_persistent_memory_is_never_overwritten(tmp_path):
-    path = tmp_path / "persistent.json"
-    path.write_text("{ not json", encoding="utf-8")
-    memory = PersistentMemory.load(path)
-    assert memory.load_error
-    with pytest.raises(UnreadableStoreError):
-        memory.save(path)
-    assert path.read_text(encoding="utf-8") == "{ not json"
 
 
-def test_interrupted_write_leaves_the_previous_file(tmp_path, monkeypatch):
-    path = tmp_path / "persistent.json"
-    atomic_write_text(path, '{"version": 1}')
-    def crash(*args):
-        raise OSError("power cut")
-    monkeypatch.setattr(os, "replace", crash)
-    with pytest.raises(OSError):
-        atomic_write_text(path, '{"version": 2}')
-    assert path.read_text(encoding="utf-8") == '{"version": 1}'
-    assert not [p for p in tmp_path.iterdir() if p.suffix == ".tmp"]
 
 
 def test_distillation_keeps_counting_after_the_history_cap():
@@ -461,26 +441,4 @@ def test_saying_hello_does_not_clear_a_due_check_in():
     assert persona.due_followups() == []
 
 
-def test_undecodable_legacy_json_degrades_instead_of_crashing(tmp_path):
-    from app.memory.store import open_persistent
-    legacy = tmp_path / "persistent.json"
-    legacy.write_bytes(b"\xff\xfe{")
-    store = MemoryStore(":memory:")
-    memory = open_persistent(store, legacy, backups_dir=tmp_path / "backups")
-    assert memory.load_error
-    with pytest.raises(UnreadableStoreError):
-        memory.save()
-    assert legacy.read_bytes() == b"\xff\xfe{"
-    store.close()
 
-
-def test_an_undecodable_old_belief_graph_does_not_block_the_import(tmp_path):
-    from app.memory.store import open_persistent
-    memory_file, graph_file = tmp_path / "persistent.json", tmp_path / "beliefs.json"
-    memory_file.write_text('{"version": 1}', encoding="utf-8")
-    graph_file.write_bytes(b"\xff")
-    store = MemoryStore(":memory:")
-    memory = open_persistent(store, memory_file, graph_file, backups_dir=tmp_path / "backups")
-    assert not memory.load_error and store.get_state("persistent")
-    assert (tmp_path / "backups").exists() and graph_file.read_bytes() == b"\xff"
-    store.close()

@@ -95,12 +95,13 @@ def test_self_model_prompt_caps_top_5_failures():
 # ── Persistence ─────────────────────────────────────────────────────────────────
 
 def test_self_model_persists_across_save_load(tmp_path):
-    p = PersistentMemory()
+    from app.memory.recall import MemoryStore
+    store = MemoryStore(tmp_path / "kip.db")
+    p = PersistentMemory.load(store)
     p.update_from_task(_task("failed", [("read_webpage", FAILED)]))
 
-    path = tmp_path / "mem.json"
-    p.save(path)
-    loaded = PersistentMemory.load(path)
+    p.save()
+    loaded = PersistentMemory.load(store)
 
     assert loaded.self_model.tool_failure_counts == p.self_model.tool_failure_counts == {"read_webpage": 1}
     assert [t.goal for t in loaded.recent_tasks] == ["Test task"]

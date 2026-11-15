@@ -164,8 +164,8 @@ The `chat_reply` log line gives the provider, model, timings and how the prompt'
   restrictions and who he is talking to.
 - **The transcript** is append-only, so the conversation survives a restart.
 
-The old `persistent.json` and `beliefs.json` are imported once, into a `kip.db` with no state, then
-backed up and never read again.
+`kip.db` is the only memory: to move Kip to another machine, copy it (stop the backend first). A
+missing `kip.db` starts a fresh Kip.
 
 ## Access
 

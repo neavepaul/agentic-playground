@@ -91,15 +91,18 @@ def test_mood_decays_on_its_clock_and_survives_clock_resets():
     assert abs(persona.state.mood.valence - 0.1) < abs(low - 0.1) / 10
 
 
-def test_state_persists_and_old_memory_files_still_load(tmp_path):
-    path = tmp_path / "mem.json"
-    path.write_text(json.dumps({"version": 1, "people": {}}), encoding="utf-8")
-    memory = PersistentMemory.load(path)
-    assert memory.persona.traits == BASELINE
+def test_state_persists_and_older_saved_state_still_loads(tmp_path):
+    """State saved by older versions (with fields since dropped, like "people") still loads."""
+    from app.memory.recall import MemoryStore
+    from app.memory.store import STATE_KEY
+    store = MemoryStore(tmp_path / "kip.db")
+    store.set_state({STATE_KEY: json.dumps({"version": 1, "people": {}})})
+    memory = PersistentMemory.load(store)
+    assert memory.persona.traits == BASELINE and not memory.load_error
     persona = Persona(memory.persona, now=Clock())
     persona.observe(chat("Morning, Kip."))
-    memory.save(path)
-    assert PersistentMemory.load(path).persona.relationships["neave"].chats == 1
+    memory.save()
+    assert PersistentMemory.load(store).persona.relationships["neave"].chats == 1
 
 
 def test_prompt_views_stay_small():

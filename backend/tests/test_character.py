@@ -275,28 +275,27 @@ async def test_failure_narration_is_plain_fact_without_stock_reactions():
 
 # ── identity continuity across restarts ────────────────────────────────────────
 def test_everything_kip_learned_survives_save_and_reload(tmp_path):
-    path = tmp_path / "persistent.json"
-    memory = PersistentMemory()
+    store = MemoryStore(tmp_path / "kip.db")
+    memory = PersistentMemory.load(store)
     clock = Clock()
     persona = Persona(memory.persona, now=clock)
     for _ in range(3):
         said(persona, "haha", speaker="neave")
     said(persona, "I'm stressed", speaker="paul")
     outcome(persona, False)
-    memory.save(path)
-    restored = Persona(PersistentMemory.load(path).persona, now=clock)
+    memory.save()
+    restored = Persona(PersistentMemory.load(store).persona, now=clock)
     assert restored.public() == persona.public()
     assert restored.stance("paul", "hi") == persona.stance("paul", "hi")
 
 
 def test_conversation_changes_are_saved_on_shutdown_and_back_after_restart(tmp_path):
-    settings = Settings(memory_file=tmp_path / "persistent.json", graph_file=tmp_path / "beliefs.json")
+    settings = Settings()
     db = tmp_path / "kip.db"
     with TestClient(create_app(client=WaitingLLM(), settings=settings, memory_store=MemoryStore(db))) as client:
         assert client.post("/api/chat", json={"message": "haha, nice one", "speaker": "neave"}).status_code == 202
     saved = json.loads(MemoryStore(db).get_state("persistent"))
     assert saved["persona"]["relationships"]["neave"]["chats"] == 1
-    assert not (tmp_path / "persistent.json").exists()  # nothing is written to JSON any more
     with TestClient(create_app(client=WaitingLLM(), settings=settings, memory_store=MemoryStore(db))) as client:
         bond = client.get("/api/persona").json()["relationships"]["neave"]
     assert bond["chats"] == 1 and bond["humour_reception"] > 0.5

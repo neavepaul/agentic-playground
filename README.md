@@ -186,5 +186,5 @@ cd frontend && npm test && npm run build
 - **Truncated model output:** raise `CONTEXT_TOKENS`. A partial reply is a task failure, never a decision.
 - **Disconnected UI:** it reconnects and fetches a fresh snapshot.
 - **Port conflict:** free 8000 or 5173, or change both the Vite proxy and the backend command.
-- **Forget everything:** delete `backend/memory/kip.db`, and move `persistent.json` and
-  `beliefs.json` away, or they are imported again.
+- **Forget everything:** stop the backend and delete `backend/memory/kip.db`.
+- **Move Kip to the Pi with his memories:** stop the backend and copy `backend/memory/kip.db` across.

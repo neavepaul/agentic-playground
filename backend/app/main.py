@@ -14,7 +14,7 @@ from app.chat import ChatSession
 from app.llm.factory import create_client, create_hosted_client
 from app.llm.priority import ConversationFirst
 from app.memory.recall import Embedder, MemoryStore
-from app.memory.store import open_persistent
+from app.memory.store import PersistentMemory
 from app.persona import Persona
 from app.tasks.manager import TaskBusy, TaskManager
 
@@ -48,9 +48,8 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
     embedder = (Embedder(config.embedding_model, config.embedding_cache_dir)
                 if live and config.embeddings_enabled else None)
     store = memory_store or MemoryStore(config.memory_db_file if live else ":memory:", embedder)
-    # kip.db holds everything durable; the old JSON files are imported once, then left alone.
-    persistent = open_persistent(store, config.memory_file, config.graph_file,
-                                 backups_dir=config.memory_file.parent / "backups")
+    # kip.db holds everything durable: memories, persona, recent errands and state.
+    persistent = PersistentMemory.load(store)
     persona = None
     if config.persona_enabled:
         persona = Persona(persistent.persona, config.persona_name, now=time.time, maker=config.persona_maker)
