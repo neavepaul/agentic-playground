@@ -110,6 +110,7 @@ The **Kip** panel shows his mood, traits and how well you know each other.
 Things to ask:
 
 - "who won the last f1 race?", "india score", "lakers score", "how did arsenal do?"
+- "nba scores today", "nba games tonight", "premier league results", "isl fixtures"
 - "weather in bengaluru tomorrow", "aqi in delhi"
 - "bitcoin price", "where is the nifty", "reliance share price", "dollar to rupee"
 - "how is my portfolio doing?"
@@ -131,15 +132,16 @@ the web lookup.
 |---|---|---|---|
 | F1 | [Jolpica](https://api.jolpi.ca/ergast/f1) (the Ergast successor) | none | results, qualifying, sprints, standings, the next race |
 | Cricket | [CricketData.org](https://cricketdata.org/), then ESPN | `CRICKETDATA_API_KEY` (100 requests a day free) | results, live scores and fixtures a week or more either side; ESPN (the last few days) without a key or when a match is missing |
-| Football | [football-data.org](https://www.football-data.org/), then ESPN | `FOOTBALLDATA_API_KEY` (10 requests a minute free) | ten days either side across the key's competitions; ESPN covers this round of the top five leagues, the Champions League and the ISL |
-| NBA | ESPN | none | yesterday's, today's and tomorrow's games for a named team |
+| Football | [football-data.org](https://www.football-data.org/), then ESPN | `FOOTBALLDATA_API_KEY` (10 requests a minute free) | a named team's match, ten days either side across the key's competitions; ESPN covers this round of the top five leagues, the Champions League and the ISL. With a league named and no team ("premier league results"), the latest or next round's games |
+| NBA | ESPN | none | a named team's game, or with no team named, the day's games across the league ("nba scores today", "nba games tonight") |
 | Weather | [Open-Meteo](https://open-meteo.com/) | none | now, today, tomorrow, yesterday or this weekend at a named place |
 | Air quality | Open-Meteo | none | AQI now (US scale, not India's NAQI), PM2.5 and PM10 |
 | Markets | [CoinGecko](https://www.coingecko.com/), Yahoo Finance, [Frankfurter](https://www.frankfurter.app/) | none | crypto; Nifty, Sensex, Bank Nifty, Nasdaq, Dow, S&P 500 and any named share; ECB exchange rates (once per working day) |
 | Your portfolio | [Groww Trade API](https://groww.in/trade-api/docs) holdings, priced from Yahoo Finance | `GROWW_API_KEY` + `GROWW_API_SECRET` (a TOTP key) | value, gain on what you paid, the day's move, best and worst |
 | News | Google News RSS (India) | none | the top three headlines, or on a topic you name |
 
-Teams and players must be named, and names match exactly ("India" is not "India Under-19s"). ESPN
+Cricket needs a team named; football needs a team or a league; names match exactly ("India" is not
+"India Under-19s"). Football's free key doesn't cover the ISL, so ESPN answers it. ESPN
 and Yahoo Finance are unofficial and can change without notice. Not covered: tennis, MotoGP, gold
 and silver, past prices, tomorrow's air, UV, practice times, pit stops and broadcasters.
 

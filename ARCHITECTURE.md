@@ -78,6 +78,12 @@ Some feed details:
 - **Matches.** The match picker prefers a live match, then the next one when asked about what is
   coming, then the latest result. A score asked for before a game, with no recent result, says
   when it starts. A result asked for is never answered with a game that hasn't happened.
+- **League round-ups.** With no team named, the NBA, or a football league named in the words
+  (`_LEAGUES`), gets every game of the day asked about (`_roundup`). Games are grouped by their date
+  in IST, since an NBA tip-off in the US evening is the next morning here. For football, results
+  and fixtures cover the whole round (three days either way). "Tonight", "fixtures" and "next"
+  mean games still to come; "results" means finished ones. Eight games are read out, then "and N
+  more". "Football scores today", with no league, goes to the web lookup.
 - **Groww.** The access token is made from a standard-library TOTP code (RFC 6238) and kept until
   it expires. Only `GROWW_TOKEN_URL` and `GROWW_HOLDINGS_URL` are ever called: the key could
   place orders. Prices come from Yahoo Finance, because Groww's live-data endpoint refuses this key.

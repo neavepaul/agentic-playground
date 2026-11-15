@@ -115,7 +115,8 @@ _CUES = {
           r"podium|laps?|constructors?|drivers'? championship|fp[123]|practice|race|races|racing",
     "cricket": r"cricket|ipl|odis?|t20s?|test match|the test|innings|wickets?|runs|century|hundred|batting|"
                r"bowling|toss|bowled",
-    "football": r"football|soccer|premier league|champions league|la liga|goals?|clasico|derby",
+    "football": r"football|soccer|premier league|epl|champions league|ucl|la ?liga|serie a|bundesliga|ligue 1|"
+                r"isl|indian super league|goals?|clasico|derby",
     "tennis": r"tennis|wimbledon|us open|french open|australian open|grand slam",
     "basketball": r"nba|basketball",
     "motogp": r"motogp|moto gp",

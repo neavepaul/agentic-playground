@@ -304,9 +304,85 @@ _FD_STATES = {"SCHEDULED": "pre", "TIMED": "pre", "IN_PLAY": "in", "PAUSED": "in
               "FINISHED": "post", "AWARDED": "post"}
 
 
+# Leagues named in a question with no team: (ESPN code, football-data.org code or None, name).
+_LEAGUES = [
+    (re.compile(r"\b(?:premier league|epl)\b"), ("eng.1", "PL", "Premier League")),
+    (re.compile(r"\b(?:la ?liga)\b"), ("esp.1", "PD", "La Liga")),
+    (re.compile(r"\bserie a\b"), ("ita.1", "SA", "Serie A")),
+    (re.compile(r"\bbundesliga\b"), ("ger.1", "BL1", "Bundesliga")),
+    (re.compile(r"\bligue 1\b"), ("fra.1", "FL1", "Ligue 1")),
+    (re.compile(r"\b(?:champions league|ucl)\b"), ("uefa.champions", "CL", "Champions League")),
+    (re.compile(r"\b(?:isl|indian super league)\b"), ("ind.1", None, "Indian Super League")),
+]
+_ROUNDUP_GAMES = 8  # games read out before "and N more"
+
+
+def _league(q: dict) -> tuple[str, str | None, str] | None:
+    """The football league a question names ("premier league results"), if any."""
+    said = q.get("said", "").casefold()
+    return next((league for pattern, league in _LEAGUES if pattern.search(said)), None)
+
+
+_UPCOMING = re.compile(r"\b(?:tonight|later today|upcoming|fixtures?|schedule|next)\b")
+
+
+def _roundup(name: str, matches: list[dict], q: dict, now: datetime, provider: str,
+             round_days: int = 0) -> FeedAnswer | None:
+    """Every game of a league on the day asked about, by its date in the listener's zone: today,
+    yesterday, the latest results or the next games. round_days > 0 (football, whose rounds span a
+    weekend) widens the latest results and the next games to the whole round."""
+    def local_day(match):
+        moment = datetime.fromisoformat(match["date"].replace("Z", "+00:00"))
+        return moment.astimezone(now.tzinfo).date()
+    by_day: dict[date, list[dict]] = {}
+    for match in sorted(matches, key=lambda m: m["date"]):
+        by_day.setdefault(local_day(match), []).append(match)
+    today, time_ = now.date(), q.get("time")
+    span, wanted = 0, None  # wanted: only games still to come ("pre") or only finished ones ("post")
+    if time_ == "yesterday":
+        day = today - timedelta(days=1)
+    elif time_ in _NEXT or _UPCOMING.search(q.get("said", "").casefold()):
+        day = next((d for d in sorted(by_day) if any(m["state"] == "pre" for m in by_day[d]) and d >= today), None)
+        span, wanted = round_days, "pre"
+    elif time_ in ("latest", "latest completed") or q.get("focus") == "match result" and time_ in (None, "today or latest"):
+        day = max((d for d, games in by_day.items() if any(m["state"] == "post" for m in games) and d <= today),
+                  default=None)
+        span, wanted = -round_days, "post"
+    else:  # today, now, today or latest: today's games, else the latest results
+        day = today if today in by_day else max((d for d in by_day if d < today), default=None)
+    if day is None:
+        return None
+    first, last = (day + timedelta(days=span), day) if span < 0 else (day, day + timedelta(days=span))
+    games = [m for d in sorted(by_day) if first <= d <= last for m in by_day[d] if wanted in (None, m["state"])]
+    if not games:
+        return None
+    days = sorted({local_day(m) for m in games})
+    first, last = days[0], days[-1]
+    when = (f"{first.strftime('%A')} {first.day} {first.strftime('%B')}" if first == last
+            else f"{first.day} to {last.day} {last.strftime('%B')}" if first.month == last.month
+            else f"{first.day} {first.strftime('%B')} to {last.day} {last.strftime('%B')}")
+    lines = []
+    for match in games[:_ROUNDUP_GAMES]:
+        (home, home_score), (away, away_score) = match["teams"]
+        if match["state"] == "pre":
+            clock = datetime.fromisoformat(match["date"].replace("Z", "+00:00")).astimezone(now.tzinfo)
+            weekday = f"{clock.strftime('%a')} " if first != last else ""  # a round over several days
+            lines.append(f"{home} v {away} at {weekday}{clock.strftime('%I:%M %p').lstrip('0').lower()}")
+        else:
+            lines.append(f"{home} {home_score}, {away} {away_score}" + (" (live)" if match["state"] == "in" else ""))
+    more = len(games) - _ROUNDUP_GAMES
+    text = f"{name}, {when}: " + "; ".join(lines) + (f"; and {more} more" if more > 0 else "") + "."
+    source = {"espn": "ESPN", "football-data": "football-data.org"}[provider]
+    return FeedAnswer(text, games[0]["link"], f"{source}: {name}", provider)
+
+
 async def _football(q: dict, now: datetime, get, key: str) -> FeedAnswer | None:
     """football-data.org first (ten days of matches in the competitions the key covers, 10 requests a
-    minute free), then ESPN's league scoreboards (this round only, no key)."""
+    minute free), then ESPN's league scoreboards (this round only, no key). With no team named, a
+    named league's games for the day ("premier league results")."""
+    league = None if q.get("entities") else _league(q)
+    if league:
+        return await _football_roundup(q, now, get, key, league)
     if not _match_question(q):
         return None
     if key:
@@ -328,14 +404,39 @@ async def _football(q: dict, now: datetime, get, key: str) -> FeedAnswer | None:
     return _pick(q, now, [m for b in boards if isinstance(b, dict) for m in _espn_events(b)], "espn")
 
 
-async def _basketball(q: dict, now: datetime, get) -> FeedAnswer | None:
-    """NBA from ESPN: yesterday's, today's and tomorrow's games (no key)."""
-    if not _match_question(q):
+async def _football_roundup(q: dict, now: datetime, get, key: str, league) -> FeedAnswer | None:
+    espn, code, name = league
+    if q.get("focus") in ("broadcast", "standings"):
         return None
-    days = [now.date() + timedelta(days=d) for d in (-1, 0, 1)]
+    if key and code:
+        today = now.date()
+        urls = [f"{FOOTBALL}?dateFrom={today - timedelta(days=10)}&dateTo={today}",
+                f"{FOOTBALL}?dateFrom={today}&dateTo={today + timedelta(days=10)}"]
+        try:
+            windows = await asyncio.gather(*(_cached(url, get, headers={"X-Auth-Token": key}) for url in urls))
+            unique = {m.get("id") or (m["utcDate"], m["homeTeam"]["name"]): m for w in windows for m in w.get("matches") or []}
+            mine = [m for m in unique.values() if (m.get("competition") or {}).get("code") == code]
+            found = _roundup(name, _fd_matches({"matches": mine}), q, now, "football-data", round_days=3)
+            if found:
+                return found
+        except FEED_ERRORS as exc:
+            _log.info("football-data.org not used: %s", type(exc).__name__)
+    board = await get(f"{ESPN_SPORTS}/soccer/{espn}/scoreboard")
+    return _roundup(name, _espn_events(board), q, now, "espn", round_days=3)
+
+
+async def _basketball(q: dict, now: datetime, get) -> FeedAnswer | None:
+    """NBA from ESPN: yesterday's, today's and tomorrow's games (no key). With no team named, the
+    day's games across the league ("nba scores today")."""
+    if q.get("focus") in ("broadcast", "standings"):
+        return None
+    days = [now.date() + timedelta(days=d) for d in (-2, -1, 0, 1)]
     boards = await asyncio.gather(*(get(f"{ESPN_SPORTS}/basketball/nba/scoreboard?dates={d:%Y%m%d}") for d in days),
                                   return_exceptions=True)
-    return _pick(q, now, [m for b in boards if isinstance(b, dict) for m in _espn_events(b)], "espn")
+    matches = [m for b in boards if isinstance(b, dict) for m in _espn_events(b)]
+    if not q.get("entities"):
+        return _roundup("NBA", matches, q, now, "espn")
+    return _pick(q, now, matches, "espn")
 
 
 def _match_question(q: dict) -> bool:
@@ -503,10 +604,20 @@ def source_for(q: dict, cricket_key: str = "", football_key: str = "", groww: tu
         if kind is None or (kind[0] == "portfolio" and not all(groww)):
             return None
         return _MARKET_SOURCES[kind[0]]
-    if domain in ("cricket", "football", "basketball") and not _match_question(q)             or domain == "weather" and _weather_days(q) is None or domain == "news" and not _news_question(q):
-        return None  # the feed would not be asked: no "let me check" for the web lookup's answer
+    # The feed would not be asked: no "let me check" for the web lookup's answer.
+    league = domain == "football" and not q.get("entities") and _league(q)
+    if domain == "cricket" and not _match_question(q):
+        return None
+    if domain == "football" and not (league and q.get("focus") not in ("broadcast", "standings")) \
+            and not _match_question(q):
+        return None
+    if domain == "basketball" and q.get("focus") in ("broadcast", "standings"):
+        return None  # a named team or the whole league's games are both answered
+    if domain == "weather" and _weather_days(q) is None or domain == "news" and not _news_question(q):
+        return None
+    football = "football-data.org" if football_key and not (league and league[1] is None) else "ESPN"
     return {"f1": "Jolpica", "cricket": "CricketData" if cricket_key else "ESPN",
-            "football": "football-data.org" if football_key else "ESPN", "basketball": "ESPN",
+            "football": football, "basketball": "ESPN",
             "weather": "Open-Meteo", "news": "Google News"}.get(domain)
 
 

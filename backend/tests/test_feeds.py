@@ -475,14 +475,16 @@ async def test_espn_answers_football_without_a_key_or_when_the_match_is_missing(
 
 
 @pytest.mark.asyncio
-async def test_nba_from_espn_over_yesterday_today_and_tomorrow():
+async def test_nba_from_espn_over_the_days_around_today():
     lakers = espn("post", "Los Angeles Lakers", "Golden State Warriors", ("112", "108"), "Los Angeles Lakers")
     get, asked = sports_feed({f"{feeds.ESPN_SPORTS}/basketball/nba/scoreboard?dates=20261114": {"events": [lakers]}})
     found = await feeds.answer({"domain": "basketball", "entities": ["Los Angeles Lakers"], "focus": "match result",
                                 "time": "yesterday"}, NOW, get)
     assert found.answer == ("Los Angeles Lakers beat Golden State Warriors on 15 November. "
                             "Los Angeles Lakers 112, Golden State Warriors 108.")
-    assert sorted(u.rsplit("=", 1)[1] for u, _ in asked) == ["20261113", "20261114", "20261115"]
+    # Two days back too: a US evening game is the next morning in India, so "yesterday" here can be
+    # a game ESPN files two days back.
+    assert sorted(u.rsplit("=", 1)[1] for u, _ in asked) == ["20261112", "20261113", "20261114", "20261115"]
 
 
 @pytest.mark.asyncio
@@ -580,7 +582,12 @@ async def test_an_unchanged_share_is_flat_not_up_zero_percent():
     ({"domain": "weather", "place": "London", "time": "now", "said": "weather in london"}, {}, "Open-Meteo"),
     ({"domain": "news", "said": "any news"}, {}, "Google News"),
     # Questions these feeds do not take go to the web lookup, so no feed is named.
-    ({"domain": "basketball", "entities": [], "said": "nba scores today"}, {}, None),
+    # League-wide: the NBA, or a football league named with no team.
+    ({"domain": "basketball", "entities": [], "said": "nba scores today"}, {}, "ESPN"),
+    ({"domain": "football", "entities": [], "said": "premier league results"}, {"football_key": "k"}, "football-data.org"),
+    ({"domain": "football", "entities": [], "said": "isl results"}, {"football_key": "k"}, "ESPN"),  # not on the free key
+    ({"domain": "football", "entities": [], "said": "football scores today"}, {"football_key": "k"}, None),
+    ({"domain": "basketball", "entities": [], "focus": "standings", "said": "nba standings"}, {}, None),
     ({"domain": "football", "entities": ["Arsenal"], "focus": "standings"}, {"football_key": "k"}, None),
     ({"domain": "weather", "place": None, "said": "is it going to rain"}, {}, None),
     ({"domain": "weather", "place": "Delhi", "time": "tomorrow", "said": "aqi in delhi tomorrow"}, {}, None),
@@ -748,3 +755,89 @@ async def test_a_portfolio_answer_that_cannot_finish_never_goes_on_to_a_model(mo
     assert task.status == "failed" and task.private
     assert model.prompts == [] and model.titles == []  # no model ever saw the evidence
     await done(session, manager)
+
+
+# ── league-wide: every game of the day or round ──────────────────────────────────
+def espn_game(start, home, away, state, home_score="", away_score=""):
+    return {"date": start, "status": {"type": {"state": state}}, "competitions": [{"competitors": [
+        {"homeAway": "home", "team": {"displayName": home}, "score": home_score,
+         "winner": state == "post" and int(home_score or 0) > int(away_score or 0)},
+        {"homeAway": "away", "team": {"displayName": away}, "score": away_score,
+         "winner": state == "post" and int(away_score or 0) > int(home_score or 0)}]}]}
+
+
+NBA_BOARDS = {  # by the US date ESPN files them under; IST is 5 h 30 ahead
+    "20261113": [espn_game("2026-11-13T01:00Z", "Boston Celtics", "Dallas Mavericks", "post", "99", "101")],
+    "20261114": [espn_game("2026-11-14T00:30Z", "Los Angeles Lakers", "Phoenix Suns", "post", "110", "100"),
+                 espn_game("2026-11-14T02:00Z", "Miami Heat", "Chicago Bulls", "post", "120", "118")],
+    "20261115": [espn_game("2026-11-15T00:30Z", "Denver Nuggets", "Utah Jazz", "pre")],
+}
+
+
+def nba_feed():
+    async def get(url):
+        return {"events": NBA_BOARDS.get(url.rsplit("dates=", 1)[-1], [])}
+    return get
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("time,said,expected", [
+    ("today", "nba scores today",
+     "NBA, Saturday 14 November: Los Angeles Lakers 110, Phoenix Suns 100; Miami Heat 120, Chicago Bulls 118."),
+    ("yesterday", "nba scores last night", "NBA, Friday 13 November: Boston Celtics 99, Dallas Mavericks 101."),
+    ("latest completed", "nba results",
+     "NBA, Saturday 14 November: Los Angeles Lakers 110, Phoenix Suns 100; Miami Heat 120, Chicago Bulls 118."),
+    ("today", "nba games tonight", "NBA, Sunday 15 November: Denver Nuggets v Utah Jazz at 6:00 am."),
+])
+async def test_the_nba_with_no_team_named_is_the_days_games(time, said, expected):
+    found = await feeds.answer({"domain": "basketball", "entities": [], "focus": "score", "time": time, "said": said},
+                               NOW, nba_feed())
+    assert found.answer == expected and found.provider == "espn"
+
+
+def fd_match(utc, home, away, status, code="PL", home_goals=None, away_goals=None):
+    winner = (None if home_goals is None else "HOME_TEAM" if home_goals > away_goals
+              else "AWAY_TEAM" if away_goals > home_goals else "DRAW")
+    return {"id": hash((utc, home)), "utcDate": utc, "status": status, "competition": {"code": code},
+            "homeTeam": {"name": home}, "awayTeam": {"name": away},
+            "score": {"fullTime": {"home": home_goals, "away": away_goals}, "winner": winner}}
+
+
+ROUND = {"matches": [
+    fd_match("2026-11-07T15:00:00Z", "Arsenal FC", "Hull City AFC", "FINISHED", home_goals=1, away_goals=0),
+    fd_match("2026-11-08T14:00:00Z", "Sunderland AFC", "Chelsea FC", "FINISHED", home_goals=1, away_goals=0),
+    fd_match("2026-11-08T16:30:00Z", "Real Madrid CF", "Valencia CF", "FINISHED", "PD", 3, 0),
+    fd_match("2026-11-21T12:30:00Z", "Manchester City FC", "Fulham FC", "TIMED"),
+    fd_match("2026-11-22T14:00:00Z", "Hull City AFC", "Brighton & Hove Albion FC", "TIMED"),
+]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("time,said,expected", [
+    ("latest completed", "premier league results",
+     "Premier League, 7 to 8 November: Arsenal 1, Hull City 0; Sunderland 1, Chelsea 0."),
+    ("next upcoming", "premier league fixtures",
+     "Premier League, 21 to 22 November: Manchester City v Fulham at Sat 6:00 pm; "
+     "Hull City v Brighton & Hove Albion at Sun 7:30 pm."),
+])
+async def test_a_football_league_named_with_no_team_is_its_round(time, said, expected):
+    async def get(url, headers=None):
+        assert headers == {"X-Auth-Token": "fd-key"}
+        return ROUND
+    found = await feeds.answer({"domain": "football", "entities": [], "focus": "match result", "time": time,
+                                "said": said}, NOW, get, football_key="fd-key")
+    assert found.answer == expected and found.provider == "football-data"
+
+
+@pytest.mark.asyncio
+async def test_football_with_no_league_or_team_goes_to_the_web_lookup():
+    async def get(url, headers=None):
+        raise AssertionError("no feed is asked")
+    assert await feeds.answer({"domain": "football", "entities": [], "focus": "score", "time": "today",
+                               "said": "football scores today"}, NOW, get, football_key="fd-key") is None
+
+
+def test_the_isl_and_other_leagues_read_as_football():
+    from app.chat.router import default_router
+    for said in ("isl results", "serie a results", "bundesliga scores today"):
+        assert default_router().route(said).domain == "football"
