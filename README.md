@@ -206,6 +206,7 @@ Copy `backend/.env.example` to `backend/.env`. Environment variables override it
 |---|---|---|
 | `GROQ_API_KEY` | unset | Optional hosted Groq: answers first while it has quota (chat, planning, web search); unset keeps everything on the Pi |
 | `CRICKETDATA_API_KEY` | unset | Optional CricketData.org key for cricket (100 requests a day free); unset, ESPN's scoreboard answers cricket |
+| `FOOTBALLDATA_API_KEY` | unset | Optional football-data.org key for football (10 requests a minute free); unset, ESPN's league scoreboards answer football |
 | `GROQ_MODELS` | `openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b` | Preference order. Free-tier limits are per model, so a model whose quota is spent is skipped until its reset |
 | `GROQ_MAX_WAIT_SECONDS` | `20` | When every Groq model is rate-limited and one frees within this long, a call waits for it (once) instead of falling back to the local model, which can take minutes |
 | `GROQ_PLAN_CALLS` / `GROQ_RESEARCH_CALLS` | `2` / `4` | Hard caps on Groq calls per goal plan and per web-research task; past a cap, or on any Groq failure, the local model continues |
@@ -245,8 +246,8 @@ loopback as shown. There is intentionally no authentication or remote deployment
 Estimates from the Pi 4's memory bandwidth, not measurements: the 2B model reads a prompt at roughly
 6–10 tokens a second and writes about 3.
 
-- **Instant** (no model): the clock, router answers, F1, cricket and weather from their feeds
-  (below), live lookups with Groq, and explicit tool requests like "use Python to…" or "read
+- **Instant** (no model): the clock, router answers, F1, cricket, football, NBA, weather, air quality,
+  markets and news from their feeds (below), live lookups with Groq, and explicit tool requests like "use Python to…" or "read
   https://…", whose errand starts at once. A named page is read with no planning call. Times are
   always in `TIMEZONE` (IST by default) and temperatures in °C, whichever model or feed answers.
 - **Tens of seconds**: anything the local model writes. The system prompt is a few hundred tokens
@@ -354,19 +355,26 @@ Install the updated dependencies in the backend's existing environment with
 the frontend. No search API key is required. `DIGITAL_TOOLS_ENABLED=true` is the
 default; set it to false to disable them.
 
-**Results and weather feeds.** F1, cricket and weather questions the router recognises are
-answered from a feed before any search: F1 from [Jolpica](https://api.jolpi.ca/ergast/f1) (the Ergast
-successor: results, qualifying, sprints, standings, the next race; free, no key) and cricket from
-[CricketData.org](https://cricketdata.org/)'s `cricScore` when `CRICKETDATA_API_KEY` is set (results,
-live scores and fixtures for a week or more either side; 100 requests a day free, and one request is
-kept for a minute so follow-ups cost nothing), else ESPN's scoreboard (the last few days; free, no
-key, but unofficial, so it can change without notice). ESPN also answers when the day's 100 are used
-or a match is not in CricketData's list. Weather comes from [Open-Meteo](https://open-meteo.com/) (free, no key): now,
-today, tomorrow, yesterday or this weekend at a named place, in °C. Air quality, UV, other periods and
-questions with no place go to the web lookup. One request, exact facts, an answer in fixed words and
-no model call, recorded like a web search, so "don't use the internet" still stops it. Team names
-must match exactly ("India" is not "India Under-19s"). Anything a feed does not cover (practice
-times, pit stops, broadcasters, a match outside the cricket feeds) goes to the usual web lookup.
+**Data feeds.** Questions the router recognises on these subjects are answered from a feed before
+any search, with one request (two or three for some), exact facts, an answer in fixed words and no
+model call. Each is recorded like a web search, so "don't use the internet" still stops it, and
+anything a feed does not cover goes to the usual web lookup.
+
+| Subject | Source | Key | Covers |
+|---|---|---|---|
+| F1 | [Jolpica](https://api.jolpi.ca/ergast/f1) (the Ergast successor) | none | results, qualifying, sprints, standings, the next race |
+| Cricket | [CricketData.org](https://cricketdata.org/) `cricScore`, then ESPN's scoreboard | `CRICKETDATA_API_KEY` (100 requests a day free) | results, live scores and fixtures for a week or more either side; ESPN (the last few days) when there is no key, the day's 100 are used or a match is missing |
+| Football | [football-data.org](https://www.football-data.org/), then ESPN's league scoreboards | `FOOTBALLDATA_API_KEY` (10 requests a minute free) | twenty days of matches (ten either side) across the key's competitions; ESPN (this round of the Premier League, La Liga, Serie A, Bundesliga, Ligue 1, Champions League and ISL) otherwise |
+| NBA | ESPN's scoreboard | none | yesterday's, today's and tomorrow's games |
+| Weather | [Open-Meteo](https://open-meteo.com/) | none | now, today, tomorrow, yesterday or this weekend at a named place, in °C |
+| Air quality | Open-Meteo air quality | none | AQI now (US scale, which differs from India's NAQI), PM2.5 and PM10 at a named place |
+| Markets | [CoinGecko](https://www.coingecko.com/) (crypto), Yahoo Finance (Nifty, Sensex, Bank Nifty, Nasdaq, Dow, S&P 500), [Frankfurter](https://www.frankfurter.app/) (exchange rates) | none | current prices; exchange rates are the European Central Bank's, published once per working day |
+| News | Google News RSS (India) | none | the top three headlines, or on a topic they name ("news about the elections") |
+
+Keyed feeds keep one response for a minute, so follow-ups cost none of a free quota. Team names must
+match exactly ("India" is not "India Under-19s"). ESPN and Yahoo Finance are unofficial and can change
+without notice. Not covered: tennis, MotoGP, gold and silver, individual shares, past prices,
+tomorrow's air, UV, practice times, pit stops and broadcasters.
 
 The agent chooses search queries, page URLs and short programs as needed. Search
 uses DDGS, trying DuckDuckGo, Yahoo, Brave and Mojeek in turn until one answers (Yahoo up to

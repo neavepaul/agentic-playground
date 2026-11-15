@@ -272,13 +272,31 @@ async def test_weather_now_today_tomorrow_yesterday_and_the_weekend(focus, time,
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("question", [
-    {"place": "Delhi", "focus": "current conditions", "time": "now", "said": "what's the aqi in delhi?"},
+    {"place": "Delhi", "focus": "current conditions", "time": "now", "said": "what's the uv index in delhi?"},
+    {"place": "Delhi", "focus": "forecast", "time": "tomorrow", "said": "will the aqi in delhi be bad tomorrow?"},
     {"place": None, "focus": "current conditions", "time": "now", "said": "is it cold outside?"},
     {"place": "London", "focus": "past weather", "time": "last week", "said": "how was london last week?"},
 ])
 async def test_weather_the_forecast_does_not_carry_goes_to_the_web(question):
     get, asked = open_meteo()
     assert await feeds.answer({"domain": "weather", **question}, NOW, get) is None and asked == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("said", ["what's the aqi in delhi?", "how bad is the pollution in delhi?",
+                                  "what's the PM2.5 in delhi right now?"])
+async def test_air_quality_now_comes_from_open_meteo(said):
+    asked = []
+
+    async def get(url):
+        asked.append(url)
+        if url.startswith(feeds.GEOCODE):
+            return {"results": [{"name": "Delhi", "latitude": 28.65, "longitude": 77.23}]}
+        return {"current": {"time": "2026-11-15T09:00", "us_aqi": 158, "pm2_5": 45.3, "pm10": 56.0}}
+    found = await feeds.answer({"domain": "weather", "place": "Delhi", "focus": "current conditions", "time": "now",
+                                "said": said}, NOW, get)
+    assert found.answer == "Delhi air now: AQI 158 (US scale), unhealthy. PM2.5 45 µg/m³, PM10 56 µg/m³."
+    assert asked[1].startswith(feeds.AIR) and found.provider == "open-meteo"
 
 
 @pytest.mark.asyncio
@@ -302,3 +320,175 @@ def test_the_clock_is_india_standard_time_whatever_the_device_says():
     from app import clock
     assert clock.now().utcoffset() == timedelta(hours=5, minutes=30) and clock.now().tzname() == "IST"
     assert "IST (UTC+05:30)" in clock.date_str()
+
+
+# ── markets: CoinGecko, Yahoo (indices), Frankfurter (currency) ─────────────────
+def markets(pages):
+    asked = []
+
+    async def get(url):
+        asked.append(url)
+        return next(body for prefix, body in pages.items() if url.startswith(prefix))
+    return get, asked
+
+
+@pytest.mark.asyncio
+async def test_crypto_prices_in_rupees_and_dollars():
+    get, asked = markets({feeds.CRYPTO: {"bitcoin": {"inr": 6109514, "usd": 64826, "inr_24h_change": -1.234}}})
+    found = await feeds.answer({"domain": "finance", "entities": ["Bitcoin"], "focus": "price", "time": "now",
+                                "said": "what's the bitcoin price?"}, NOW, get)
+    assert found.answer == "Bitcoin is ₹61,09,514 ($64,826), down 1.2% in 24 hours."
+    assert "ids=bitcoin" in asked[0] and found.provider == "coingecko"
+
+
+@pytest.mark.asyncio
+async def test_an_index_with_its_move_and_the_time_in_ist():
+    meta = {"regularMarketPrice": 25144.3, "chartPreviousClose": 25044.0, "regularMarketTime": 1794650400}
+    get, asked = markets({feeds.INDEX: {"chart": {"result": [{"meta": meta}]}}})
+    found = await feeds.answer({"domain": "finance", "entities": ["Nifty 50"], "focus": "price", "time": "now",
+                                "said": "what's the nifty at?"}, NOW, get)
+    # 1794650400 is 10:00 UTC on 14 November 2026: 3:30 pm IST, when the NSE closes.
+    assert found.answer == "Nifty 50 is at 25,144.30, up 0.40% on the day (as of Saturday 14 November, 3:30 pm)."
+    assert asked[0].startswith(f"{feeds.INDEX}/%5ENSEI") and found.provider == "yahoo"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("said,url,rates,expected", [
+    ("what's the dollar rate?", "from=USD&to=INR", {"INR": 94.25},
+     "1 US dollar is ₹94.25 (European Central Bank rate, 13 November)."),
+    ("how much is a euro in rupees?", "from=EUR&to=INR", {"INR": 104.17},
+     "1 euro is ₹104.17 (European Central Bank rate, 13 November)."),
+    ("how many dollars is a pound?", "from=GBP&to=USD", {"USD": 1.3227},
+     "1 British pound is 1.3227 US dollars (European Central Bank rate, 13 November)."),
+])
+async def test_exchange_rates_from_the_ecb(said, url, rates, expected):
+    get, asked = markets({feeds.RATES: {"date": "2026-11-13", "rates": rates}})
+    found = await feeds.answer({"domain": "finance", "entities": [], "focus": "price", "time": "now", "said": said},
+                               NOW, get)
+    assert found.answer == expected and url in asked[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("question", [
+    {"entities": ["gold"], "said": "price of gold today", "time": "today"},
+    {"entities": ["Reliance"], "said": "reliance share price", "time": "now"},
+    {"entities": ["Bitcoin"], "said": "what was bitcoin last week?", "time": "last week"},
+])
+async def test_markets_the_feeds_do_not_cover_go_to_the_web(question):
+    get, asked = markets({})
+    assert await feeds.answer({"domain": "finance", "focus": "price", **question}, NOW, get) is None and asked == []
+
+
+# ── news: Google News RSS (India) ───────────────────────────────────────────────
+def rss(*titles):
+    items = "".join(f"<item><title>{t}</title><link>https://news.google.com/x</link></item>" for t in titles)
+    return f'<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>Top</title>{items}</channel></rss>'
+
+
+@pytest.mark.asyncio
+async def test_top_headlines_are_read_out_with_their_sources():
+    get, asked = markets({feeds.NEWS: rss("Monsoon session to begin on Monday - The Hindu", "Markets close higher - Mint",
+                                          "India beat New Zealand - ESPNcricinfo", "Fourth story - BBC")})
+    found = await feeds.answer({"domain": "news", "time": "today", "said": "what's in the news?"}, NOW, get)
+    assert found.answer == ("Top headlines: Monsoon session to begin on Monday (The Hindu); Markets close higher "
+                            "(Mint); India beat New Zealand (ESPNcricinfo).")
+    assert asked == [f"{feeds.NEWS}?hl=en-IN&gl=IN&ceid=IN:en"] and found.provider == "google-news"
+
+
+@pytest.mark.asyncio
+async def test_news_on_a_topic_they_name_searches_for_it():
+    get, asked = markets({feeds.NEWS: rss("Polls close in Bihar - NDTV")})
+    found = await feeds.answer({"domain": "news", "time": "today", "said": "any news about the elections?"}, NOW, get)
+    assert found.answer == "Headlines on elections: Polls close in Bihar (NDTV)."
+    assert asked == [f"{feeds.NEWS}/search?q=elections&hl=en-IN&gl=IN&ceid=IN:en"]
+
+
+@pytest.mark.asyncio
+async def test_yesterdays_news_goes_to_the_web():
+    get, asked = markets({feeds.NEWS: rss("x - y")})
+    assert await feeds.answer({"domain": "news", "time": "yesterday", "said": "what was in the news yesterday?"},
+                              NOW, get) is None and asked == []
+
+
+# ── football (football-data.org, then ESPN) and NBA (ESPN) ──────────────────────
+FD_KEY = "fd-test-key"
+
+
+def fd(status, home, away, goals, winner, when):
+    return {"status": status, "utcDate": when, "homeTeam": {"name": home}, "awayTeam": {"name": away},
+            "score": {"fullTime": {"home": goals[0], "away": goals[1]}, "winner": winner}, "venue": None}
+
+
+FD = {"matches": [
+    fd("FINISHED", "SK Slavia Praha", "Arsenal FC", (1, 2), "AWAY_TEAM", "2026-11-04T20:00:00Z"),
+    fd("FINISHED", "Arsenal FC", "Hull City AFC", (1, 0), "HOME_TEAM", "2026-11-07T15:00:00Z"),
+    fd("FINISHED", "Manchester United FC", "Aston Villa FC", (4, 4), "DRAW", "2026-11-08T16:30:00Z"),
+    fd("TIMED", "Chelsea FC", "Arsenal FC", (None, None), None, "2026-11-18T19:45:00Z"),
+]}
+
+
+def espn(state, home, away, scores=("", ""), winner=None, detail="", when="2026-11-15T00:00Z"):
+    return {"date": when, "status": {"type": {"state": state, "detail": detail}},
+            "competitions": [{"venue": {"fullName": "Crypto.com Arena"}, "competitors": [
+                {"homeAway": "home", "team": {"displayName": home}, "score": scores[0], "winner": winner == home},
+                {"homeAway": "away", "team": {"displayName": away}, "score": scores[1], "winner": winner == away}]}]}
+
+
+def sports_feed(pages):
+    asked = []
+
+    async def get(url, headers=None):
+        asked.append((url, headers))
+        return next((body for prefix, body in pages.items() if url.startswith(prefix)), {"events": []})
+    return get, asked
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("question,expected", [
+    ({"entities": ["Arsenal"], "focus": "match result", "time": "latest completed"},
+     "Arsenal beat Hull City on 7 November. Arsenal 1, Hull City 0."),
+    ({"entities": ["Manchester United"], "focus": "match result", "time": "latest completed"},
+     "Manchester United and Aston Villa drew on 8 November. Manchester United 4, Aston Villa 4."),
+    ({"entities": ["Arsenal"], "focus": "schedule", "time": "next upcoming"},
+     "Chelsea v Arsenal starts Thursday 19 November, 1:15 am."),
+])
+async def test_football_from_football_data(question, expected):
+    get, asked = sports_feed({feeds.FOOTBALL: FD})
+    found = await feeds.answer({"domain": "football", **question}, NOW, get, football_key=FD_KEY)
+    assert found.answer == expected and found.provider == "football-data"
+    assert sorted(asked) == [(f"{feeds.FOOTBALL}?dateFrom=2026-11-04&dateTo=2026-11-14", {"X-Auth-Token": FD_KEY}),
+                             (f"{feeds.FOOTBALL}?dateFrom=2026-11-14&dateTo=2026-11-24", {"X-Auth-Token": FD_KEY})]
+    assert FD_KEY not in found.url
+
+
+@pytest.mark.asyncio
+async def test_espn_answers_football_without_a_key_or_when_the_match_is_missing():
+    board = {"events": [espn("post", "Brighton & Hove Albion", "Brentford", ("2", "1"), "Brighton & Hove Albion",
+                             when="2026-11-08T12:30Z")]}
+    for key, pages in (("", {f"{feeds.ESPN_SPORTS}/soccer/eng.1/": board}),
+                       (FD_KEY, {feeds.FOOTBALL: {"matches": []}, f"{feeds.ESPN_SPORTS}/soccer/eng.1/": board})):
+        get, asked = sports_feed(pages)
+        found = await feeds.answer({"domain": "football", "entities": ["Brentford"], "focus": "match result",
+                                    "time": "latest completed"}, NOW, get, football_key=key)
+        assert found.answer == "Brighton & Hove Albion beat Brentford on 8 November. Brighton & Hove Albion 2, Brentford 1."
+        assert found.provider == "espn" and len([u for u, _ in asked if "/soccer/" in u]) == 7
+
+
+@pytest.mark.asyncio
+async def test_nba_from_espn_over_yesterday_today_and_tomorrow():
+    lakers = espn("post", "Los Angeles Lakers", "Golden State Warriors", ("112", "108"), "Los Angeles Lakers")
+    get, asked = sports_feed({f"{feeds.ESPN_SPORTS}/basketball/nba/scoreboard?dates=20261114": {"events": [lakers]}})
+    found = await feeds.answer({"domain": "basketball", "entities": ["Los Angeles Lakers"], "focus": "match result",
+                                "time": "yesterday"}, NOW, get)
+    assert found.answer == ("Los Angeles Lakers beat Golden State Warriors on 15 November. "
+                            "Los Angeles Lakers 112, Golden State Warriors 108.")
+    assert sorted(u.rsplit("=", 1)[1] for u, _ in asked) == ["20261113", "20261114", "20261115"]
+
+
+@pytest.mark.asyncio
+async def test_a_result_is_dated_in_ist():
+    """20:00 UTC on 4 November is 1:30 am on 5 November in India."""
+    get, _ = sports_feed({feeds.FOOTBALL: {"matches": [FD["matches"][0]]}})
+    found = await feeds.answer({"domain": "football", "entities": ["Arsenal"], "focus": "match result",
+                                "time": "latest completed"}, NOW, get, football_key=FD_KEY)
+    assert found.answer == "Arsenal beat SK Slavia Praha on 5 November. SK Slavia Praha 1, Arsenal 2."

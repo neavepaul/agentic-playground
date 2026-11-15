@@ -88,7 +88,8 @@ class TaskManager:
         self.memory_store = memory_store
         self.coordinator = Coordinator(client, hosted=hosted, hosted_calls=settings.groq_plan_calls)
         self.capabilities = CapabilityTools(bus, enabled=settings.digital_tools_enabled, hosted=hosted,
-                                            cricket_key=settings.cricketdata_api_key)
+                                            cricket_key=settings.cricketdata_api_key,
+                                            football_key=settings.footballdata_api_key)
         self.explorer = Explorer(client, persona=persona, hosted=hosted, hosted_calls=settings.groq_research_calls)
         self.tasks: dict[str, TaskContext] = {}
         self.active_id: str | None = None

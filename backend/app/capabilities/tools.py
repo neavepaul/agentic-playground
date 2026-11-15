@@ -34,11 +34,12 @@ def required_tool_progress(context) -> dict:
 
 
 class CapabilityTools:
-    def __init__(self, bus: EventBus, enabled: bool = True, hosted=None, cricket_key=None):
+    def __init__(self, bus: EventBus, enabled: bool = True, hosted=None, cricket_key=None, football_key=None):
         self.bus, self.enabled = bus, enabled
         # Groq, whose built-in browser search can look a question up and answer it in one call.
         self.hosted = hosted
         self.cricket_key = cricket_key.get_secret_value().strip() if cricket_key else ""
+        self.football_key = football_key.get_secret_value().strip() if football_key else ""
 
     def can_answer_from_web(self) -> bool:
         return self.enabled and self.hosted is not None and self.hosted.can_search()
@@ -93,7 +94,8 @@ class CapabilityTools:
         (None, "") when the feed does not cover the question or cannot be reached."""
         from . import feeds
         try:
-            found = await feeds.answer(question, clock.now(), cricket_key=self.cricket_key)
+            found = await feeds.answer(question, clock.now(), cricket_key=self.cricket_key,
+                                       football_key=self.football_key)
         except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
             logging.getLogger("agentic_friend.capabilities").info("results feed not used: %s", type(exc).__name__)
             return None, ""

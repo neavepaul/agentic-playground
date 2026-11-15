@@ -3,12 +3,14 @@ and cricket from CricketData.org (with a key) or ESPN's scoreboard (unofficial, 
 Open-Meteo (free, no key, °C). One request, exact facts, an answer in
 fixed words: no model reads pages or writes the answer. Anything outside what a feed covers gives
 None, and the usual web lookup answers instead."""
+import asyncio
 import logging
 import re
 import time
 from dataclasses import dataclass
-from urllib.parse import urlencode
-from datetime import date, datetime
+from urllib.parse import quote, urlencode
+from xml.etree import ElementTree
+from datetime import date, datetime, timedelta
 
 import httpx
 
@@ -18,7 +20,16 @@ ESPN = "https://site.web.api.espn.com/apis/v2/scoreboard/header?sport=cricket"
 CRICAPI = "https://api.cricapi.com/v1/cricScore"
 GEOCODE = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST = "https://api.open-meteo.com/v1/forecast"
-FEEDS = {"f1": "jolpica", "cricket": "cricketdata, then espn", "weather": "open-meteo"}
+AIR = "https://air-quality-api.open-meteo.com/v1/air-quality"
+RATES = "https://api.frankfurter.app/latest"
+CRYPTO = "https://api.coingecko.com/api/v3/simple/price"
+INDEX = "https://query1.finance.yahoo.com/v8/finance/chart"
+NEWS = "https://news.google.com/rss"
+FOOTBALL = "https://api.football-data.org/v4/matches"
+ESPN_SPORTS = "https://site.api.espn.com/apis/site/v2/sports"
+FEEDS = {"f1": "jolpica", "cricket": "cricketdata, then espn", "weather": "open-meteo",
+         "finance": "coingecko, yahoo, frankfurter", "news": "google-news",
+         "football": "football-data, then espn", "basketball": "espn"}
 
 
 @dataclass
@@ -29,14 +40,19 @@ class FeedAnswer:
     provider: str
 
 
-async def fetch(url: str) -> dict:
-    async with httpx.AsyncClient(timeout=10, headers={"User-Agent": "kip-companion"}) as client:
-        response = await client.get(url)
+async def fetch(url: str, headers: dict | None = None) -> dict | str:
+    """JSON as a dict; anything else (RSS) as text."""
+    async with httpx.AsyncClient(timeout=10, headers={"User-Agent": "kip-companion"}, follow_redirects=True) as client:
+        response = await client.get(url, headers=headers)
         response.raise_for_status()
-        return response.json()
+        try:
+            return response.json()
+        except ValueError:
+            return response.text
 
 
-async def answer(question: dict, now: datetime, get=None, cricket_key: str = "") -> FeedAnswer | None:
+async def answer(question: dict, now: datetime, get=None, cricket_key: str = "",
+                 football_key: str = "") -> FeedAnswer | None:
     """question: the router's reading (domain, entities, focus, time, place) and their words (said)."""
     get = get or fetch
     if question.get("domain") == "f1":
@@ -45,6 +61,14 @@ async def answer(question: dict, now: datetime, get=None, cricket_key: str = "")
         return await _cricket(question, now, get, cricket_key)
     if question.get("domain") == "weather":
         return await _weather(question, get)
+    if question.get("domain") == "finance":
+        return await _markets(question, now, get)
+    if question.get("domain") == "news":
+        return await _news(question, get)
+    if question.get("domain") == "football":
+        return await _football(question, now, get, football_key)
+    if question.get("domain") == "basketball":
+        return await _basketball(question, now, get)
     return None
 
 
@@ -173,12 +197,12 @@ async def _cricket(q: dict, now: datetime, get, key: str) -> FeedAnswer | None:
     return _pick(q, now, _espn_matches(await get(ESPN)), "espn")
 
 
-async def _cached(url: str, get, seconds: float = 60) -> dict:
-    """One request a minute at most: a follow-up question costs none of the day's 100."""
+async def _cached(url: str, get, seconds: float = 60, headers: dict | None = None) -> dict:
+    """One request a minute at most: a follow-up question costs none of a free plan's quota."""
     hit = _CACHE.get(url)
     if hit and time.monotonic() - hit[0] < seconds:
         return hit[1]
-    data = await get(url)
+    data = await (get(url, headers) if headers else get(url))
     _CACHE[url] = (time.monotonic(), data)
     return data
 
@@ -228,10 +252,92 @@ def _pick(q: dict, now: datetime, matches: list[dict], provider: str) -> FeedAns
     elif match["state"] == "in":
         text = f"{names} is under way: {scores}." + (f" {summary}." if summary else "")
     else:
-        on = _day(match["date"][:10]).rsplit(" ", 1)[0]
+        moment = datetime.fromisoformat(f"{match['date'][:10]}T{match['date'][11:].rstrip('Z') or '00:00'}+00:00")
+        on = _day(moment.astimezone(now.tzinfo).date().isoformat()).rsplit(" ", 1)[0]  # the date in IST
         text = (f"{summary} on {on}." if summary else f"{names} finished on {on}.") + (f" {scores}." if scores else "")
-    source = {"cricketdata": "CricketData", "espn": "ESPN"}[provider]
+    source = {"cricketdata": "CricketData", "espn": "ESPN", "football-data": "football-data.org"}[provider]
     return FeedAnswer(text, match["link"], f"{source}: {names}", provider)
+
+
+# ── football and NBA ────────────────────────────────────────────────────────────
+_ESPN_FOOTBALL = ("eng.1", "esp.1", "ita.1", "ger.1", "fra.1", "uefa.champions", "ind.1")
+_FD_STATES = {"SCHEDULED": "pre", "TIMED": "pre", "IN_PLAY": "in", "PAUSED": "in", "LIVE": "in",
+              "FINISHED": "post", "AWARDED": "post"}
+
+
+async def _football(q: dict, now: datetime, get, key: str) -> FeedAnswer | None:
+    """football-data.org first (ten days of matches in the competitions the key covers, 10 requests a
+    minute free), then ESPN's league scoreboards (this round only, no key)."""
+    if not q.get("entities") or q.get("focus") in ("broadcast", "standings"):
+        return None
+    if key:
+        # A request covers at most ten days: the last ten and the next ten, so an international
+        # break still leaves the last and next match in view.
+        today = now.date()
+        urls = [f"{FOOTBALL}?dateFrom={today - timedelta(days=10)}&dateTo={today}",
+                f"{FOOTBALL}?dateFrom={today}&dateTo={today + timedelta(days=10)}"]
+        try:
+            windows = await asyncio.gather(*(_cached(url, get, headers={"X-Auth-Token": key}) for url in urls))
+            unique = {m.get("id") or (m["utcDate"], m["homeTeam"]["name"]): m for w in windows for m in w.get("matches") or []}
+            found = _pick(q, now, _fd_matches({"matches": list(unique.values())}), "football-data")
+            if found:
+                return found
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+            _log.info("football-data.org not used: %s", type(exc).__name__)
+    boards = await asyncio.gather(*(get(f"{ESPN_SPORTS}/soccer/{league}/scoreboard") for league in _ESPN_FOOTBALL),
+                                  return_exceptions=True)
+    return _pick(q, now, [m for b in boards if isinstance(b, dict) for m in _espn_events(b)], "espn")
+
+
+async def _basketball(q: dict, now: datetime, get) -> FeedAnswer | None:
+    """NBA from ESPN: yesterday's, today's and tomorrow's games (no key)."""
+    if not q.get("entities") or q.get("focus") in ("broadcast", "standings"):
+        return None
+    days = [now.date() + timedelta(days=d) for d in (-1, 0, 1)]
+    boards = await asyncio.gather(*(get(f"{ESPN_SPORTS}/basketball/nba/scoreboard?dates={d:%Y%m%d}") for d in days),
+                                  return_exceptions=True)
+    return _pick(q, now, [m for b in boards if isinstance(b, dict) for m in _espn_events(b)], "espn")
+
+
+def _club(name: str) -> str:
+    """"Arsenal FC" -> "Arsenal", "Hull City AFC" -> "Hull City"."""
+    return re.sub(r"\s+(?:A?FC|CF)$", "", name.strip())
+
+
+def _outcome(home: str, away: str, winner: str | None) -> str:
+    if winner is None:
+        return f"{home} and {away} drew"
+    return f"{winner} beat {away if winner == home else home}"
+
+
+def _fd_matches(data: dict) -> list[dict]:
+    matches = []
+    for m in data.get("matches") or []:
+        state = _FD_STATES.get(m.get("status"))
+        if not state:
+            continue  # postponed, cancelled
+        home, away = _club(m["homeTeam"]["name"]), _club(m["awayTeam"]["name"])
+        score = m["score"]["fullTime"]
+        goals = ("" if score["home"] is None else str(score["home"]), "" if score["away"] is None else str(score["away"]))
+        winner = {"HOME_TEAM": home, "AWAY_TEAM": away}.get(m["score"].get("winner"))
+        summary = _outcome(home, away, winner) if state == "post" else ""
+        matches.append({"state": state, "date": m["utcDate"], "teams": [(home, goals[0]), (away, goals[1])],
+                        "summary": summary, "where": m.get("venue") or "", "link": "https://www.football-data.org/"})
+    return matches
+
+
+def _espn_events(board: dict) -> list[dict]:
+    matches = []
+    for event in board.get("events") or []:
+        game, state = event["competitions"][0], event["status"]["type"]["state"]
+        sides = sorted(game["competitors"], key=lambda side: side.get("homeAway") != "home")
+        teams = [(side["team"]["displayName"], side.get("score", "") if state != "pre" else "") for side in sides]
+        winner = next((side["team"]["displayName"] for side in sides if side.get("winner")), None)
+        summary = (_outcome(teams[0][0], teams[1][0], winner) if state == "post"
+                   else event["status"]["type"].get("detail", "") if state == "in" else "")
+        matches.append({"state": state, "date": event["date"], "teams": teams, "summary": summary,
+                        "where": (game.get("venue") or {}).get("fullName", ""), "link": "https://www.espn.com/"})
+    return matches
 
 
 # ── weather ─────────────────────────────────────────────────────────────────────
@@ -243,22 +349,30 @@ _WMO = {0: "clear sky", 1: "mainly clear", 2: "partly cloudy", 3: "overcast", 45
         82: "heavy showers", 85: "snow showers", 86: "heavy snow showers", 95: "thunderstorms",
         96: "thunderstorms with hail", 99: "thunderstorms with hail"}
 # Asked about something the forecast does not carry: the web lookup answers instead.
-_NOT_WEATHER = re.compile(r"\b(?:aqi|air quality|pollution|smog|uv|pollen|sunrise|sunset)\b", re.I)
+_NOT_WEATHER = re.compile(r"\b(?:uv|pollen|sunrise|sunset)\b", re.I)
+_AIR = re.compile(r"\b(?:aqi|air quality|air pollution|pollution|polluted|smog|pm ?2\.?5|pm ?10)\b", re.I)
+# The US EPA scale Open-Meteo reports (India's own NAQI bands differ).
+_AQI_BANDS = ((50, "good"), (100, "moderate"), (150, "unhealthy for sensitive groups"), (200, "unhealthy"),
+              (300, "very unhealthy"), (10_000, "hazardous"))
 
 
 async def _weather(q: dict, get) -> FeedAnswer | None:
-    """Now, today, tomorrow, yesterday or this weekend at a named place, in °C, from Open-Meteo."""
+    """Now, today, tomorrow, yesterday or this weekend at a named place, in °C, from Open-Meteo;
+    air quality now at a named place, from its air-quality service."""
     place, focus, time_ = q.get("place"), q.get("focus"), q.get("time")
     if not place or _NOT_WEATHER.search(q.get("said", "")):
         return None
+    air = bool(_AIR.search(q.get("said", "")))
     days = {"yesterday": [-1], "tomorrow": [1], "this weekend": "weekend"}.get(
         time_, [0] if time_ in (None, "now", "today", "upcoming") else None)
-    if days is None:
-        return None  # last week, this week and the like
+    if days is None or (air and days != [0]):
+        return None  # last week, this week, tomorrow's air and the like
     found = (await get(f"{GEOCODE}?{urlencode({'name': place, 'count': 1, 'language': 'en'})}")).get("results")
     if not found:
         return None
     spot = found[0]
+    if air:
+        return await _air(spot, get)
     forecast = await get(f"{FORECAST}?" + urlencode({
         "latitude": spot["latitude"], "longitude": spot["longitude"], "timezone": "auto", "past_days": 1,
         "forecast_days": 7,
@@ -287,6 +401,110 @@ async def _weather(q: dict, get) -> FeedAnswer | None:
             line += f", {daily['precipitation_probability_max'][i]}% chance of rain"
         parts.append(line + ".")
     return FeedAnswer(" ".join(parts), "https://open-meteo.com/", f"Open-Meteo: {name}", "open-meteo")
+
+
+async def _air(spot: dict, get) -> FeedAnswer | None:
+    now = (await get(f"{AIR}?" + urlencode({"latitude": spot["latitude"], "longitude": spot["longitude"],
+                                            "timezone": "auto", "current": "us_aqi,pm2_5,pm10"})))["current"]
+    if now.get("us_aqi") is None:
+        return None
+    aqi = round(now["us_aqi"])
+    band = next(name for top, name in _AQI_BANDS if aqi <= top)
+    return FeedAnswer(f"{spot['name']} air now: AQI {aqi} (US scale), {band}. PM2.5 {round(now['pm2_5'])} µg/m³, "
+                      f"PM10 {round(now['pm10'])} µg/m³.", "https://open-meteo.com/", f"Open-Meteo air: {spot['name']}",
+                      "open-meteo")
+
+
+# ── markets ─────────────────────────────────────────────────────────────────────
+_COINS = {"bitcoin": "bitcoin", "btc": "bitcoin", "ethereum": "ethereum", "ether": "ethereum", "eth": "ethereum",
+          "dogecoin": "dogecoin", "doge": "dogecoin", "solana": "solana", "xrp": "ripple", "ripple": "ripple",
+          "cardano": "cardano"}
+_INDICES = {"bank nifty": ("^NSEBANK", "Nifty Bank"), "nifty": ("^NSEI", "Nifty 50"), "sensex": ("^BSESN", "Sensex"),
+            "nasdaq": ("^IXIC", "Nasdaq"), "dow": ("^DJI", "Dow Jones"), "s&p": ("^GSPC", "S&P 500")}
+_CURRENCIES = (("us dollar", "USD"), ("dollar", "USD"), ("usd", "USD"), ("euro", "EUR"), ("eur", "EUR"),
+               ("pound", "GBP"), ("sterling", "GBP"), ("gbp", "GBP"), ("yen", "JPY"), ("yuan", "CNY"),
+               ("swiss franc", "CHF"), ("rupee", "INR"), ("inr", "INR"))
+_CURRENCY_NAMES = {"USD": "US dollar", "EUR": "euro", "GBP": "British pound", "JPY": "Japanese yen",
+                   "CNY": "Chinese yuan", "CHF": "Swiss franc", "INR": "rupee"}
+
+
+async def _markets(q: dict, now: datetime, get) -> FeedAnswer | None:
+    """Crypto from CoinGecko, Indian and US indices from Yahoo (unofficial), exchange rates from
+    Frankfurter (European Central Bank). Gold, shares and past prices go to the web lookup."""
+    if q.get("time") not in (None, "now", "today"):
+        return None
+    words = " ".join([q.get("said", ""), *(q.get("entities") or [])]).casefold()
+    coin = next((cid for name, cid in _COINS.items() if re.search(rf"\b{name}\b", words)), None)
+    if coin:
+        price = (await get(f"{CRYPTO}?ids={coin}&vs_currencies=inr,usd&include_24hr_change=true")).get(coin)
+        if not price:
+            return None
+        change = price.get("inr_24h_change")
+        text = (f"{coin.capitalize()} is {_inr(price['inr'])} (${price['usd']:,.0f})"
+                + (f", {'up' if change >= 0 else 'down'} {abs(change):.1f}% in 24 hours." if change is not None else "."))
+        return FeedAnswer(text, "https://www.coingecko.com/", f"CoinGecko: {coin}", "coingecko")
+    index = next((v for name, v in _INDICES.items() if re.search(rf"\b{re.escape(name)}\b", words)), None)
+    if index:
+        meta = (await get(f"{INDEX}/{quote(index[0])}?range=1d&interval=1d"))["chart"]["result"][0]["meta"]
+        price, before = meta["regularMarketPrice"], meta.get("chartPreviousClose") or meta.get("previousClose")
+        at = datetime.fromtimestamp(meta["regularMarketTime"], now.tzinfo)
+        text = f"{index[1]} is at {price:,.2f}"
+        if before:
+            text += f", {'up' if price >= before else 'down'} {abs(price - before) / before * 100:.2f}% on the day"
+        text += f" (as of {at.strftime('%A')} {at.day} {at.strftime('%B')}, {at.strftime('%I:%M %p').lstrip('0').lower()})."
+        return FeedAnswer(text, "https://finance.yahoo.com/", f"Yahoo Finance: {index[1]}", "yahoo")
+    if "gold" in words or "silver" in words:
+        return None
+    # Currencies in the order they were said; the one after "a"/"one"/"1" is being priced ("how many
+    # dollars is a pound?"), else the first one that is not the rupee.
+    found = sorted((m.start(), code, words[max(0, m.start() - 4):m.start()])
+                   for name, code in _CURRENCIES for m in re.finditer(rf"\b{name}s?\b", words))
+    named = list(dict.fromkeys(code for _, code, _ in found))
+    priced = [code for _, code, before in found if re.search(r"\b(?:a|an|one|1)\s$", before)]
+    base = next((c for c in priced if c != "INR"), None) or next((c for c in named if c != "INR"), None)
+    if not base:
+        return None
+    target = next((c for c in named if c not in ("INR", base)), "INR")
+    data = await get(f"{RATES}?from={base}&to={target}")
+    rate = (data.get("rates") or {}).get(target)
+    if rate is None:
+        return None
+    amount = _inr(rate, decimals=2) if target == "INR" else f"{rate:,.4f} {_CURRENCY_NAMES[target]}s"
+    on = _day(data["date"]).rsplit(" ", 1)[0]
+    return FeedAnswer(f"1 {_CURRENCY_NAMES[base]} is {amount} (European Central Bank rate, {on}).",
+                      "https://www.frankfurter.app/", f"Frankfurter: {base}/{target}", "frankfurter")
+
+
+# ── news ────────────────────────────────────────────────────────────────────────
+_TOPIC = re.compile(r"\b(?:news|headlines?|latest)\s+(?:about|on|regarding|from|in)\s+(?:the\s+)?(.+?)[?.!]*$", re.I)
+
+
+async def _news(q: dict, get) -> FeedAnswer | None:
+    """Top three headlines from Google News (India), or on a topic they name ("news about the
+    elections"). Read out as headlines: nothing is summarised or inferred."""
+    if q.get("time") not in (None, "now", "today"):
+        return None
+    topic = _TOPIC.search(q.get("said", "").strip())
+    where = "hl=en-IN&gl=IN&ceid=IN:en"
+    url = f"{NEWS}/search?q={quote(topic.group(1))}&{where}" if topic else f"{NEWS}?{where}"
+    feed = await get(url)
+    titles = [item.findtext("title", "").strip() for item in ElementTree.fromstring(feed).iter("item")][:3]
+    titles = [t for t in titles if t]
+    if not titles:
+        return None
+    # "Headline - Source": the source in brackets reads better aloud.
+    spoken = [re.sub(r"^(.*) - ([^-]+)$", r"\1 (\2)", t) for t in titles]
+    lead = f"Headlines on {topic.group(1)}" if topic else "Top headlines"
+    return FeedAnswer(f"{lead}: " + "; ".join(spoken) + ".", "https://news.google.com/", f"Google News: {lead}",
+                      "google-news")
+
+
+def _inr(amount: float, decimals: int = 0) -> str:
+    """₹ with Indian digit grouping: ₹61,09,514."""
+    whole, _, cents = f"{amount:.{decimals}f}".partition(".")
+    head, tail = whole[:-3], whole[-3:]
+    grouped = ",".join(filter(None, [*re.findall(r"\d{1,2}(?=(?:\d{2})*$)", head), tail]))
+    return f"₹{grouped}" + (f".{cents}" if cents else "")
 
 
 # ── wording ─────────────────────────────────────────────────────────────────────
