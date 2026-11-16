@@ -148,6 +148,10 @@ the person first), a one-line status (with the real date and time), recent histo
 its older turns into a short checkpoint note (`chat/checkpoint.py`) that rides in the prompt with the
 latest exchange kept word for word. The note is written after a reply, never blocks one, is dropped
 when a correction retires a fact, and on any failure the chat simply keeps the older history selection.
+When Groq is the usual speaker, each reply is built twice: a roomier prompt for Groq
+(`CHAT_HOSTED_CONTEXT_TOKENS`, `CHAT_HOSTED_HISTORY_TOKENS`) and a small one for the local model,
+which a reply falls back to if Groq cannot answer; a message too big for the local window goes to
+Groq alone. Each reply's metrics say which prompt was read (`prompt_for`).
 
 - **Groq** (`llm/groq.py`) goes first while it has quota. Free-tier limits are per model, so a spent
   model is skipped until its reset. When every model frees within `GROQ_MAX_WAIT_SECONDS`, the call

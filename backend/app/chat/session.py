@@ -135,6 +135,19 @@ class ChatSession:
         self._routes: dict[str, Route] = {}            # user turn id -> how the router read it
         self._correction_goals: dict[tuple[str, ...], int] = {}  # corrected lookup -> correction record
 
+    @property
+    def _hosted_chat(self) -> bool:
+        """Whether chat can be served by Groq (with the local model as the fallback): then a reply is
+        written against whichever window will answer it."""
+        return bool(getattr(self.client, "prompt_alternatives", False))
+
+    @property
+    def _history_budget(self) -> int:
+        """The history the checkpoint is sized against: Groq's, when it is the usual speaker. A local
+        fallback then trims the oldest of the verbatim turns with the usual selection."""
+        return (self.settings.chat_hosted_history_tokens if self._hosted_chat
+                else self.settings.chat_history_tokens)
+
     def attach(self) -> None:
         self.bus.add_listener(self._narrate)
 
@@ -452,16 +465,38 @@ class ChatSession:
                 if checked:
                     guidance = (guidance + " " + checked).strip()
                 note = self.checkpoint
-                messages = build_messages(self.name, voice, prompt_memories(memories),
-                                          self._status(user_turn.get("speaker")),
-                                          checkpoints.after(earlier, note), user_turn["text"],
+                status = self._status(user_turn.get("speaker"))
+                recalled = prompt_memories(memories)
+                since = checkpoints.after(earlier, note)
+
+                def prompt(context_tokens: int, history_tokens: int) -> list[dict]:
+                    return build_messages(self.name, voice, recalled, status, since, user_turn["text"],
                                           guidance=guidance, checkpoint=note.text if note else "",
-                                          context_tokens=self.settings.context_tokens - self.settings.chat_max_tokens,
-                                          history_tokens=self.settings.chat_history_tokens)
+                                          context_tokens=context_tokens - self.settings.chat_max_tokens,
+                                          history_tokens=history_tokens)
+                # Sized for the local model, whose window is the small one: this is also what a Groq
+                # reply falls back to. When Groq serves chat, it gets its own, roomier prompt.
+                try:
+                    messages = local = prompt(self.settings.context_tokens, self.settings.chat_history_tokens)
+                except ContextBudgetError:
+                    if not self._hosted_chat:
+                        raise
+                    local = None  # too large for the local model; Groq may still take it
+                    messages = None
+                alternate = {}
+                if self._hosted_chat:
+                    try:
+                        messages = prompt(self.settings.chat_hosted_context_tokens,
+                                          self.settings.chat_hosted_history_tokens)
+                    except ContextBudgetError:
+                        if local is None:
+                            raise
+                    alternate = {"local_messages": local if local is not None else False}
                 splitter = TrailerSplitter()
                 try:
                     async for chunk in self.client.stream_text(messages, max_tokens=self.settings.chat_max_tokens,
-                                                               temperature=self.settings.chat_temperature):
+                                                               temperature=self.settings.chat_temperature,
+                                                               **alternate):
                         visible = splitter.feed(chunk)
                         if visible:
                             self.bus.emit("chat_delta", self.name, skip_history=True,
@@ -482,8 +517,11 @@ class ChatSession:
                                   reply_id=reply_id, text=remaining)
                 metrics = dict(getattr(self.client, "last_metrics", {}) or {})
                 metrics["memory_recall_seconds"] = round(recall_seconds, 3)
-                metrics["input_chars"] = sum(len(m["content"]) for m in messages)
-                metrics["estimated_prompt_tokens"] = message_tokens(messages)
+                # The prompt the serving model actually read: Groq the roomier one, the local model its own.
+                sent = messages if (not alternate or metrics.get("provider") == "groq" or local is None) else local
+                metrics["input_chars"] = sum(len(m["content"]) for m in sent)
+                metrics["estimated_prompt_tokens"] = message_tokens(sent)
+                metrics["prompt_for"] = "hosted" if alternate and sent is not local else "local"
                 metrics["token_estimator"] = "utf8_bytes_div3_estimate"  # a label, not a secret  # nosec B105
                 metrics["queue_seconds"] = round(queue_seconds, 3)
                 metrics["chat_model_calls"] = 1
@@ -492,9 +530,9 @@ class ChatSession:
                 metrics["checkpoint_turns"] = note.turns if note else 0
                 metrics["compaction"] = self.compaction
                 # Where the prompt's size goes: a long prompt is what makes a local model slow to start.
-                metrics["prompt_chars"] = {"system": len(messages[0]["content"]),
-                                           "history": sum(len(m["content"]) for m in messages[1:-1]),
-                                           "latest": len(messages[-1]["content"])}
+                metrics["prompt_chars"] = {"system": len(sent[0]["content"]),
+                                           "history": sum(len(m["content"]) for m in sent[1:-1]),
+                                           "latest": len(sent[-1]["content"])}
                 action, action_error = parsed.action, parsed.error
                 if (action and (action.task or action.offer) and not self.settings.local_chat_errands
                         and metrics.get("provider") != "groq"):
@@ -1097,7 +1135,7 @@ class ChatSession:
             return  # a busy local model is left to the reply or errand that needs it; tried again later
         epoch, previous = self._checkpoint_epoch, self.checkpoint
         status, found = await checkpoints.compact(self.client, list(self.turns), previous,
-                                                  self.settings.chat_history_tokens,
+                                                  self._history_budget,
                                                   self.settings.chat_checkpoint_tokens)
         if epoch != self._checkpoint_epoch or self._closed:
             return  # the note was dropped (a correction) or the chat reset while this was being written

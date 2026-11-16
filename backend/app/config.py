@@ -98,6 +98,12 @@ class Settings(BaseSettings):
     # short model call, so the chat model only talks. false: no new facts are learned from chat unless
     # the model volunteers them in its action line.
     chat_extraction: bool = True
+    # When Groq answers chat it can read far more than the Pi's 4K window, but every token counts
+    # against its per-minute quota, so the extra is modest. The local model keeps CONTEXT_TOKENS and
+    # CHAT_HISTORY_TOKENS; a reply that falls back to it is rebuilt at that size. Set both equal to the
+    # local values to give Groq the same prompt.
+    chat_hosted_context_tokens: int = Field(default=8192, ge=2048, le=131072)
+    chat_hosted_history_tokens: int = Field(default=1600, ge=0, le=16384)
     chat_temperature: float = Field(default=0.6, ge=0, le=1.5)
     # confirm: errands start only when asked or after a yes to Kip's offer.
     # act: any errand the chat model proposes starts immediately (less safe).

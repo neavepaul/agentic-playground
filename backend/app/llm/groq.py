@@ -434,11 +434,18 @@ class HostedChat:
     """Conversation on Groq while it has quota (first words in about a second), streamed; the
     local chat model otherwise. Everything else the session asks of it goes to the local model."""
 
+    # The session may build two prompts: `messages` for Groq (a bigger window) and `local_messages`
+    # for the local model, which a reply falls back to and whose window is the small one.
+    prompt_alternatives = True
+
     def __init__(self, hosted: GroqClient, local, models: list[str]) -> None:
         self.hosted, self.local, self.models = hosted, local, models
         self.last_metrics: dict = {}
 
-    async def stream_text(self, messages: list[dict], max_tokens: int = 300, temperature: float | None = None):
+    async def stream_text(self, messages: list[dict], max_tokens: int = 300, temperature: float | None = None,
+                          local_messages: list[dict] | None | bool = None):
+        """`local_messages`: what the local model reads if Groq cannot answer (None: the same
+        messages; False: nothing fits it, so the local model is not tried)."""
         spoke = False
         if (self.hosted.chat_candidates(self.models, messages, max_tokens)
                 or self.hosted.chat_free_soon(self.models, messages, max_tokens)):
@@ -454,7 +461,10 @@ class HostedChat:
                 _log.warning("Groq unavailable for conversation (%s); using the local model, which is slower.", exc)
         else:
             _log.warning("Groq has no quota left for conversation; using the local model, which is slower.")
-        async for chunk in self.local.stream_text(messages, max_tokens=max_tokens, temperature=temperature):
+        if local_messages is False:
+            raise ModelError("This message is too large for the local model and Groq cannot take it now.")
+        async for chunk in self.local.stream_text(messages if local_messages is None else local_messages,
+                                                  max_tokens=max_tokens, temperature=temperature):
             yield chunk
         self.last_metrics = {"provider": "local", **dict(getattr(self.local, "last_metrics", None) or {})}
 
