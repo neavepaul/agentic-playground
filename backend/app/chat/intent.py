@@ -28,6 +28,19 @@ _LIVE_FACT = re.compile(r"\b(weather|forecast|temperature|raining|humidity|aqi|a
                         r"qualif(?:y|ied|ying|ication)|pole position|on pole|podium|race results?|final score|"
                         r"fixtures?|semi-?finals?|playoffs?|"
                         r"next (?:race|match|game)|who'?s leading|headlines|the news|news today)\b")
+# Arithmetic over several numbers ("can you sanity check we're inside forty thousand each?"): the sum is
+# never worked out in the model's head, where it is often wrong. A statement of a budget is not a request.
+_NUMBER = re.compile(r"\d|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|thirty|forty|fifty|"
+                     r"sixty|seventy|eighty|ninety|hundred|thousand|lakhs?|crore|million|billion)\b")
+_STRONG_MATH = re.compile(r"\b(sanity check|add(?:s|ed)? up|calculate|compute|work out (?:how|the|what|if|whether)|in total|"
+                          r"per person|(?:inside|within|under|over|beyond) (?:the |our |my )?(?:budget|limit|cap)\b|"
+                          r"(?:inside|within|under|over|beyond) (?:the |our |my )?\w+ (?:thousand|lakh|k)\b|"
+                          r"how much (?:is|are|will|would|does|do|did) (?:it|that|this|we|i|everything|the total)\b|"
+                          r"split (?:it|the|this)|average|percent(?:age)? of|over by|short by|left over)\b"
+                          r"|\d\s*%\s*of\b|\d\s*[*×+]\s*\d")
+# Verbs that ask for it outright, as a command too ("please add up the costs").
+_MATH_VERB = re.compile(r"\b(sanity check|add(?:s|ed)? up|calculate|compute|work out (?:how|the|what|if|whether))\b")
+_WEAK_MATH = re.compile(r"\b(total|sum|each|remaining|enough|afford|costs?|budget|difference)\b")
 _GREETING = re.compile(r"^\W*(?:hi|hello|hey|hiya|morning|evening|howdy|good (?:morning|afternoon|evening))\b"
                        r"|\bhow are you\b|\bhow'?s it going\b|\bhow'?s your (?:day|morning|evening)\b")
 _INTRODUCES = re.compile(r"\b(?:it'?s|this is|i'?m|i am|me,|my name is|my name'?s|call me)\s+([a-z][a-z'-]+)\b")
@@ -48,6 +61,7 @@ class Intent:
     needs_tools: list[str] = field(default_factory=list)  # tools their own words ask to run
     greeting: bool = False         # "hi", "how are you"
     live_fact: bool = False        # weather, prices, scores, news: must be looked up
+    calculates: bool = False       # asks for arithmetic over several numbers: run it, never work it out in the head
 
     @property
     def changes_state_only(self) -> bool:
@@ -65,6 +79,10 @@ def is_live_fact(text: str) -> bool:
     return bool(_LIVE_FACT.search(" ".join(text.casefold().replace("’", "'").split())))
 
 
+def asks_arithmetic(lowered: str) -> bool:
+    return bool(_STRONG_MATH.search(lowered) or (_WEAK_MATH.search(lowered) and _NUMBER.search(lowered)))
+
+
 def read_intent(text: str, granted: list[str] = (), revoked: list[str] = ()) -> Intent:
     lowered = " ".join(text.casefold().replace("’", "'").split())
     wants_offer = bool(_WANTS_OFFER.search(lowered))
@@ -79,7 +97,9 @@ def read_intent(text: str, granted: list[str] = (), revoked: list[str] = ()) -> 
                   granted=list(granted), revoked=list(revoked), declines=bool(_DECLINES.match(lowered)),
                   cancel=cancel, wants_offer=wants_offer, about_past=bool(_ABOUT_PAST.search(lowered)),
                   needs_tools=needs, greeting=bool(_GREETING.search(lowered)),
-                  live_fact=bool(_LIVE_FACT.search(lowered)) and not cancel)
+                  live_fact=bool(_LIVE_FACT.search(lowered)) and not cancel,
+                  calculates=not cancel and "run_python" not in needs and bool(
+                      _MATH_VERB.search(lowered) or ((request or is_question(text)) and asks_arithmetic(lowered))))
 
 
 def given_name(text: str) -> str | None:

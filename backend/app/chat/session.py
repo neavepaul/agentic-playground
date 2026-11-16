@@ -19,7 +19,7 @@ from app.memory.recall import prompt_memories
 from app.tasks.manager import TERMINAL, TaskBusy
 from app.tasks.permissions import READ_ONLY, TOOL_PLAIN, Grant, digital_scope, plain
 from .consent import Offer, classify_reply, is_question, is_request, task_identity  # noqa: F401 (re-exported)
-from .evidence import capabilities, denied_capabilities, task_record, unsupported_execution
+from .evidence import capabilities, denied_capabilities, task_record, unkept_promise, unsupported_execution
 from .intent import Intent, given_name, introduced_as, read_intent
 from .router import (THRESHOLD as ROUTER_THRESHOLD, LIVE, SPORTS, Frame, Route, clock_question, default_router,
                      fast_path, frame_of, read_slots)
@@ -34,6 +34,9 @@ from . import checkpoint as checkpoints, extract as extraction
 _log = logging.getLogger("agentic_friend.chat")
 
 HISTORY = 200
+# Kip stating a total or comparison of his own: "over by 1k", "total 17k", "9k plus 3k equals 12k".
+_SUM_IN_HEAD = re.compile(r"\d[\d,.]*\s*k?\s*(?:\+|plus|minus|-|times|x|\*)\s*\d|\b(?:equals?|totals?|over by|under by|short by|"
+                          r"leaves?|left over)\b[^.]{0,25}\d")
 SPEAKER_STATE = "chat-speaker"
 # Past exchanges are recalled for what the person said. Kip's own old lines are left out:
 # shown them, the model repeats them word for word.
@@ -345,6 +348,11 @@ class ChatSession:
                 parts.append(f"This needs you to actually {names(usable)}; an errand starts for it. Say so in a few "
                              "words. Never write its result, output or page content yourself: the real one follows."
                              + (f" You won't {names(off)}: it was ruled out." if off else ""))
+        if intent.calculates and self.settings.digital_tools_enabled and not restrictions.forbids_tool("run_python"):
+            parts.append("This needs arithmetic over several numbers. Never add, compare or total them yourself and "
+                         "never state a result: put a Python calculation in task, written out with every number it "
+                         "uses (from this message and earlier ones), and say in a few words you're running it. "
+                         "The real result follows.")
         if (intent.live_fact if live is None else live) and not intent.changes_state_only:
             parts.append("This is live information (weather, a price, a score, news): a lookup starts now. Say so "
                          "in a few words, in character. Never state a figure yourself; the real one follows.")
@@ -617,9 +625,12 @@ class ChatSession:
     async def _act(self, action: ChatAction | None, user_turn: dict, reply_turn: dict, written: str = "") -> None:
         said, reply = user_turn["text"], reply_turn["text"]
         intent = self._intents.get(user_turn["id"]) or read_intent(said)
+        marker = self._work_marker()
         self._decide_errands(action, user_turn)
+        started = (self._work_marker() != marker or bool(self.manager.active()) or bool(self.pending_goals))
         # Claims are judged on what the model wrote, before it was tidied for speech.
-        self._check_claims(written or reply, intent, live=self._is_live(user_turn["id"], intent))
+        self._check_claims(written or reply, intent, live=self._is_live(user_turn["id"], intent),
+                           started=started, user_turn=user_turn)
         self._routes.pop(user_turn["id"], None)
         self._intents.pop(user_turn["id"], None)
         if self.store:
@@ -651,6 +662,11 @@ class ChatSession:
                                        importance=0.5, source="conversation", speaker=speaker)
         except Exception:
             _log.exception("Could not update the conversation summary")
+
+    def _work_marker(self) -> tuple:
+        """What is running, queued or on offer: it differs after a message only if the message set work in motion."""
+        return (len(self.manager.tasks), len(self.pending_goals),
+                self.offer.id if self.offer and self._offer_valid() else None)
 
     def _offer_valid(self) -> bool:
         offer = self.offer
@@ -1053,8 +1069,10 @@ class ChatSession:
                 self._add_turn("kip", f"Stopped: {goal}", source="narration")
             self._spawn(stop(active["id"]))
 
-    def _check_claims(self, reply: str, intent: Intent | None = None, live: bool = False) -> None:
-        """Kip must not claim runs or lookups his tool evidence does not support."""
+    def _check_claims(self, reply: str, intent: Intent | None = None, live: bool = False,
+                      started: bool = True, user_turn: dict | None = None) -> None:
+        """Kip must not claim runs or lookups his tool evidence does not support, nor promise one that
+        was never started, nor do a sum in his head that should have been run."""
         notes = []
         if intent is not None and (intent.live_fact or live) and _FIGURE.search(reply.casefold()):
             # A live figure before any lookup came back is a guess wearing a number.
@@ -1067,9 +1085,32 @@ class ChatSession:
         denied = denied_capabilities(reply, self.manager, self.settings)
         if denied:
             notes.append("I can " + " and ".join(denied) + " — that's working")
+        if not started and intent is not None and intent.calculates and _SUM_IN_HEAD.search(reply.casefold()):
+            notes.append("I worked that sum out in my head and nothing ran, so check it; ask me to run it in Python")
         if notes:
             _log.warning("Unsupported claims in reply: %s", notes)
             self._add_turn("kip", "Scratch that: " + "; ".join(notes) + ".", source="correction", claims=notes)
+        elif not started and user_turn is not None:
+            self._hold_promise(reply, user_turn)
+
+    def _hold_promise(self, reply: str, user_turn: dict) -> None:
+        """"I check flight prices" with no errand behind it: say so, and hold the lookup for a yes
+        instead of leaving the promise hanging or starting work nobody asked for."""
+        promise = unkept_promise(reply)
+        if not promise or self._closed or not self.settings.digital_tools_enabled:
+            return
+        clause, kind = promise
+        if kind == "lookup" and not self.manager.restrictions.forbids_tool("web_search"):
+            goal = f"{LOOKUP_PREFIX}{clause}. They said: {user_turn['text']}"
+            if task_identity(goal) not in self._declined:
+                self._make_offer(goal, user_turn, asked_for=False)
+                if self.offer and self.offer.goal == goal:
+                    self.offer.effects = sorted(READ_ONLY)  # a lookup only reads
+                    self._add_turn("kip", f"Scratch that: I haven't started that. Say yes and I {clause}.",
+                                   source="correction", claims=[f"promised: {clause}"])
+                    return
+        self._add_turn("kip", f"Scratch that: I haven't started that, so nothing is done. Ask me again and I {clause}.",
+                       source="correction", claims=[f"promised: {clause}"])
 
     async def _remember(self, action: ChatAction | None, user_turn: dict, reply: str, record: bool = True) -> None:
         said, speaker = user_turn["text"], user_turn.get("speaker")

@@ -105,6 +105,37 @@ def unsupported_execution(reply: str, manager) -> list[str]:
     return problems
 
 
+# Kip's grammar: "I check flight prices", "I'll look it up", "Let me search". Only verbs that mean going to
+# look something up or work something out; "I find it odd" and "I check my notes" are not promises.
+_PROMISE = re.compile(r"\b(?:i(?:'ll| will| shall)?|let me|i(?:'m| am) going to)\s+(?:now\s+|first\s+|quickly\s+|just\s+|go\s+)?"
+                      r"(?P<verb>check|search(?: for)?|look(?: it| that)? up|look into|verify|research|calculate|compute|"
+                      r"work out|run the numbers|find(?= out\b| options\b| places\b| prices\b| flights\b| hotels\b"
+                      r"| info\b| details\b))\b\s*(?P<what>[^.!?\n]{0,80})")
+_ASKING = re.compile(r"\b(?:want me to|should i|shall i|would you like me|do you want me|can i|may i|if you want|if you like)\b|\?")
+_NOT_A_LOOKUP = re.compile(r"^(?:my\b|myself\b|again\b|in\b|on\b|with\b|this\b|if\b|whether\b|you\b)")
+_CALCULATING = ("calculate", "compute", "work out", "run the numbers")
+
+
+def unkept_promise(reply: str) -> tuple[str, str] | None:
+    """(what Kip said he would do, "lookup" or "calculation") when his reply promises to check or work out
+    something. The caller knows whether anything was actually started."""
+    text = reply.replace("’", "'")
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
+        found = _PROMISE.search(sentence.casefold())
+        if not found or _ASKING.search(sentence.casefold()):
+            continue
+        what = found.group("what").strip(" ,;:-")
+        if _NOT_A_LOOKUP.match(what):
+            continue
+        if found.group("verb") in ("check", "verify") and not what:
+            continue  # "I check." alone says nothing
+        clause = f"{found.group('verb')} {what}".strip()
+        clause = re.sub(r"\s+(?:first|now|next|then|for you|again)$", "", clause)
+        kind = "calculation" if found.group("verb").startswith(_CALCULATING) else "lookup"
+        return clause, kind
+    return None
+
+
 _DENIES_WEB = re.compile(r"\b(?:i|kip)\s+(?:don'?t|do not|can'?t|cannot|am not able to|have no)\s+(?:\w+\s+){0,2}?"
                          r"(?:access(?: to)?|browse|use|reach|search|open|read|internet)\b[^.]{0,30}?"
                          r"\b(?:web|internet|online|websites?|webpages?|pages?|sites?|browse|browsing)\b"

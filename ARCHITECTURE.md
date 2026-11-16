@@ -53,7 +53,11 @@ backend/app/
 4. **Anything else gets one streamed chat reply.** The reply can end with a hidden `###` JSON line
    that starts an errand or makes an offer. What is worth remembering (or forgetting, after a
    correction) is decided after the reply, in its own short call (`chat/extract.py`): a cheap gate
-   skips messages that cannot hold a lasting fact. If the call fails, a plain "remember that..." is still
+   skips messages that cannot hold a lasting fact. Two checks keep Kip honest about work: a message that
+   asks for arithmetic over several numbers tells the model to put a Python calculation (with every
+   number) in `task` instead of adding in its head, and a reply that promises "I check…" with no errand
+   behind it is called out ("Scratch that: I haven't started that") and, for a lookup, held as a
+   read-only offer that waits for a yes. If the call fails, a plain "remember that..." is still
    kept as asked (no model needed); anything else from that message is not. Errand results
    are narrated from templates, with no extra model call.
 
