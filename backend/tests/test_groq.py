@@ -531,3 +531,55 @@ def test_grounding_checks_times_and_figures_against_the_quoted_page(answer, quot
     evidence = "L28: Time\nL29:\nL30: 7:00 am UTC starts\nL32: Seddon Park, Hamilton, 1 Nov 2026"
     from datetime import date
     assert (unsupported(answer, quote, evidence, local_offset=330, today=date(2026, 11, 1)) == []) is ok_
+
+
+# ── errands leave chat its headroom ─────────────────────────────────────────
+def low_bucket(client, model, remaining, limit=8000):
+    client.quota[model].observe(httpx.Headers({"x-ratelimit-limit-tokens": str(limit),
+                                               "x-ratelimit-remaining-tokens": str(remaining),
+                                               "x-ratelimit-reset-tokens": "30s"}), client.now())
+
+
+async def test_an_errand_call_leaves_chat_room_on_the_models_chat_also_uses():
+    """Live: a lookup's 4,000-token calls spent the shared per-minute quota and the next reply went to
+    the local model for 232 s."""
+    from app.llm.groq import HostedChat
+    client = await groq(lambda r: ok(), models="openai/gpt-oss-120b,qwen/qwen3.8-27b")
+    HostedChat(client, object(), ["qwen/qwen3.8-27b"])
+    try:
+        low_bucket(client, "qwen/qwen3.8-27b", 4000)    # room for a 1,100-token errand, not with 3,000 kept back
+        assert client.candidates(1100) == ["openai/gpt-oss-120b"]
+        assert client.free_soon(1100).get("qwen/qwen3.8-27b", 0) > 0     # it would have to wait for the refill
+        # Chat itself may use all of it.
+        chat = [{"role": "user", "content": "hello " * 300}]
+        assert client.chat_candidates(["qwen/qwen3.8-27b"], chat, 300) == ["qwen/qwen3.8-27b"]
+    finally:
+        await client.close()
+
+
+async def test_models_chat_does_not_use_are_not_held_back():
+    from app.llm.groq import HostedChat
+    client = await groq(lambda r: ok(), models="openai/gpt-oss-120b,qwen/qwen3.8-27b")
+    HostedChat(client, object(), ["qwen/qwen3.8-27b"])
+    try:
+        low_bucket(client, "openai/gpt-oss-120b", 1200)
+        assert "openai/gpt-oss-120b" in client.candidates(1100)
+    finally:
+        await client.close()
+
+
+async def test_the_reserve_can_be_turned_off():
+    from app.llm.groq import HostedChat
+    client = await groq(lambda r: ok(), models="qwen/qwen3.8-27b")
+    client.chat_reserve = 0
+    HostedChat(client, object(), ["qwen/qwen3.8-27b"])
+    try:
+        low_bucket(client, "qwen/qwen3.8-27b", 1200)
+        assert client.candidates(1100) == ["qwen/qwen3.8-27b"]
+    finally:
+        await client.close()
+
+
+def test_the_local_model_reads_a_small_history_by_default():
+    """A Pi reads about 8 tokens a second: 800 tokens of history was a 200-second first word."""
+    assert Settings().chat_history_tokens == 300

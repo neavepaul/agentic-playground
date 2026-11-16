@@ -152,7 +152,10 @@ when a correction retires a fact, and on any failure the chat simply keeps the o
 When Groq is the usual speaker, each reply is built twice: a roomier prompt for Groq
 (`CHAT_HOSTED_CONTEXT_TOKENS`, `CHAT_HOSTED_HISTORY_TOKENS`) and a small one for the local model,
 which a reply falls back to if Groq cannot answer; a message too big for the local window goes to
-Groq alone. Each reply's metrics say which prompt was read (`prompt_for`).
+Groq alone. Before falling back, a chat reply waits up to `GROQ_CHAT_WAIT_SECONDS` in all for a
+rate-limited Groq model (a Pi's first word from a 1,000-token prompt takes minutes), and errand calls
+leave `GROQ_CHAT_RESERVE_TOKENS` of the per-minute quota on the models chat shares free for it.
+Each reply's metrics say which prompt was read (`prompt_for`).
 
 - **Groq** (`llm/groq.py`) goes first while it has quota. Free-tier limits are per model, so a spent
   model is skipped until its reset. When every model frees within `GROQ_MAX_WAIT_SECONDS`, the call

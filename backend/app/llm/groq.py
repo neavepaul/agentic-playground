@@ -110,25 +110,37 @@ class GroqClient:
         self.settings = settings
         self.models = [model.strip() for model in settings.groq_models.split(",") if model.strip()]
         self.quota = {model: ModelQuota() for model in self.models}
+        # Models that chat also speaks on: an errand call leaves this many tokens of their per-minute
+        # quota free, so a long lookup cannot leave the next reply to the local model (set by HostedChat).
+        self.chat_models: tuple[str, ...] = ()
+        self.chat_reserve = settings.groq_chat_reserve_tokens
         self.now, self.sleep = now, sleep or asyncio.sleep
         self.last_metrics: dict = {}
         self.http = httpx.AsyncClient(
             base_url=settings.groq_base_url.rstrip("/") + "/", timeout=settings.groq_timeout_seconds,
             headers={"Authorization": f"Bearer {settings.groq_api_key.get_secret_value()}"})
 
+    def _errand_need(self, model: str, need_tokens: int) -> int:
+        """What an errand call needs free on this model: its own size, plus the room chat keeps."""
+        return need_tokens + (self.chat_reserve if model in self.chat_models else 0)
+
     def candidates(self, need_tokens: int, searching: bool = False) -> list[str]:
         now = self.now()
-        return [model for model in self.models if self.quota[model].available(need_tokens, now)
+        return [model for model in self.models if self.quota[model].available(self._errand_need(model, need_tokens), now)
                 and (not searching or model.startswith(SEARCH_MODELS))]
 
     def free_soon(self, need_tokens: int, searching: bool = False) -> dict[str, float]:
         return self._soon([model for model in self.models if not searching or model.startswith(SEARCH_MODELS)],
-                          need_tokens)
+                          need_tokens, reserve=True)
 
-    def _soon(self, models: list[str], need_tokens: int) -> dict[str, float]:
-        """Rate-limited models that can take this call within GROQ_MAX_WAIT_SECONDS, with their wait."""
-        now, limit = self.now(), self.settings.groq_max_wait_seconds
-        waits = {model: self.quota.setdefault(model, ModelQuota()).free_in(need_tokens, now) for model in models}
+    def _soon(self, models: list[str], need_tokens: int, limit: float | None = None,
+              reserve: bool = False) -> dict[str, float]:
+        """Rate-limited models that can take this call within `limit` seconds (GROQ_MAX_WAIT_SECONDS
+        unless given), with their wait. `reserve`: an errand call, which leaves chat its headroom."""
+        now = self.now()
+        limit = self.settings.groq_max_wait_seconds if limit is None else limit
+        waits = {model: self.quota.setdefault(model, ModelQuota()).free_in(
+            self._errand_need(model, need_tokens) if reserve else need_tokens, now) for model in models}
         return {model: wait for model, wait in waits.items() if 0 < wait <= limit}
 
     def has_capacity(self, messages: list[dict] | None = None) -> bool:
@@ -259,8 +271,11 @@ class GroqClient:
         now, need = self.now(), self._chat_need(messages, max_tokens)
         return [m for m in models if self.quota.setdefault(m, ModelQuota()).available(need, now)]
 
-    def chat_free_soon(self, models: list[str], messages: list[dict], max_tokens: int) -> dict[str, float]:
-        return self._soon(models, self._chat_need(messages, max_tokens))
+    def chat_free_soon(self, models: list[str], messages: list[dict], max_tokens: int,
+                       limit: float | None = None) -> dict[str, float]:
+        """Chat models free within `limit` seconds (default: the whole chat wait budget)."""
+        return self._soon(models, self._chat_need(messages, max_tokens),
+                          self.settings.groq_chat_wait_seconds if limit is None else limit)
 
     async def stream_chat(self, messages: list[dict], models: list[str], max_tokens: int,
                           temperature: float | None = None):
@@ -268,12 +283,17 @@ class GroqClient:
 
         A model that fails before any text arrives (no quota, an error) hands over to the
         next; once text has been spoken, a failure is raised, never papered over. When every
-        model is rate-limited for only seconds, the reply waits for one, once."""
+        model is rate-limited for only seconds, the reply waits for one, and again if it is limited
+        again, up to GROQ_CHAT_WAIT_SECONDS in all: the local model's first word takes minutes."""
         self.last_metrics = {}
-        queue, waited, retried, tried = self.chat_candidates(models, messages, max_tokens), False, set(), False
+        queue, retried, tried = self.chat_candidates(models, messages, max_tokens), set(), False
+        waited, rounds = 0.0, 0
         while True:
-            if not queue and not waited and (soon := self.chat_free_soon(models, messages, max_tokens)):
-                waited, wait = True, min(soon.values())
+            if not queue and rounds < 6 and (soon := self.chat_free_soon(
+                    models, messages, max_tokens, self.settings.groq_chat_wait_seconds - waited)):
+                rounds += 1
+                wait = min(soon.values())
+                waited += wait
                 _log.info("groq chat: every model rate-limited; waiting %.1fs for %s instead of the local model",
                           wait, min(soon, key=soon.get))
                 await self.sleep(wait)
@@ -440,6 +460,7 @@ class HostedChat:
 
     def __init__(self, hosted: GroqClient, local, models: list[str]) -> None:
         self.hosted, self.local, self.models = hosted, local, models
+        hosted.chat_models = tuple(models)   # errand calls keep headroom on these (GROQ_CHAT_RESERVE_TOKENS)
         self.last_metrics: dict = {}
 
     async def stream_text(self, messages: list[dict], max_tokens: int = 300, temperature: float | None = None,

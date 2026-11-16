@@ -257,3 +257,55 @@ async def test_a_lookup_asked_while_the_last_errand_is_still_saving_starts_when_
             break
     assert not session.pending_goals and manager.active()["goal"].startswith("Look up online")
     await done(session, manager)
+
+
+async def test_a_chat_reply_waits_again_when_limited_again_before_going_local():
+    """Live: chat waited 1.8 s, was limited again for 5 s, gave up and took 232 s on the local model."""
+    clock = Clock()
+    sleep, slept = sleeper(clock)
+    limits = ["6", "8"]   # popped from the end: 8 s first, then 6 s
+
+    def respond(request):
+        if limits:
+            return httpx.Response(429, headers={"retry-after": limits.pop()})
+        return httpx.Response(200, content=sse("Third ", "time."))
+
+    local = Local()
+    client, chat = await chat_with(respond, local, models="qwen/qwen3.8-27b", clock=clock, sleep=sleep)
+    try:
+        assert await said(chat) == "Third time." and slept == [8, 6] and local.calls == 0
+    finally:
+        await client.close()
+
+
+async def test_the_chat_wait_has_a_budget_after_which_the_local_model_answers():
+    clock = Clock()
+    sleep, slept = sleeper(clock)
+    limits = ["25", "25"]
+
+    def respond(request):
+        if limits:
+            return httpx.Response(429, headers={"retry-after": limits.pop()})
+        return httpx.Response(200, content=sse("Never ", "reached."))
+
+    local = Local()
+    client, chat = await chat_with(respond, local, models="qwen/qwen3.8-27b", clock=clock, sleep=sleep)
+    try:
+        # 25 s fits the 30 s budget; the next 25 s would not (5 s left): the local model, not 50 s of waiting.
+        assert await said(chat) == "Local words." and slept == [25] and local.calls == 1
+    finally:
+        await client.close()
+
+
+async def test_a_zero_chat_wait_goes_local_at_the_first_limit():
+    clock = Clock()
+    sleep, slept = sleeper(clock)
+    local = Local()
+    client = await groq(lambda r: httpx.Response(429, headers={"retry-after": "3"}), models="qwen/qwen3.8-27b",
+                        clock=clock, sleep=sleep)
+    client.settings = client.settings.model_copy(update={"groq_chat_wait_seconds": 0})
+    chat = HostedChat(client, local, ["qwen/qwen3.8-27b"])
+    try:
+        assert await said(chat) == "Local words." and slept == [] and local.calls == 1
+    finally:
+        await client.close()

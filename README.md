@@ -184,13 +184,15 @@ Copy `backend/.env.example` to `backend/.env`; environment variables override it
 | `GROQ_MODELS` | `openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b` | Preference order for planning and search; a model whose quota is spent is skipped until its reset |
 | `CHAT_HOSTED` / `GROQ_CHAT_MODELS` | `true` / `qwen/qwen3.8-27b,openai/gpt-oss-20b` | Conversation on Groq, streamed, falling back to the local model |
 | `GROQ_MAX_WAIT_SECONDS` | `20` | When every Groq model is rate-limited and one frees within this, wait for it instead of going local |
+| `GROQ_CHAT_WAIT_SECONDS` | `30` | A chat reply waits this long in all for Groq (again, if limited again) before the local model answers; the local first word takes minutes |
+| `GROQ_CHAT_RESERVE_TOKENS` | `3000` | Per-minute tokens an errand call leaves free on the models chat also uses, so a long lookup cannot push the next reply to the local model; `0` turns it off |
 | `GROQ_PLAN_CALLS` / `GROQ_RESEARCH_CALLS` | `2` / `4` | Caps on Groq calls per plan and per research task; past them the local model continues |
 | `GROQ_SEARCH_REASONING` | `low` | Effort for Groq's browser search; higher reads more pages and costs far more tokens |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama endpoint |
 | `OLLAMA_MODEL` | `qwen3.5:2b-q4_K_M` | The local model (4-bit; the plain tag is 8-bit and about half the speed on a Pi) |
 | `OLLAMA_KEEP_ALIVE` | `-1` | Keep the model loaded (`-1` always); reloading from microSD takes tens of seconds |
 | `LOCAL_CHAT_ERRANDS` | `false` | Whether a reply the local model writes may start an errand. Off: errands start only from your own words |
-| `CHAT_HISTORY_TOKENS` | `800` | Earlier conversation carried by each reply; less is faster on a Pi |
+| `CHAT_HISTORY_TOKENS` | `300` | Earlier conversation carried by each reply; less is faster on a Pi |
 | `CHAT_COMPACTION` | `true` | When a chat outgrows the history budget, fold its older turns into a short note (one background model call after a reply). The transcript is kept whole; `false` just drops older turns from the prompt |
 | `CHAT_CHECKPOINT_TOKENS` | `200` | Largest size of that note |
 | `CHAT_HOSTED_CONTEXT_TOKENS` | `8192` | The window a chat prompt may use when Groq answers (the local model keeps `CONTEXT_TOKENS`; a reply that falls back to it is rebuilt at that size) |

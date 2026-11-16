@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     # When every Groq model is rate-limited and one frees within this long, a task call waits
     # for it (once) instead of falling back to the local model, which can take minutes.
     groq_max_wait_seconds: float = Field(default=20, ge=0, le=120)
+    # A chat reply waits for Groq this long in all (repeatedly, if it is limited again) before the
+    # local model takes it: a Pi's first word from a 1,000-token prompt takes minutes.
+    groq_chat_wait_seconds: float = Field(default=30, ge=0, le=120)
+    # Per-minute tokens an errand call leaves free on the models chat also uses, so a long lookup
+    # (several 4,000-token calls) cannot leave the next reply to the local model. 0 turns it off.
+    groq_chat_reserve_tokens: int = Field(default=3000, ge=0, le=32000)
     groq_max_output_tokens: int = Field(default=4096, ge=256, le=32768)
     # Hard caps: Groq calls per goal plan, and per web-research task. Past a cap, or
     # whenever Groq cannot serve a call, the local model carries on.
@@ -89,7 +95,7 @@ class Settings(BaseSettings):
     local_chat_errands: bool = False
     # Earlier turns each reply carries: less is faster on a Pi, more remembers the thread better.
     # A long message itself is never refused for it.
-    chat_history_tokens: int = Field(default=800, ge=0, le=8192)
+    chat_history_tokens: int = Field(default=300, ge=0, le=8192)
     # When a long chat outgrows that, fold its older turns into a short note (one background model
     # call, never blocking a reply) that rides in each prompt. false: older turns are only dropped.
     chat_compaction: bool = True
