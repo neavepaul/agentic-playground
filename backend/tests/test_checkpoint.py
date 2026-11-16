@@ -228,3 +228,33 @@ def reopened(session, store):
     from app.chat import ChatSession
     return ChatSession(session.client, session.bus, session.manager, Settings(), store=store,
                        persona=session.persona, session_id=session.session_id)
+
+
+# ── a summary that overshoots is trimmed, not thrown away ───────────────────
+LONG = ("They are planning a four day trip to Goa with Rohan and Meera in the second week of December. "
+        "They chose Agonda over Palolem because Meera dislikes crowds. "
+        "They fly from Pune on the 10th and return on the evening of the 13th. "
+        "Budget is forty thousand each, with Rohan capped at eleven thousand for stay and activities. "
+        "Day three is yoga in the morning and a spice plantation in the afternoon.")
+
+
+@pytest.mark.asyncio
+async def test_a_summary_over_the_cap_keeps_its_whole_sentences_that_fit():
+    status, note = await cp.compact(Scripted(LONG), turns(10), None, 800, 80)
+    assert status == "completed" and note.text.startswith("They are planning a four day trip")
+    assert cp.estimate_tokens(note.text) <= 80 and note.text.endswith(".") and note.text != LONG
+
+
+@pytest.mark.asyncio
+async def test_a_cut_off_summary_keeps_the_sentences_it_finished():
+    client = Scripted(LONG[:LONG.index("Budget") + 20])
+    client.last_metrics = {"truncated": True}
+    status, note = await cp.compact(client, turns(10), None, 800, 200)
+    assert status == "completed" and note.text.endswith("on the evening of the 13th.")
+    assert "Budget" not in note.text
+
+
+def test_the_summary_is_asked_for_fewer_words_than_the_cap_can_hold():
+    asked = cp.summary_messages(turns(6), None, 200)[0]["content"]
+    words = int(asked.split("at most ")[1].split(" words")[0])
+    assert words * 8 // 5 <= 200   # five words are about eight of the estimator's tokens

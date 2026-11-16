@@ -17,6 +17,7 @@ Rules this module keeps:
 import asyncio
 import json
 import logging
+import re
 from dataclasses import asdict, dataclass
 from datetime import datetime
 
@@ -121,10 +122,32 @@ def plan_fold(turns: list[dict], checkpoint: Checkpoint | None, budget: int,
 
 
 def summary_messages(fold: list[dict], previous: Checkpoint | None, cap_tokens: int) -> list[dict]:
-    words = max(30, cap_tokens * 3 // 4)
+    # The cap is in the estimator's tokens (a third of a byte each, so about 3 characters): about 5 words per 8
+    # tokens would sit at the limit, so ask for fewer and let compact() trim the rest.
+    words = max(20, cap_tokens * 2 // 5)
     body = "Earlier note:\n" + (previous.text if previous else "(none)") + "\n\nNew messages:\n" + \
         "\n".join(_line(t) for t in fold)
     return [{"role": "system", "content": SYSTEM.format(words=words)}, {"role": "user", "content": body}]
+
+
+MIN_TRIMMED_TOKENS = 15   # a trimmed note shorter than this says too little to be worth carrying
+
+
+def _fit(text: str, cap: int, counter: TokenCounter, cut_off: bool) -> str:
+    """The note itself when it is complete and fits; otherwise its longest run of whole sentences that
+    fits (a model rarely lands exactly on the size it was asked for); "" when nothing usable is left."""
+    if text and not cut_off and counter(text) <= cap:
+        return text
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    if cut_off and not re.search(r"[.!?][\"')\]]*$", text):
+        sentences = sentences[:-1]   # the last one was cut off mid-way
+    kept = ""
+    for sentence in sentences:
+        trial = f"{kept} {sentence}".strip()
+        if counter(trial) > cap:
+            break
+        kept = trial
+    return kept if counter(kept) >= MIN_TRIMMED_TOKENS else ""
 
 
 async def _write(client, messages: list[dict], max_tokens: int) -> tuple[str, bool]:
@@ -151,8 +174,12 @@ async def compact(client, turns: list[dict], previous: Checkpoint | None, budget
         _log.warning("Checkpoint not written (%s); keeping the previous one.", type(exc).__name__)
         return "failed", None
     text = text.split("###", 1)[0].strip()
-    if truncated or not text or counter(text) > cap_tokens:
+    fitted = _fit(text, cap_tokens, counter, truncated)
+    if not fitted:
         _log.warning("Checkpoint rejected (%s); keeping the previous one.",
-                     "cut off" if truncated else "empty" if not text else "too long")
+                     "empty" if not text else "cut off" if truncated else "too long")
         return "failed", None
+    if fitted != text:
+        _log.info("Checkpoint trimmed to whole sentences within %d tokens.", cap_tokens)
+    text = fitted
     return "completed", Checkpoint(text, fold[-1]["at"], (previous.turns if previous else 0) + len(fold))
