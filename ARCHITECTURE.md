@@ -142,7 +142,10 @@ There is one compact chat prompt (`CHAT_SYSTEM` in `chat/prompt.py`) for both Gr
 model, so they behave alike. Its fixed system part (identity, voice, rules) comes first, so Ollama
 reuses it between replies. Each message adds the mood and stance, up to four memories (core facts about
 the person first), a one-line status (with the real date and time), recent history up to
-`CHAT_HISTORY_TOKENS`, and the message.
+`CHAT_HISTORY_TOKENS`, and the message. Once a long chat outgrows that budget, a background call folds
+its older turns into a short checkpoint note (`chat/checkpoint.py`) that rides in the prompt with the
+latest exchange kept word for word. The note is written after a reply, never blocks one, is dropped
+when a correction retires a fact, and on any failure the chat simply keeps the older history selection.
 
 - **Groq** (`llm/groq.py`) goes first while it has quota. Free-tier limits are per model, so a spent
   model is skipped until its reset. When every model frees within `GROQ_MAX_WAIT_SECONDS`, the call

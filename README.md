@@ -191,6 +191,8 @@ Copy `backend/.env.example` to `backend/.env`; environment variables override it
 | `OLLAMA_KEEP_ALIVE` | `-1` | Keep the model loaded (`-1` always); reloading from microSD takes tens of seconds |
 | `LOCAL_CHAT_ERRANDS` | `false` | Whether a reply the local model writes may start an errand. Off: errands start only from your own words |
 | `CHAT_HISTORY_TOKENS` | `800` | Earlier conversation carried by each reply; less is faster on a Pi |
+| `CHAT_COMPACTION` | `true` | When a chat outgrows the history budget, fold its older turns into a short note (one background model call after a reply). The transcript is kept whole; `false` just drops older turns from the prompt |
+| `CHAT_CHECKPOINT_TOKENS` | `200` | Largest size of that note |
 | `CHAT_MAX_TOKENS` / `CHAT_TEMPERATURE` | `300` / `0.6` | Length and variety of a chat reply |
 | `CONTEXT_TOKENS` / `TEMPERATURE` | `4096` / `0.1` | Ollama context size; temperature for structured task calls |
 | `LLM_TIMEOUT_SECONDS` / `TASK_TIMEOUT_SECONDS` | `600` / `1800` | Per model request; per whole task |

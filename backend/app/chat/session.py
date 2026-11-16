@@ -28,7 +28,8 @@ from app.agents.schemas import GoalCondition, GoalPlan, InitialCapability, Looku
 from app.capabilities.feeds import FEEDS, is_portfolio
 from .prompt import ChatAction, TrailerSplitter, build_messages
 from .spoken import spoken
-from .context import ContextBudgetError, message_tokens
+from .context import ContextBudgetError, estimate_tokens, message_tokens
+from . import checkpoint as checkpoints
 
 _log = logging.getLogger("agentic_friend.chat")
 
@@ -90,6 +91,12 @@ class ChatSession:
         self.generation = 0
         if self.store:
             self.turns.extend(self.store.conversation_turns(self.session_id, HISTORY))
+        # A note standing in for the older turns of a long chat (checkpoint.py), kept across restarts.
+        self.checkpoint = (checkpoints.load(self.store.get_state(checkpoints.state_key(self.session_id)))
+                           if self.store else None)
+        self.compaction = "not_needed"   # not_needed | completed | failed: the last attempt
+        self._checkpoint_epoch = 0       # bumped when the note is dropped, so a slower write never revives it
+        self._compact_after = 0          # user turn before which a failed attempt is not repeated
         self._announced: set[tuple[str, ...]] = set()
         self.offer: Offer | None = None
         self.offer_log: deque[dict] = deque(maxlen=20)
@@ -444,9 +451,11 @@ class ChatSession:
                 checked = self._evidence_guidance(user_turn)
                 if checked:
                     guidance = (guidance + " " + checked).strip()
+                note = self.checkpoint
                 messages = build_messages(self.name, voice, prompt_memories(memories),
-                                          self._status(user_turn.get("speaker")), earlier, user_turn["text"],
-                                          guidance=guidance,
+                                          self._status(user_turn.get("speaker")),
+                                          checkpoints.after(earlier, note), user_turn["text"],
+                                          guidance=guidance, checkpoint=note.text if note else "",
                                           context_tokens=self.settings.context_tokens - self.settings.chat_max_tokens,
                                           history_tokens=self.settings.chat_history_tokens)
                 splitter = TrailerSplitter()
@@ -478,6 +487,10 @@ class ChatSession:
                 metrics["token_estimator"] = "utf8_bytes_div3_estimate"  # a label, not a secret  # nosec B105
                 metrics["queue_seconds"] = round(queue_seconds, 3)
                 metrics["chat_model_calls"] = 1
+                # Whether older turns are carried as a note, and how the last attempt to write one went.
+                metrics["checkpoint_tokens"] = estimate_tokens(note.text) if note else 0
+                metrics["checkpoint_turns"] = note.turns if note else 0
+                metrics["compaction"] = self.compaction
                 # Where the prompt's size goes: a long prompt is what makes a local model slow to start.
                 metrics["prompt_chars"] = {"system": len(messages[0]["content"]),
                                            "history": sum(len(m["content"]) for m in messages[1:-1]),
@@ -527,6 +540,8 @@ class ChatSession:
             finished = True
         finally:
             self.replying = False
+            if finished and not self._closed and self.settings.chat_compaction and self.store:
+                self._spawn(self._compact())
             self._offer_seen.pop(user_turn["id"], None)
             self._turn_epochs.pop(user_turn["id"], None)
             if self.gate is not None:
@@ -1021,6 +1036,7 @@ class ChatSession:
         # Corrections retire the wrong memory (kept as history), never the fix itself.
         for wrong in (action.forget if action else []):
             if wrong.strip():
+                self._drop_checkpoint()  # the old note may repeat what was just corrected; it is rewritten
                 try:
                     who = {"viewer": self._speaker, "legacy": self.owner} if self.person else {}
                     retired = await self.store.supersede(wrong, by=added[0] if added else None,
@@ -1037,6 +1053,38 @@ class ChatSession:
                                        importance=0.5, source="conversation", speaker=speaker)
         except Exception:
             _log.exception("Could not save conversation")
+
+    # ── checkpoint (older turns folded into a note) ─────────────────────────
+    def _drop_checkpoint(self) -> None:
+        """Forget the note. The turns it covered are folded again, correction included, on the next
+        attempt; until then the usual history selection applies."""
+        if self.checkpoint is None:
+            return
+        self.checkpoint = None
+        self._checkpoint_epoch += 1
+        if self.store:
+            self.store.set_state({checkpoints.state_key(self.session_id): ""})
+
+    async def _compact(self) -> None:
+        """After a reply: fold older turns into the note once they outgrow the history budget.
+        Background and best effort: a reply never waits for it, and a failure changes nothing."""
+        if (self._user_turns < self._compact_after or self.replying or self._closed
+                or (self.shares_task_model and self.manager.active_id is not None)):
+            return  # a busy local model is left to the reply or errand that needs it; tried again later
+        epoch, previous = self._checkpoint_epoch, self.checkpoint
+        status, found = await checkpoints.compact(self.client, list(self.turns), previous,
+                                                  self.settings.chat_history_tokens,
+                                                  self.settings.chat_checkpoint_tokens)
+        if epoch != self._checkpoint_epoch or self._closed:
+            return  # the note was dropped (a correction) or the chat reset while this was being written
+        self.compaction = status
+        if status == "failed":
+            self._compact_after = self._user_turns + 3
+        if found is not None:
+            self.checkpoint = found
+            if self.store:
+                self.store.set_state({checkpoints.state_key(self.session_id): found.dump()})
+            _log.info("chat_checkpoint covered_turns=%d tokens=%d", found.turns, estimate_tokens(found.text))
 
     def _session_summary(self) -> str:
         """A deterministic episode of this conversation, so it can be recalled after a restart."""

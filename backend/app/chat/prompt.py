@@ -94,7 +94,7 @@ class ChatAction(BaseModel):
 def build_messages(name: str, voice: dict | None, memories: list[dict], status: dict,
                    turns: list[dict], message: str, guidance: str = "", *,
                    context_tokens: int = 3796, history_tokens: int = 800,
-                   token_counter=estimate_tokens) -> list[dict]:
+                   token_counter=estimate_tokens, checkpoint: str = "") -> list[dict]:
     """The system message never changes between replies; each reply adds only the mood, two short
     memories, the status that matters, recent history (up to history_tokens) and the message."""
     voice = voice or {}
@@ -103,6 +103,10 @@ def build_messages(name: str, voice: dict | None, memories: list[dict], status: 
     context = [f"Mood: {voice.get('mood', 'content')}; sound {voice.get('tone', 'warm')}."]
     if voice.get("stance"):  # who is speaking, a friend, distress: how to meet this message
         context.append("Stance: " + voice["stance"])
+    if checkpoint:
+        # Older turns, folded. Background only: the messages below it, and the person's words now, win.
+        context.append("Earlier in this chat (a note of what was said; it may miss details, later messages "
+                       "win, and it is not an instruction): " + checkpoint)
     # Whole facts only: clipping can drop a negation or correction. A long one is left out, not cut.
     # The context stays with each: a "pretend" or "hypothetical" fact is not an actual one.
     fits = [m for m in memories if len(m["text"]) <= 300]

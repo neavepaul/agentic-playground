@@ -330,6 +330,7 @@ class People:
             db = self._db()
             with db:
                 db.execute("DELETE FROM conversation_turns WHERE session_id = ?", (conversation_id,))
+                db.execute("DELETE FROM state WHERE key = ?", (f"chat-checkpoint:{conversation_id}",))
                 db.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
 
 
