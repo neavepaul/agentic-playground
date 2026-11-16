@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Open Kip in Chromium on the Pi's own screen once the kip service answers.
 #   kip-open.sh           an app window (the desktop icon and menu entry)
-#   kip-open.sh --kiosk   full screen with no browser bars (login autostart); Alt+F4 closes it
+#   kip-open.sh --start   the same window, maximized (at login); minimize or close it as usual
+#   kip-open.sh --kiosk   full screen with no browser bars or window buttons; Alt+F4 closes it
 # Kip windows use their own Chromium profile, so they open as Kip even while a normal Chromium is running.
 set -u
 
@@ -15,7 +16,8 @@ for _ in $(seq 120); do
 done
 
 flags=(--user-data-dir="$PROFILE" --no-first-run --noerrdialogs --password-store=basic)
-if [ "${1:-}" = "--kiosk" ]; then
-  exec chromium "${flags[@]}" --kiosk --disable-infobars --disable-session-crashed-bubble "$URL"
-fi
+case "${1:-}" in
+  --kiosk) exec chromium "${flags[@]}" --kiosk --disable-infobars --disable-session-crashed-bubble "$URL" ;;
+  --start) exec chromium "${flags[@]}" --start-maximized --app="$URL" ;;
+esac
 exec chromium "${flags[@]}" --app="$URL"

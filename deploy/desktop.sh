@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Put Kip on the Pi's desktop: a desktop icon, a menu entry (Internet > Kip) and, by default,
-# kiosk mode (Kip opens full screen when the desktop logs in). Run after deploy/install.sh,
-# as your normal user:
-#   bash deploy/desktop.sh             icon, menu entry and kiosk
-#   bash deploy/desktop.sh --no-kiosk  icon and menu entry only (turns kiosk off if it was on)
+# Put Kip on the Pi's desktop: a desktop icon, a menu entry (Internet > Kip) and, by default, Kip
+# opening in a maximized window when the desktop logs in (minimize or close it like any window).
+# Run after deploy/install.sh, as your normal user:
+#   bash deploy/desktop.sh                 icon, menu entry, and Kip in a window at login
+#   bash deploy/desktop.sh --kiosk         Kip full screen at login instead, with no window buttons
+#                                          (Alt+F4 closes it): for a Pi that only ever shows Kip
+#   bash deploy/desktop.sh --no-autostart  icon and menu entry only (--no-kiosk does the same)
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -43,12 +45,18 @@ if gio set "$DESKTOP/kip.desktop" metadata::trust true 2>/dev/null; then
 fi
 echo "Added Kip to the desktop and to the menu (Internet > Kip)."
 
-if [ "${1:-}" = "--no-kiosk" ]; then
-  rm -f "$AUTOSTART/kip-kiosk.desktop"
-  echo "Kiosk mode is off."
-else
-  mkdir -p "$AUTOSTART"
-  entry "$AUTOSTART/kip-kiosk.desktop" "--kiosk"
-  echo "Kiosk mode is on: Kip opens full screen after the desktop logs in. Alt+F4 closes it."
-  echo "Turn it off with: bash deploy/desktop.sh --no-kiosk"
-fi
+case "${1:-}" in
+  --no-autostart|--no-kiosk)
+    rm -f "$AUTOSTART/kip-kiosk.desktop"
+    echo "Kip no longer opens at login; the icon still opens it." ;;
+  --kiosk)
+    mkdir -p "$AUTOSTART"
+    entry "$AUTOSTART/kip-kiosk.desktop" "--kiosk"
+    echo "Kiosk mode is on: Kip opens full screen after the desktop logs in, with no window buttons."
+    echo "Alt+F4 closes it. Back to a window with: bash deploy/desktop.sh" ;;
+  *)
+    mkdir -p "$AUTOSTART"
+    entry "$AUTOSTART/kip-kiosk.desktop" "--start"
+    echo "Kip opens in a maximized window after the desktop logs in: minimize or close it like any window."
+    echo "Not at login: bash deploy/desktop.sh --no-autostart" ;;
+esac

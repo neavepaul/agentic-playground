@@ -63,10 +63,13 @@ becomes the owner's "Earlier chats".
 bash agentic-playground/deploy/desktop.sh
 ```
 
-It adds a Kip icon to the desktop and to the menu (Internet > Kip), and turns on kiosk mode:
-after the desktop logs in, Kip opens full screen with no browser bars. It waits for the service
-to answer first. Alt+F4 closes the kiosk, and the icon brings Kip back as a window. Turn kiosk
-mode off with `bash agentic-playground/deploy/desktop.sh --no-kiosk`.
+It adds a Kip icon to the desktop and to the menu (Internet > Kip), and opens Kip in a
+maximized window after the desktop logs in (once the service answers). Minimize or close it like
+any window; the icon brings it back. Options:
+
+- `--kiosk`: full screen at login instead, with no browser bars or window buttons, for a Pi that
+  only ever shows Kip. Alt+F4 closes it.
+- `--no-autostart`: don't open Kip at login; the icon still does.
 
 **Bringing Kip's memories.** Everything Kip remembers is in `backend/memory/kip.db`. Stop Kip on
 both machines, copy it across, then start Kip on the Pi:
