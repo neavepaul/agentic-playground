@@ -627,6 +627,9 @@ class ChatSession:
         intent = self._intents.get(user_turn["id"]) or read_intent(said)
         marker = self._work_marker()
         self._decide_errands(action, user_turn)
+        if (intent.calculates and self._work_marker() == marker and not self.manager.active()
+                and not self.pending_goals):
+            self._start_calculation(user_turn)   # they asked for arithmetic and the model proposed no run
         started = (self._work_marker() != marker or bool(self.manager.active()) or bool(self.pending_goals))
         # Claims are judged on what the model wrote, before it was tidied for speech.
         self._check_claims(written or reply, intent, live=self._is_live(user_turn["id"], intent),
@@ -662,6 +665,18 @@ class ChatSession:
                                        importance=0.5, source="conversation", speaker=speaker)
         except Exception:
             _log.exception("Could not update the conversation summary")
+
+    def _start_calculation(self, user_turn: dict) -> None:
+        """Someone asked for arithmetic and the reply started nothing: run it in Python, with the numbers
+        they gave earlier in the chat, rather than trust a sum done in the model's head."""
+        if not self.settings.digital_tools_enabled or self.manager.restrictions.forbids_tool("run_python"):
+            return
+        earlier = [t["text"] for t in self.turns if t["role"] == "user" and t["id"] != user_turn["id"]
+                   and not t.get("private")][-6:]
+        goal = (f"Calculate with Python and answer plainly: {user_turn['text']} Numbers and facts from earlier in "
+                f"this chat: " + " | ".join(_clip(text, 220) for text in earlier))
+        _log.info("Arithmetic asked for and none proposed: starting a calculation")
+        self._start_or_queue(goal, user_turn["id"], Grant.read_only(user_turn["text"]))
 
     def _work_marker(self) -> tuple:
         """What is running, queued or on offer: it differs after a message only if the message set work in motion."""
@@ -1085,8 +1100,9 @@ class ChatSession:
         denied = denied_capabilities(reply, self.manager, self.settings)
         if denied:
             notes.append("I can " + " and ".join(denied) + " — that's working")
-        if not started and intent is not None and intent.calculates and _SUM_IN_HEAD.search(reply.casefold()):
-            notes.append("I worked that sum out in my head and nothing ran, so check it; ask me to run it in Python")
+        if intent is not None and intent.calculates and _SUM_IN_HEAD.search(reply.casefold()):
+            notes.append("that sum was my own guess; the real one is running now" if started else
+                         "I worked that sum out in my head and nothing ran, so check it; ask me to run it in Python")
         if notes:
             _log.warning("Unsupported claims in reply: %s", notes)
             self._add_turn("kip", "Scratch that: " + "; ".join(notes) + ".", source="correction", claims=notes)

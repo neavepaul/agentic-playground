@@ -55,7 +55,8 @@ backend/app/
    correction) is decided after the reply, in its own short call (`chat/extract.py`): a cheap gate
    skips messages that cannot hold a lasting fact. Two checks keep Kip honest about work: a message that
    asks for arithmetic over several numbers tells the model to put a Python calculation (with every
-   number) in `task` instead of adding in its head, and a reply that promises "I check…" with no errand
+   number) in `task` instead of adding in its head (if the model proposes none, code starts the calculation itself,
+   with the numbers from earlier in the chat), and a reply that promises "I check…" with no errand
    behind it is called out ("Scratch that: I haven't started that") and, for a lookup, held as a
    read-only offer that waits for a yes. If the call fails, a plain "remember that..." is still
    kept as asked (no model needed); anything else from that message is not. Errand results

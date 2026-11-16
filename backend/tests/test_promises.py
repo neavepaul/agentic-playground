@@ -17,6 +17,9 @@ from tests.test_chat import make_session, reply
     ("Let me search for quiet beaches near Agonda.", ("search for quiet beaches near agonda", "lookup")),
     ("I will calculate the total now.", ("calculate the total", "calculation")),
     ("I find places.", ("find places", "lookup")),
+    ("Need to check totals. Running calculation.", ("run calculation", "calculation")),
+    ("Checking the totals now.", ("check the totals", "calculation")),
+    ("Searching now.", ("search", "lookup")),
 ])
 def test_a_promise_to_look_something_up_is_found(text, expected):
     assert unkept_promise(text) == expected
@@ -25,7 +28,7 @@ def test_a_promise_to_look_something_up_is_found(text, expected):
 @pytest.mark.parametrize("text", [
     "I check my notes. Plan set.", "I can search web for that. Want me to?", "I search web for quiet beaches, question?",
     "I find Palolem too loud.", "I check with you first.", "Nice to meet you, Claude.", "I checked it yesterday.",
-    "I don't check prices.", "Should I check the price?", ""])
+    "I don't check prices.", "Should I check the price?", "Running late today.", ""])
 def test_things_that_are_not_promises_are_left_alone(text):
     assert unkept_promise(text) is None
 
@@ -115,11 +118,44 @@ async def test_a_proposed_calculation_runs_and_nothing_is_called_out():
 
 
 @pytest.mark.asyncio
-async def test_a_sum_done_in_the_head_is_called_out():
+async def test_a_sum_done_in_the_head_is_flagged_while_the_real_one_runs():
     session, model, manager, _ = make_session([reply("Rohan: 9k plus 3k equals 12k. Over by 1k. Fine.")])
     session.submit("Can you sanity check whether Rohan is inside eleven thousand for stay and scuba?")
     await session.drain()
-    assert any("worked that sum out in my head" in c for c in corrections(session)) and not manager.tasks
+    assert any("my own guess; the real one is running now" in c for c in corrections(session))
+    assert len(manager.tasks) == 1
+
+
+@pytest.mark.asyncio
+async def test_with_python_ruled_out_a_sum_in_the_head_is_called_out_as_unchecked():
+    session, model, manager, _ = make_session([reply("Rohan: 9k plus 3k equals 12k. Over by 1k. Fine.")])
+    session.manager.restrictions.update("Please don't use Python.")
+    session.submit("Can you sanity check whether Rohan is inside eleven thousand for stay and scuba?")
+    await session.drain()
+    assert any("worked that sum out in my head and nothing ran" in c for c in corrections(session))
+    assert not manager.tasks
+
+
+@pytest.mark.asyncio
+async def test_an_arithmetic_request_the_model_ignored_still_runs_with_the_numbers_from_the_chat():
+    """Live: "Need to check totals. Running calculation." and nothing ran."""
+    session, model, manager, _ = make_session([reply("Noted."), reply("Need to check totals. Running calculation.")])
+    session.submit("Rohan's stay is nine thousand and scuba is three thousand rupees.")
+    await session.drain()
+    session.submit("Can you sanity check whether Rohan is inside eleven thousand?")
+    await session.drain()
+    goals = [t.goal for t in manager.tasks.values()]
+    assert len(goals) == 1 and goals[0].startswith("Calculate with Python and answer plainly:")
+    assert "nine thousand" in goals[0] and "inside eleven thousand" in goals[0]
+    assert corrections(session) == []        # the promise was kept, so nothing to scratch
+
+
+@pytest.mark.asyncio
+async def test_a_statement_with_numbers_starts_no_calculation():
+    session, model, manager, _ = make_session([reply("Noted. Tight but doable.")])
+    session.submit("Our budget is around forty thousand rupees per person in total including flights.")
+    await session.drain()
+    assert not manager.tasks and corrections(session) == []
 
 
 @pytest.mark.asyncio

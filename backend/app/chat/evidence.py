@@ -111,9 +111,17 @@ _PROMISE = re.compile(r"\b(?:i(?:'ll| will| shall)?|let me|i(?:'m| am) going to)
                       r"(?P<verb>check|search(?: for)?|look(?: it| that)? up|look into|verify|research|calculate|compute|"
                       r"work out|run the numbers|find(?= out\b| options\b| places\b| prices\b| flights\b| hotels\b"
                       r"| info\b| details\b))\b\s*(?P<what>[^.!?\n]{0,80})")
+# Kip's progressive phrasing, with no "I": "Running calculation.", "Checking the totals.", "Searching now."
+_PROGRESSIVE = re.compile(r"^\W*(?P<verb>running (?:the |a )?(?:calculation|numbers|sum|math|check)|checking (?:the )?"
+                          r"(?:totals?|numbers|prices|flights|options|sum)|calculating|computing|searching|looking (?:it )?up)"
+                          r"\b\s*(?P<what>[^.!?\n]{0,80})")
 _ASKING = re.compile(r"\b(?:want me to|should i|shall i|would you like me|do you want me|can i|may i|if you want|if you like)\b|\?")
 _NOT_A_LOOKUP = re.compile(r"^(?:my\b|myself\b|again\b|in\b|on\b|with\b|this\b|if\b|whether\b|you\b)")
-_CALCULATING = ("calculate", "compute", "work out", "run the numbers")
+_BASE_VERB = {"running": "run", "checking": "check", "searching": "search", "calculating": "calculate",
+              "computing": "compute", "looking": "look"}
+_CALCULATING = ("calculate", "compute", "work out", "run the numbers", "running", "calculating", "computing",
+                "checking the total", "checking total", "checking the sum", "checking sum", "checking the numbers",
+                "checking numbers")
 
 
 def unkept_promise(reply: str) -> tuple[str, str] | None:
@@ -121,7 +129,7 @@ def unkept_promise(reply: str) -> tuple[str, str] | None:
     something. The caller knows whether anything was actually started."""
     text = reply.replace("’", "'")
     for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
-        found = _PROMISE.search(sentence.casefold())
+        found = _PROMISE.search(sentence.casefold()) or _PROGRESSIVE.match(sentence.casefold())
         if not found or _ASKING.search(sentence.casefold()):
             continue
         what = found.group("what").strip(" ,;:-")
@@ -129,7 +137,9 @@ def unkept_promise(reply: str) -> tuple[str, str] | None:
             continue
         if found.group("verb") in ("check", "verify") and not what:
             continue  # "I check." alone says nothing
-        clause = f"{found.group('verb')} {what}".strip()
+        verb = re.sub(r"^(running|checking|searching|calculating|computing|looking)\b",
+                      lambda m: _BASE_VERB[m.group(1)], found.group("verb"))
+        clause = f"{verb} {what}".strip()
         clause = re.sub(r"\s+(?:first|now|next|then|for you|again)$", "", clause)
         kind = "calculation" if found.group("verb").startswith(_CALCULATING) else "lookup"
         return clause, kind
