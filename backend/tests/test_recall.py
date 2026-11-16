@@ -183,3 +183,45 @@ async def test_backfill_indexes_memories_saved_without_embeddings(tmp_path):
     assert await store.backfill() == 0
     assert (await store.recall("is he sleepy", k=1))[0]["score"] >= 0.45
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_two_people_saving_the_same_words_keep_separate_memories(store):
+    text = "Likes tea in the morning"
+    a = await store.add("preference", text, [], meta={"speaker": "neave"})
+    b = await store.add("preference", text, [], meta={"speaker": "paul"})
+    assert a != b
+    assert [m["id"] for m in await store.recall("tea", viewer="neave")] == [a]
+    assert [m["id"] for m in await store.recall("tea", viewer="paul")] == [b]
+    # The same person saying it again still reinforces, not copies.
+    assert await store.add("preference", text, [], meta={"speaker": "paul"}) == b
+
+
+@pytest.mark.asyncio
+async def test_a_reworded_repeat_merges_only_within_one_person(store):
+    a = await store.add("preference", "Neave likes tea", ["neave"], meta={"speaker": "neave"})
+    assert await store.add("preference", "Neave likes tea!", ["neave"], meta={"speaker": "paul"}) != a
+
+
+@pytest.mark.asyncio
+async def test_a_correction_never_retires_another_persons_memory(store):
+    theirs = await store.add("fact", "Neave is allergic to peanuts", ["neave"], meta={"speaker": "paul"})
+    assert await store.supersede("Neave is allergic to peanuts", viewer="neave") is None
+    assert [m["id"] for m in await store.recall("peanuts", viewer="paul")] == [theirs]
+    mine = await store.add("fact", "Neave is allergic to peanuts", ["neave"], meta={"speaker": "neave"})
+    assert (await store.supersede("Neave is allergic to peanuts", viewer="neave"))["id"] == mine
+    assert [m["id"] for m in await store.recall("peanuts", viewer="paul")] == [theirs]
+
+
+@pytest.mark.asyncio
+async def test_a_task_recalls_only_its_own_persons_memories(store):
+    await store.add("fact", "Q: Where is the charger cable? → A: In the office.", [], meta={"speaker": "paul"})
+    manager = TaskManager(WaitingLLM(), EventBus(), Settings(), memory_store=store)
+    context = manager.start("Where is the charger again", speaker="neave")
+    await asyncio.sleep(0.05)
+    assert "relevant_memories" not in context.long_term_memory
+    await manager.cancel(context.id)
+    mine = manager.start("Where is the charger again", speaker="paul")
+    await asyncio.sleep(0.05)
+    assert "In the office" in mine.long_term_memory["relevant_memories"]["items"][0]["text"]
+    await manager.cancel(mine.id)

@@ -32,6 +32,7 @@ DUPLICATE_OVERLAP = 0.7
 # A memory with no context label was stated as real. SQL built with f-strings here interpolates only
 # constants like this one and runs of ? placeholders; every value is bound (each such line carries a nosec B608 comment).
 _CONTEXT_SQL ="COALESCE(json_extract(meta, '$.context'), 'actual')"
+_SPEAKER_SQL = "COALESCE(NULLIF(json_extract(meta, '$.speaker'), ''), 'unknown')"
 # High on purpose: "Neave is allergic to peanuts" vs "Paul is allergic to peanuts" share
 # 4 of 6 words, and a correction must never delete the corrected fact.
 FORGET_OVERLAP = 0.8
@@ -234,23 +235,31 @@ class MemoryStore:
         # Only memories in the same frame merge: something said in pretend play and the
         # same words said for real are two memories, each keeping its own context.
         context = meta.get("context") or "actual"
+        # Whose memory this is: two people saying the same words keep two rows, so each
+        # sees their own and a correction or deletion by one never touches the other's.
+        speaker = meta.get("speaker") or "unknown"
         with self._lock:
             db = self._db
             duplicate = db.execute(f"SELECT id FROM memories WHERE kind = ? AND text = ? AND superseded_by IS NULL "  # constants and ? only  # nosec B608
-                                   f"AND {_CONTEXT_SQL} = ?", (kind, text, context)).fetchone()
+                                   f"AND {_CONTEXT_SQL} = ? AND {_SPEAKER_SQL} = ?",
+                                   (kind, text, context, speaker)).fetchone()
             if duplicate is None and vector is not None and self.vectors:
                 import sqlite_vec
-                nearest = db.execute(
-                    f"SELECT v.rowid, v.distance, m.kind, m.text, {_CONTEXT_SQL} AS context FROM memories_vec v "  # constants and ? only  # nosec B608
-                    "JOIN memories m ON m.id = v.rowid "
-                    "WHERE v.embedding MATCH ? AND k = 1 AND m.superseded_by IS NULL",
-                    (sqlite_vec.serialize_float32(vector),)).fetchone()
-                # Similar meaning alone is not enough: "tea in the morning" and "tea after
-                # dinner" are different facts. Merge only rewordings of the same words.
-                if (nearest and nearest["kind"] == kind and nearest["context"] == context
-                        and 1 - nearest["distance"] >= DUPLICATE_SIMILARITY
-                        and _overlap(nearest["text"], text) >= DUPLICATE_OVERLAP):
-                    duplicate = nearest
+                # The nearest rows may belong to someone else, so look at a few and take the
+                # first that is this person's.
+                for nearest in db.execute(
+                        f"SELECT v.rowid, v.distance, m.kind, m.text, {_CONTEXT_SQL} AS context, "  # constants and ? only  # nosec B608
+                        f"{_SPEAKER_SQL} AS speaker FROM memories_vec v "
+                        "JOIN memories m ON m.id = v.rowid "
+                        "WHERE v.embedding MATCH ? AND k = ? AND m.superseded_by IS NULL ORDER BY v.distance",
+                        (sqlite_vec.serialize_float32(vector), 8)).fetchall():
+                    # Similar meaning alone is not enough: "tea in the morning" and "tea after
+                    # dinner" are different facts. Merge only rewordings of the same words.
+                    if (nearest["kind"] == kind and nearest["context"] == context and nearest["speaker"] == speaker
+                            and 1 - nearest["distance"] >= DUPLICATE_SIMILARITY
+                            and _overlap(nearest["text"], text) >= DUPLICATE_OVERLAP):
+                        duplicate = nearest
+                        break
             if duplicate is not None:
                 key = duplicate[0]
                 # Hearing something again reinforces it rather than storing a copy.
@@ -402,17 +411,21 @@ class MemoryStore:
             self._db.commit()
 
     async def supersede(self, text: str, by: int | None = None, kinds: list[str] | None = None,
-                        exclude: set[int] | frozenset = frozenset(), about: list[str] | None = None) -> dict | None:
+                        exclude: set[int] | frozenset = frozenset(), about: list[str] | None = None,
+                        viewer: str | None = None, legacy: bool = False) -> dict | None:
         """Mark the memory a correction refers to as superseded. It stays stored as history
         but no longer answers questions.
 
         A memory is retired only if it is clearly the same assertion: high word overlap,
         the same polarity ("is" vs "is not"), and the same subject (if the correction
         names people, the memory must be about them, never about someone else).
-        Already-superseded memories are never candidates, so repeating it is harmless."""
+        Already-superseded memories are never candidates, so repeating it is harmless.
+        With a viewer, only that person's memories can be retired (plus, for the owner, those
+        from before there were profiles): one person's correction never edits another's."""
         named = {a.casefold() for a in about or []}
         candidates = []
-        for memory in await self.recall(text, kinds=kinds or ["fact", "preference"], k=8, touch=False):
+        for memory in await self.recall(text, kinds=kinds or ["fact", "preference"], k=8, touch=False,
+                                        viewer=viewer, legacy=legacy):
             if memory["id"] in exclude or _overlap(memory["text"], text) < FORGET_OVERLAP:
                 continue
             if _negated(memory["text"]) != _negated(text):

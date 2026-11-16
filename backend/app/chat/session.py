@@ -74,7 +74,7 @@ class ChatSession:
         self.household = household
         if speaker:
             from .hub import OwnTasks
-            manager = OwnTasks(manager, self.session_id, _speaker_slug(speaker), portfolio)
+            manager = OwnTasks(manager, self.session_id, _speaker_slug(speaker), portfolio, owner)
         self.client, self.bus, self.manager = client, bus, manager
         self.settings, self.store, self.persona = settings, store, persona
         self.shares_task_model = shares_task_model
@@ -1022,8 +1022,9 @@ class ChatSession:
         for wrong in (action.forget if action else []):
             if wrong.strip():
                 try:
+                    who = {"viewer": self._speaker, "legacy": self.owner} if self.person else {}
                     retired = await self.store.supersede(wrong, by=added[0] if added else None,
-                                                         exclude=set(added), about=self._mentioned(wrong))
+                                                         exclude=set(added), about=self._mentioned(wrong), **who)
                     if retired:
                         _log.info("Memory %s superseded by a correction", retired["id"])
                 except Exception:

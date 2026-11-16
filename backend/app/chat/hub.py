@@ -14,9 +14,10 @@ class OwnTasks:
     """The task manager as one conversation sees it. active_id stays the shared slot (what decides
     whether a new errand can start); tasks and active() are only this conversation's own."""
 
-    def __init__(self, manager, session_id: str, speaker: str | None, portfolio: bool) -> None:
+    def __init__(self, manager, session_id: str, speaker: str | None, portfolio: bool,
+                 owner: bool = False) -> None:
         self._manager, self.session_id = manager, session_id
-        self.speaker, self.portfolio = speaker, portfolio
+        self.speaker, self.portfolio, self.owner = speaker, portfolio, owner
 
     def __getattr__(self, name):
         return getattr(self._manager, name)
@@ -42,7 +43,7 @@ class OwnTasks:
 
     def start(self, goal: str, grant=None, plan=None):
         return self._manager.start(goal, grant, plan=plan, session_id=self.session_id,
-                                   speaker=self.speaker, portfolio=self.portfolio)
+                                   speaker=self.speaker, portfolio=self.portfolio, owner=self.owner)
 
 
 class ConversationHub:

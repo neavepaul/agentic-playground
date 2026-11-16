@@ -57,6 +57,8 @@ class TaskContext(BaseModel):
     # answer reach only that conversation's person.
     session_id: str | None = None
     speaker: str | None = None
+    # Whether that person is the owner, who also sees memories from before there were profiles.
+    owner: bool = False
     # Whether the person who asked may see the owner's Groww portfolio.
     portfolio: bool = True
     # Written before dispatch and cleared only after result evidence is journaled.
