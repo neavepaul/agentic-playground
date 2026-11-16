@@ -140,3 +140,63 @@ async def test_the_episode_summary_includes_what_was_just_learned():
     await session.drain()
     episode = [m["text"] for m in session.store.recent(20) if m["kind"] == "episode"]
     assert any("works as an engineer" in text for text in episode)
+
+
+# ── the fallback for a plain "remember that..." ────────────────────────────
+@pytest.mark.parametrize("said, kept", [
+    ("Remember that Paul likes chess.", "Neave asked Kip to remember that Paul likes chess."),
+    ("please don't forget I'm vegetarian!", "Neave asked Kip to remember that I'm vegetarian."),
+    ("Can you keep in mind that my sister is called Asha?", "Neave asked Kip to remember that my sister is called Asha."),
+    ("Kip, remember to call the dentist", "Neave asked Kip to remember to call the dentist."),
+    ("Note that the wifi password changed", "Neave asked Kip to remember that the wifi password changed.")])
+def test_a_plain_request_to_remember_is_kept_as_asked(said, kept):
+    assert extract.explicit_request(said, "Neave").text == kept
+
+
+@pytest.mark.parametrize("said", ["Do you remember my name?", "I remember that Paul likes chess.",
+                                  "What should I remember?", "hi", "remember", "Remember " + "x" * 500])
+def test_only_a_direct_request_counts(said):
+    assert extract.explicit_request(said, "Neave") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [RuntimeError("model down"), "I would remember that!"])
+async def test_a_failed_extraction_still_keeps_what_they_asked_to_remember(failure):
+    session, model = with_extraction([reply("Will do."), failure])
+    session.submit("My name is Neave. Remember that Paul likes chess.")
+    await session.drain()
+    assert facts(session) == ["Neave asked Kip to remember that Paul likes chess."]
+
+
+@pytest.mark.asyncio
+async def test_a_phrasing_the_gate_skips_is_still_kept_when_extraction_fails():
+    session, model = with_extraction([reply("Will do."), RuntimeError("model down")])
+    session.submit("Keep in mind that the router is in the hall cupboard.")
+    await session.drain()
+    assert facts(session) == ["They asked Kip to remember that the router is in the hall cupboard."]
+
+
+@pytest.mark.asyncio
+async def test_a_working_extraction_is_trusted_over_the_fallback():
+    session, model = with_extraction([reply("Will do."), found(["Paul likes chess."])])
+    session.submit("Remember that Paul likes chess.")
+    await session.drain()
+    assert facts(session) == ["Paul likes chess."]
+
+
+@pytest.mark.asyncio
+async def test_pretend_framing_is_kept_on_the_fallback_too():
+    session, model = with_extraction([reply("Okay."), RuntimeError("down")])
+    session.submit("Let's say I'm a pirate. Remember that I love rum.")
+    await session.drain()
+    stored = [m for m in session.store.recent(10) if m["kind"] in ("fact", "preference")]
+    assert stored and "love rum" in stored[0]["text"]
+    assert (await session.store.recall("rum", k=1))[0].get("context") == "pretend"
+
+
+@pytest.mark.asyncio
+async def test_with_extraction_off_nothing_is_learned_even_when_asked():
+    session, model = with_extraction([reply("Okay.")], chat_extraction=False)
+    session.submit("Remember that Paul likes chess.")
+    await session.drain()
+    assert facts(session) == [] and len(model.prompts) == 1

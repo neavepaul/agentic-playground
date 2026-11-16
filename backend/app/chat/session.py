@@ -628,14 +628,19 @@ class ChatSession:
             volunteered = bool(action and (action.remember or action.forget))
             await self._remember(action if volunteered else None, user_turn, reply)
             if (not volunteered and self.settings.chat_extraction and not self._closed
-                    and extraction.worth_reading(said)):
+                    and (extraction.worth_reading(said) or extraction.explicit_request(said))):
                 self._spawn(self._extract(user_turn, reply))
 
     async def _extract(self, user_turn: dict, reply: str) -> None:
         """Read one exchange for lasting facts and corrections, and file them like any other memory."""
         said, speaker = user_turn["text"], user_turn.get("speaker")
         known = [m for m in await self._recall(said, speaker) if m.get("kind") in ("fact", "preference")]
-        found = await extraction.extract(self.client, said, reply, self._speaker_name(speaker), known)
+        who = self._speaker_name(speaker) if speaker else ""
+        found = await extraction.extract(self.client, said, reply, who or "unknown person", known)
+        if found is None:
+            # The call failed or was unreadable. A plain "remember that..." is still kept, as asked.
+            asked = extraction.explicit_request(said, who)
+            found = extraction.Extraction(remember=[asked]) if asked else None
         if found is None or self._closed or not (found.remember or found.forget):
             return
         await self._remember(ChatAction(remember=found.remember, forget=found.forget), user_turn, reply,

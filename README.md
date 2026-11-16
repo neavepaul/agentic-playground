@@ -195,7 +195,7 @@ Copy `backend/.env.example` to `backend/.env`; environment variables override it
 | `CHAT_CHECKPOINT_TOKENS` | `200` | Largest size of that note |
 | `CHAT_HOSTED_CONTEXT_TOKENS` | `8192` | The window a chat prompt may use when Groq answers (the local model keeps `CONTEXT_TOKENS`; a reply that falls back to it is rebuilt at that size) |
 | `CHAT_HOSTED_HISTORY_TOKENS` | `1600` | Earlier conversation Groq reads each reply. More remembers more but spends Groq quota faster; set equal to `CHAT_HISTORY_TOKENS` for the same prompt as the local model |
-| `CHAT_EXTRACTION` | `true` | After a reply that could hold a lasting fact or correction, decide what to remember in its own short model call (the chat model only talks). `false`: nothing new is learned from chat |
+| `CHAT_EXTRACTION` | `true` | After a reply that could hold a lasting fact or correction, decide what to remember in its own short model call (the chat model only talks). A failed call still keeps a plain "remember that…". `false`: nothing new is learned from chat |
 | `CHAT_MAX_TOKENS` / `CHAT_TEMPERATURE` | `300` / `0.6` | Length and variety of a chat reply |
 | `CONTEXT_TOKENS` / `TEMPERATURE` | `4096` / `0.1` | Ollama context size; temperature for structured task calls |
 | `LLM_TIMEOUT_SECONDS` / `TASK_TIMEOUT_SECONDS` | `600` / `1800` | Per model request; per whole task |

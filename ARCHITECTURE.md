@@ -53,7 +53,8 @@ backend/app/
 4. **Anything else gets one streamed chat reply.** The reply can end with a hidden `###` JSON line
    that starts an errand or makes an offer. What is worth remembering (or forgetting, after a
    correction) is decided after the reply, in its own short call (`chat/extract.py`): a cheap gate
-   skips messages that cannot hold a lasting fact, and a failed call writes nothing. Errand results
+   skips messages that cannot hold a lasting fact. If the call fails, a plain "remember that..." is still
+   kept as asked (no model needed); anything else from that message is not. Errand results
    are narrated from templates, with no extra model call.
 
 ## Errands

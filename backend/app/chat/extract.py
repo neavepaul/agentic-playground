@@ -44,6 +44,16 @@ _ONLY_A_QUESTION = re.compile(r"^[^.!]*\?\s*$")
 _ASKS_TO_REMEMBER = re.compile(r"\b(remember|forget|actually|correction)\b", re.I)
 
 
+# "Remember that Paul likes chess", "please don't forget I'm vegetarian", "can you keep in mind that...":
+# an outright request to keep something, from the start of the message. "Do you remember my name?" and
+# "I remember that..." are not requests.
+_REQUEST = re.compile(
+    r"^\W*(?:(?:hey\s+)?kip\W+)?(?:(?:can|could|will|would)\s+you\s+)?(?:please\s+)?"
+    r"(?:remember|don'?t\s+forget|do\s+not\s+forget|keep\s+in\s+mind|make\s+a\s+note\s+of|note)\s+"
+    r"(?P<what>(?:that\s+)?\S.*?)\W*$", re.I | re.S)
+MAX_REQUEST_CHARS = 380
+
+
 class Extraction(BaseModel):
     remember: list[RememberItem] = Field(default_factory=list, max_length=5)
     forget: list[str] = Field(default_factory=list, max_length=5)
@@ -55,6 +65,23 @@ def worth_reading(said: str) -> bool:
     if not said or (_ONLY_A_QUESTION.match(said) and not _ASKS_TO_REMEMBER.search(said)):
         return False
     return bool(_STATEMENT.search(said) or _NAMED.search(said))
+
+
+def explicit_request(said: str, speaker: str = "") -> RememberItem | None:
+    """What the person plainly asked Kip to remember, kept in their own words with who asked.
+
+    The fallback for when the extraction call fails: a direct "remember that..." should never be
+    lost to a model hiccup. No guessing, no rewriting of what they said."""
+    # The request may follow another sentence ("My name is Neave. Remember that..."): the first one counts.
+    found = next((m for s in re.split(r"(?<=[.!?])\s+", said.strip()) if (m := _REQUEST.match(s))), None)
+    if not found:
+        return None
+    what = " ".join(found.group("what").split())
+    what = re.sub(r"^that\s+", "", what, flags=re.I)
+    if len(what) < 3 or len(what) > MAX_REQUEST_CHARS:
+        return None
+    link = "" if what.casefold().startswith("to ") else "that "
+    return RememberItem(text=f"{speaker or 'They'} asked Kip to remember {link}{what}.")
 
 
 def messages_for(said: str, reply: str, speaker: str, known: list[dict]) -> list[dict]:
