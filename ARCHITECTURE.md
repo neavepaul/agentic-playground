@@ -51,8 +51,10 @@ backend/app/
    the reply. So does a request that names a tool ("use Python to…", "read https://…"). The clock
    ("what time is it?") is answered from the device with no errand at all.
 4. **Anything else gets one streamed chat reply.** The reply can end with a hidden `###` JSON line
-   that starts an errand, makes an offer, or remembers or forgets something. Errand results are
-   narrated from templates, with no extra model call.
+   that starts an errand or makes an offer. What is worth remembering (or forgetting, after a
+   correction) is decided after the reply, in its own short call (`chat/extract.py`): a cheap gate
+   skips messages that cannot hold a lasting fact, and a failed call writes nothing. Errand results
+   are narrated from templates, with no extra model call.
 
 ## Errands
 
@@ -153,7 +155,7 @@ when a correction retires a fact, and on any failure the chat simply keeps the o
   tools is skipped for that reply.
 - **Ollama** runs `qwen3.5:2b-q4_K_M`, kept loaded (`keep_alive=-1`), with schema-constrained output
   for structured calls. A 2B model is a weak judge of what to do: tested alone, it proposed
-  nonsense errands. So by default (`LOCAL_CHAT_ERRANDS=false`) its replies only talk and remember,
+  nonsense errands. So by default (`LOCAL_CHAT_ERRANDS=false`) its replies only talk,
   and errands start from the person's own words.
 
 Structured output is validated with Pydantic. Invalid JSON gets one retry, then a safe task

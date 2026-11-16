@@ -193,6 +193,7 @@ Copy `backend/.env.example` to `backend/.env`; environment variables override it
 | `CHAT_HISTORY_TOKENS` | `800` | Earlier conversation carried by each reply; less is faster on a Pi |
 | `CHAT_COMPACTION` | `true` | When a chat outgrows the history budget, fold its older turns into a short note (one background model call after a reply). The transcript is kept whole; `false` just drops older turns from the prompt |
 | `CHAT_CHECKPOINT_TOKENS` | `200` | Largest size of that note |
+| `CHAT_EXTRACTION` | `true` | After a reply that could hold a lasting fact or correction, decide what to remember in its own short model call (the chat model only talks). `false`: nothing new is learned from chat |
 | `CHAT_MAX_TOKENS` / `CHAT_TEMPERATURE` | `300` / `0.6` | Length and variety of a chat reply |
 | `CONTEXT_TOKENS` / `TEMPERATURE` | `4096` / `0.1` | Ollama context size; temperature for structured task calls |
 | `LLM_TIMEOUT_SECONDS` / `TASK_TIMEOUT_SECONDS` | `600` / `1800` | Per model request; per whole task |

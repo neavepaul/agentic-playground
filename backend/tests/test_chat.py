@@ -385,7 +385,7 @@ def test_the_prompt_is_small_and_keeps_the_character_and_contract():
     messages = build_messages("Kip", voice, memories, status, turns, "What's my favourite fruit?", history_tokens=200)
     system, latest = messages[0]["content"], messages[-1]["content"]
     assert len(system) < 2400 and "Rocky" in system and "', question?'" in system
-    assert '{"task": "", "offer": "", "remember": [], "forget": []}' in system  # the action line
+    assert '{"task": "", "offer": ""}' in system and "remember" not in system  # the action line
     # Four whole memories at most; one too long to keep whole is left out, never cut.
     assert "mango" in latest and "McLaren" in latest and "cat" in latest and "chess" in latest
     assert "bike" not in latest and "x" * 50 not in latest

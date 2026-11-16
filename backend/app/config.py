@@ -94,6 +94,10 @@ class Settings(BaseSettings):
     # call, never blocking a reply) that rides in each prompt. false: older turns are only dropped.
     chat_compaction: bool = True
     chat_checkpoint_tokens: int = Field(default=200, ge=50, le=1024)
+    # What is worth remembering is decided after each reply that could hold a lasting fact, in its own
+    # short model call, so the chat model only talks. false: no new facts are learned from chat unless
+    # the model volunteers them in its action line.
+    chat_extraction: bool = True
     chat_temperature: float = Field(default=0.6, ge=0, le=1.5)
     # confirm: errands start only when asked or after a yes to Kip's offer.
     # act: any errand the chat model proposes starts immediately (less safe).

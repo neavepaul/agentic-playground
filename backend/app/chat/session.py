@@ -29,7 +29,7 @@ from app.capabilities.feeds import FEEDS, is_portfolio
 from .prompt import ChatAction, TrailerSplitter, build_messages
 from .spoken import spoken
 from .context import ContextBudgetError, estimate_tokens, message_tokens
-from . import checkpoint as checkpoints
+from . import checkpoint as checkpoints, extract as extraction
 
 _log = logging.getLogger("agentic_friend.chat")
 
@@ -585,7 +585,29 @@ class ChatSession:
         self._routes.pop(user_turn["id"], None)
         self._intents.pop(user_turn["id"], None)
         if self.store:
-            await self._remember(action, user_turn, reply)
+            # A reply that wrote its own remember/forget lines is honoured; otherwise what is worth
+            # keeping is decided after it, in a separate call that never delays the reply.
+            volunteered = bool(action and (action.remember or action.forget))
+            await self._remember(action if volunteered else None, user_turn, reply)
+            if (not volunteered and self.settings.chat_extraction and not self._closed
+                    and extraction.worth_reading(said)):
+                self._spawn(self._extract(user_turn, reply))
+
+    async def _extract(self, user_turn: dict, reply: str) -> None:
+        """Read one exchange for lasting facts and corrections, and file them like any other memory."""
+        said, speaker = user_turn["text"], user_turn.get("speaker")
+        known = [m for m in await self._recall(said, speaker) if m.get("kind") in ("fact", "preference")]
+        found = await extraction.extract(self.client, said, reply, self._speaker_name(speaker), known)
+        if found is None or self._closed or not (found.remember or found.forget):
+            return
+        await self._remember(ChatAction(remember=found.remember, forget=found.forget), user_turn, reply,
+                             record=False)
+        try:  # the conversation's episode now includes what was just learned
+            await self.store.set_keyed(f"chat-session:{self.session_id}", "episode", self._session_summary(),
+                                       about=sorted({t for turn in self.turns for t in self._mentioned(turn["text"])}),
+                                       importance=0.5, source="conversation", speaker=speaker)
+        except Exception:
+            _log.exception("Could not update the conversation summary")
 
     def _offer_valid(self) -> bool:
         offer = self.offer
@@ -1006,7 +1028,7 @@ class ChatSession:
             _log.warning("Unsupported claims in reply: %s", notes)
             self._add_turn("kip", "Scratch that: " + "; ".join(notes) + ".", source="correction", claims=notes)
 
-    async def _remember(self, action: ChatAction | None, user_turn: dict, reply: str) -> None:
+    async def _remember(self, action: ChatAction | None, user_turn: dict, reply: str, record: bool = True) -> None:
         said, speaker = user_turn["text"], user_turn.get("speaker")
         about = self._mentioned(said + " " + reply)
         added = []
@@ -1045,6 +1067,8 @@ class ChatSession:
                         _log.info("Memory %s superseded by a correction", retired["id"])
                 except Exception:
                     _log.exception("Could not retire a corrected memory")
+        if not record:
+            return
         try:
             await self.store.add("conversation", f"They said: {said} | I replied: {reply}", about=about,
                                  importance=0.3, source="conversation", meta={"speaker": speaker or "unknown"})
