@@ -140,6 +140,25 @@ Things to ask:
 - "Read https://www.raspberrypi.com/documentation/ and summarise it."
 - "Use Python to calculate the average of 12, 18, 21 and 29."
 
+### Reminders and timers
+
+Kip sets these himself, from plain words, with no model call, so they work even when Groq is down and
+never make him wait on a reply or an errand:
+
+- "remind me in 10 minutes to stretch", "remind me tomorrow at 9 to call the dentist", "remind me on 3 March
+  about Asha's birthday", "wake me at 6am"
+- "set a 5 minute timer", "timer for 90 seconds"
+- repeating: "remind me every weekday at 8 to check email", "every 2 hours remind me to drink water",
+  "remind me every year on 3 March about Asha's birthday"
+- scheduled checks: "every morning at 7:30 tell me the weather in Pune" (a lookup runs when it is due)
+- "what reminders do I have?", "cancel the stretch reminder", "cancel all timers", "stop reminding me about water"
+
+He reads back the time he set ("Set. 9:15 pm today."), asks when a time is missing or has passed instead of
+guessing, and says how late one was if he was off when it came due. They are kept in `kip.db`, so a restart
+forgets nothing, each person sees only their own, and they arrive in the conversation they were set in. Any
+number can be waiting at once (30 per person), each fires on its own, and a timer going off while Kip is
+mid-reply or running a lookup just arrives. Scheduled checks never read your accounts.
+
 Before a feed answers, Kip says where he is looking ("Let me check Open-Meteo for that."). One lookup
 runs at a time; another waits its turn. "Stop" cancels it. "Don't use the internet" or "don't use
 Python" stop those tools until you say otherwise.

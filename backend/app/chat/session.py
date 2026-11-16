@@ -23,10 +23,11 @@ from .evidence import capabilities, denied_capabilities, task_record, unkept_pro
 from .intent import Intent, given_name, introduced_as, read_intent
 from .router import (THRESHOLD as ROUTER_THRESHOLD, LIVE, SPORTS, Frame, Route, clock_question, default_router,
                      fast_path, frame_of, read_slots)
-from app.clock import date_str, spoken_time
+from app.clock import date_str, now as clock_now, spoken_time
 from app.agents.schemas import GoalCondition, GoalPlan, InitialCapability, LookupPlan
 from app.capabilities.feeds import FEEDS, is_portfolio
 from .prompt import ChatAction, TrailerSplitter, build_messages
+from .reminders import Reminders
 from .spoken import spoken
 from .context import ContextBudgetError, estimate_tokens, message_tokens
 from . import checkpoint as checkpoints, extract as extraction
@@ -69,7 +70,7 @@ class ChatSession:
     def __init__(self, client, bus, manager, settings, store=None, persona=None,
                  shares_task_model: bool = True, session_id: str | None = None,
                  speaker: str | None = None, owner: bool = True, portfolio: bool = True,
-                 household=None) -> None:
+                 household=None, scheduler=None, owner_key: str | None = None) -> None:
         self.session_id = session_id or str(uuid4())
         # A signed-in person's conversation: who is talking is fixed, and it sees only its own
         # errands and memories. Without one (tests, tools), Kip learns names as he always has.
@@ -80,6 +81,11 @@ class ChatSession:
             from .hub import OwnTasks
             manager = OwnTasks(manager, self.session_id, _speaker_slug(speaker), portfolio, owner)
         self.client, self.bus, self.manager = client, bus, manager
+        # Reminders and timers: set by plain words, kept by the scheduler, and delivered here on their own,
+        # whatever else this conversation is doing. Owned by the person (every chat of theirs), else this chat.
+        self.scheduler = scheduler
+        self.reminders = (Reminders(scheduler, owner_key or self.session_id, self.session_id, self.person, clock_now)
+                          if scheduler is not None else None)
         self.settings, self.store, self.persona = settings, store, persona
         self.shares_task_model = shares_task_model
         self.name = persona.name if persona else settings.persona_name
@@ -184,6 +190,14 @@ class ChatSession:
         earlier = list(self.turns)
         turn = self._add_turn("user", text, speaker=speaker_id)
         self._user_turns += 1
+        if self.reminders is not None:
+            # "Remind me in 10 minutes", "set a timer", "what reminders do I have?": answered here and now,
+            # from the scheduler, with no model. It waits for nothing: not a reply still being written, not
+            # an errand running, so a timer never makes Kip wait or keeps the person waiting.
+            said_back = self.reminders.handle(text)
+            if said_back is not None:
+                self._finish_turn(turn, str(uuid4()), said_back, None, {"chat_model_calls": 0, "reminders": True})
+                return turn
         self._intents[turn["id"]] = read_intent(text, sorted(before - after), sorted(after - before))
         if self._intents[turn["id"]].cancel:
             # Cancellation must not wait behind a slow or unavailable chat model.
@@ -305,6 +319,9 @@ class ChatSession:
             # What each errand actually did, tried, was refused and left undone.
             status["recent_errands"] = [task_record(c) for c in finished]
         status["my_tools"] = capabilities(self.manager, self.settings)
+        if self.scheduler is not None:
+            status["my_tools"] += ("; set reminders and timers (they say 'remind me in 10 minutes to...' or 'set a 5 "
+                                   "minute timer'; I handle those myself and they keep running on their own)")
         if self.manager.restrictions:
             status["asked_not_to"] = self.manager.restrictions.describe()
         return status
@@ -677,6 +694,18 @@ class ChatSession:
                 f"this chat: " + " | ".join(_clip(text, 220) for text in earlier))
         _log.info("Arithmetic asked for and none proposed: starting a calculation")
         self._start_or_queue(goal, user_turn["id"], Grant.read_only(user_turn["text"]))
+
+    # ── things that arrive on their own (reminders, timers, scheduled checks) ───
+    def deliver(self, text: str, source: str = "reminder") -> dict:
+        """A message Kip sends without being asked. It does not wait for a reply in progress or an errand:
+        it simply lands in the conversation (and on screen) when it is due."""
+        return self._add_turn("kip", text, source=source)
+
+    def run_scheduled_lookup(self, goal: str, note: str) -> None:
+        """A check the person scheduled is due: say so, and start it like any lookup (it queues behind a
+        running errand, as lookups do; chat is never held up)."""
+        self.deliver(note, source="reminder")
+        self._start_or_queue(goal, None, Grant.read_only(goal))
 
     def _work_marker(self) -> tuple:
         """What is running, queued or on offer: it differs after a message only if the message set work in motion."""

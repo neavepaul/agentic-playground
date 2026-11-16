@@ -62,6 +62,22 @@ backend/app/
    kept as asked (no model needed); anything else from that message is not. Errand results
    are narrated from templates, with no extra model call.
 
+## Reminders, timers and scheduled checks
+
+`scheduler.py` keeps jobs in `kip.db` (table `schedule`) and delivers them when due. A job is not an errand:
+it takes neither the errand slot nor the reply lock, so any number can wait and none holds up chat. The loop
+sleeps until the next job and is woken when a sooner one is added; each due job is delivered by a task of its
+own, so a slow delivery never delays another timer. A one-off job is finished only after delivery succeeded
+(retried twice); a repeating one moves to its next time first, so a crash never makes it fire in a burst, and a
+job that came due while Kip was off arrives once, saying how late it was.
+
+`chat/when.py` reads requests deterministically ("remind me in 10 minutes to…", "every weekday at 8…", "what
+reminders do I have?", "cancel the timer") and `chat/reminders.py` acts on them. They are answered in
+`ChatSession.submit` itself, before any model, so setting one never waits on a reply or an errand. A missing
+time or text is asked for and the next message completes it; a time that has passed is said so, never moved.
+Delivery (`main.deliver_scheduled`) puts the message in the conversation the job was set in, or the person's
+latest one if that was deleted; a scheduled check starts a read-only lookup like any other.
+
 ## Errands
 
 `TaskManager` runs one errand at a time; others queue. Each errand tries, in order:

@@ -13,13 +13,16 @@ from app.config import Settings, get_settings
 from app.events.bus import EventBus
 from app.chat import ChatSession
 from app.chat.hub import ConversationHub
+from app.chat.reminders import reminder_message
 from app.chat.session import HISTORY
+from app.clock import now as clock_now
 from app.llm.factory import create_client, create_hosted_client
 from app.llm.priority import ConversationFirst
 from app.memory.recall import Embedder, MemoryStore
 from app.memory.store import PersistentMemory
 from app.people import COOKIE, SESSION_SECONDS, People, Profile, SignInError
 from app.persona import Persona
+from app.scheduler import Scheduler
 from app.tasks.manager import TaskBusy, TaskManager
 
 _log = logging.getLogger("agentic_friend")
@@ -114,10 +117,34 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
         everyone = people.profiles()
         return {"owner": next((p.name for p in everyone if p.owner), None), "people": [p.name for p in everyone]}
 
+    async def deliver_scheduled(job, late: float) -> None:
+        """A reminder, timer or scheduled check is due: it arrives in the conversation it was set in (or the
+        person's latest one, if that was deleted), whatever Kip is doing. It takes no lock and no errand slot."""
+        profile = people.get(job.owner)
+        if profile is None:
+            _log.warning("A %s was set by someone who no longer has a profile; dropped.", job.kind)
+            return
+        conversation = job.session_id
+        if owner_of(conversation) != profile.id:
+            recent = people.conversations(profile, 1)
+            conversation = recent[0]["id"] if recent else people.new_conversation(profile, "Reminders")
+            owners[conversation] = profile.id
+        session = hub.get(conversation, profile)
+        text = reminder_message(job, late)
+        if job.kind == "lookup":
+            session.run_scheduled_lookup(job.text, text)
+        else:
+            session.deliver(text)
+        people.touch(conversation)
+        await hub.trim()
+
+    scheduler = Scheduler(store, clock_now, deliver_scheduled)
+
     def open_conversation(conversation_id: str, profile: Profile) -> ChatSession:
         session = ChatSession(chat_llm, bus, manager, config, store=store, persona=persona,
                               session_id=conversation_id, speaker=profile.name, owner=profile.owner,
-                              portfolio=profile.portfolio, household=household)
+                              portfolio=profile.portfolio, household=household, scheduler=scheduler,
+                              owner_key=profile.id)
         session.gate = task_llm
         session.router = router
         session.attach()
@@ -158,9 +185,12 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
         from app.capabilities.feeds import warm_readers
         app.state.readers_ready = asyncio.create_task(asyncio.to_thread(warm_readers))
         saver = asyncio.create_task(keep_persona_saved(), name="persona-saver")
+        ticker = asyncio.create_task(scheduler.run(), name="scheduler")
         yield
         saver.cancel()
-        await asyncio.gather(saver, return_exceptions=True)
+        ticker.cancel()
+        await asyncio.gather(saver, ticker, return_exceptions=True)
+        await scheduler.close()
         memory_ready = getattr(app.state, "memory_ready", None)
         if memory_ready and not memory_ready.done():
             memory_ready.cancel()  # never let a backfill touch the store after shutdown
@@ -176,6 +206,7 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
 
     app = FastAPI(title="agentic_friend", lifespan=lifespan)
     app.state.manager, app.state.bus, app.state.people, app.state.hub = manager, bus, people, hub
+    app.state.scheduler = scheduler
     app.state.persona = persona
     # Everyone signs in to a profile (a 4-digit PIN). Only Kip's own pages and host names get in: the
     # Host check (HTTP and WebSocket) stops another site pointing its own name at this machine, and
