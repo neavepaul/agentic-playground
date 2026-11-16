@@ -190,7 +190,7 @@ Copy `backend/.env.example` to `backend/.env`; environment variables override it
 | `OLLAMA_MODEL` | `qwen3.5:2b-q4_K_M` | The local model (4-bit; the plain tag is 8-bit and about half the speed on a Pi) |
 | `OLLAMA_KEEP_ALIVE` | `-1` | Keep the model loaded (`-1` always); reloading from microSD takes tens of seconds |
 | `LOCAL_CHAT_ERRANDS` | `false` | Whether a reply the local model writes may start an errand. Off: errands start only from your own words |
-| `CHAT_HISTORY_TOKENS` | `250` | Earlier conversation carried by each reply; less is faster on a Pi |
+| `CHAT_HISTORY_TOKENS` | `800` | Earlier conversation carried by each reply; less is faster on a Pi |
 | `CHAT_MAX_TOKENS` / `CHAT_TEMPERATURE` | `300` / `0.6` | Length and variety of a chat reply |
 | `CONTEXT_TOKENS` / `TEMPERATURE` | `4096` / `0.1` | Ollama context size; temperature for structured task calls |
 | `LLM_TIMEOUT_SECONDS` / `TASK_TIMEOUT_SECONDS` | `600` / `1800` | Per model request; per whole task |

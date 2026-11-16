@@ -140,7 +140,7 @@ for. That checks provenance, not every sentence. Page content is untrusted data.
 
 There is one compact chat prompt (`CHAT_SYSTEM` in `chat/prompt.py`) for both Groq and the local
 model, so they behave alike. Its fixed system part (identity, voice, rules) comes first, so Ollama
-reuses it between replies. Each message adds the mood and stance, two memories (core facts about
+reuses it between replies. Each message adds the mood and stance, up to four memories (core facts about
 the person first), a one-line status (with the real date and time), recent history up to
 `CHAT_HISTORY_TOKENS`, and the message.
 

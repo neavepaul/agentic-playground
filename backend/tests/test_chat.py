@@ -373,20 +373,22 @@ async def test_ollama_keeps_the_model_loaded_when_asked(setting, sent):
 
 def test_the_prompt_is_small_and_keeps_the_character_and_contract():
     """A Pi reads every prompt in full at a few tokens a second: the system message stays a few
-    hundred tokens, and each reply adds two whole memories, the status that matters and capped history."""
+    hundred tokens, and each reply adds up to four whole memories, the status that matters and capped history."""
     voice = Persona().voice_view(speaker=None, message="hi")
     status = {"now": "Saturday 14 November 2026, 12:31", "talking_with": "Neave", "current_errand": "none",
               "my_tools": "available: search the web, read webpages, run Python",
               "recent_errands": [{"goal": "one"}, {"goal": "two"}], "queued_errands": []}
     memories = [{"kind": "fact", "text": "Neave's favourite fruit is mango."}, {"kind": "fact", "text": "x" * 301},
-                {"kind": "fact", "text": "Neave supports McLaren."}, {"kind": "fact", "text": "Neave has a cat."}]
+                {"kind": "fact", "text": "Neave supports McLaren."}, {"kind": "fact", "text": "Neave has a cat."},
+                {"kind": "fact", "text": "Neave plays chess."}, {"kind": "fact", "text": "Neave owns a bike."}]
     turns = [{"id": str(i), "role": "user" if i % 2 == 0 else "kip", "text": "words " * 40} for i in range(20)]
     messages = build_messages("Kip", voice, memories, status, turns, "What's my favourite fruit?", history_tokens=200)
     system, latest = messages[0]["content"], messages[-1]["content"]
     assert len(system) < 2400 and "Rocky" in system and "', question?'" in system
     assert '{"task": "", "offer": "", "remember": [], "forget": []}' in system  # the action line
-    # Two whole memories at most; one too long to keep whole is left out, never cut.
-    assert "mango" in latest and "McLaren" in latest and "cat" not in latest and "x" * 50 not in latest
+    # Four whole memories at most; one too long to keep whole is left out, never cut.
+    assert "mango" in latest and "McLaren" in latest and "cat" in latest and "chess" in latest
+    assert "bike" not in latest and "x" * 50 not in latest
     assert '"recent_errands":[{"goal":"two"}]' in latest and "queued_errands" not in latest
     assert 0 < len(messages) - 2 < len(turns)  # recent history only
     # The system message is the same every reply, so Ollama can keep it cached.
@@ -618,3 +620,13 @@ def test_idle_status_says_none_not_null():
     session, _, _, _ = make_session([])
     status = session._status()
     assert status["current_errand"] == "none" and "null" not in json.dumps(status)
+
+
+def test_pinned_facts_cannot_crowd_out_what_matches_the_message():
+    pinned = [{"kind": "fact", "text": f"Pinned fact {i}.", "core": True} for i in range(4)]
+    relevant = [{"kind": "preference", "text": "Neave likes tea."}, {"kind": "fact", "text": "Neave drinks it black."}]
+    latest = build_messages("Kip", None, pinned + relevant, {}, [], "What tea do I like?")[-1]["content"]
+    assert latest.count("Pinned fact") == 2 and "likes tea" in latest and "drinks it black" in latest
+    # With nothing relevant, spare slots go to the other pinned facts.
+    only = build_messages("Kip", None, pinned, {}, [], "hi")[-1]["content"]
+    assert only.count("Pinned fact") == 4

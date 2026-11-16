@@ -30,7 +30,8 @@ web or Python; look things up, never ask whether to); else empty. offer: somethi
 but want their yes for; usually empty. remember: new lasting facts from their latest message, as
 {{"text": "...", "context": "actual"}}, naming who they are about. forget: the exact text of a
 memory they corrected. Plain English in JSON."""
-MEMORIES = 2
+MEMORIES = 4
+PINNED_MEMORIES = 2   # of those, at most this many pinned facts while others are relevant to the message
 STATUS_KEYS = ("now", "talking_with", "current_errand", "queued_errands", "offered_errand_awaiting_yes",
                "recent_errands", "my_tools", "asked_not_to")
 
@@ -92,7 +93,7 @@ class ChatAction(BaseModel):
 
 def build_messages(name: str, voice: dict | None, memories: list[dict], status: dict,
                    turns: list[dict], message: str, guidance: str = "", *,
-                   context_tokens: int = 3796, history_tokens: int = 250,
+                   context_tokens: int = 3796, history_tokens: int = 800,
                    token_counter=estimate_tokens) -> list[dict]:
     """The system message never changes between replies; each reply adds only the mood, two short
     memories, the status that matters, recent history (up to history_tokens) and the message."""
@@ -104,7 +105,13 @@ def build_messages(name: str, voice: dict | None, memories: list[dict], status: 
         context.append("Stance: " + voice["stance"])
     # Whole facts only: clipping can drop a negation or correction. A long one is left out, not cut.
     # The context stays with each: a "pretend" or "hypothetical" fact is not an actual one.
-    kept = [m for m in memories if len(m["text"]) <= 300][:MEMORIES]
+    fits = [m for m in memories if len(m["text"]) <= 300]
+    # Pinned facts come first, but cannot fill every slot: what matches this message gets room too.
+    pinned = [m for m in fits if m.get("core")]
+    relevant = [m for m in fits if not m.get("core")]
+    kept = pinned[:PINNED_MEMORIES] + relevant[:MEMORIES - min(len(pinned), PINNED_MEMORIES)]
+    kept += [m for m in pinned[PINNED_MEMORIES:] if len(kept) < MEMORIES]
+    kept = kept[:MEMORIES]
     if kept:
         context.append("Memories:\n" + "\n".join(
             f"- [{m['kind']}{', ' + m['context'] if m.get('context') else ''}"

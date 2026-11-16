@@ -621,7 +621,7 @@ CORE_IMPORTANCE = 0.9
 
 def prompt_memories(memories: list[dict]) -> list[dict]:
     """Compact view for prompts: kind, text and how far to trust it."""
-    return [{key: m[key] for key in ("kind", "text", "context", "untrusted") if key in m} for m in memories]
+    return [{key: m[key] for key in ("kind", "text", "context", "untrusted", "core") if key in m} for m in memories]
 
 
 # ── deterministic memory formation from finished tasks ─────────────────────

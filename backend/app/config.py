@@ -89,7 +89,7 @@ class Settings(BaseSettings):
     local_chat_errands: bool = False
     # Earlier turns each reply carries: less is faster on a Pi, more remembers the thread better.
     # A long message itself is never refused for it.
-    chat_history_tokens: int = Field(default=250, ge=0, le=8192)
+    chat_history_tokens: int = Field(default=800, ge=0, le=8192)
     chat_temperature: float = Field(default=0.6, ge=0, le=1.5)
     # confirm: errands start only when asked or after a yes to Kip's offer.
     # act: any errand the chat model proposes starts immediately (less safe).
