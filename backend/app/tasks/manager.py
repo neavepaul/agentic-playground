@@ -156,7 +156,8 @@ class TaskManager:
             raise LimitReached("A terminal task cannot execute more tools.")
 
     def start(self, goal: str, grant: Grant | None = None, plan=None, session_id: str | None = None,
-              speaker: str | None = None, portfolio: bool = True, owner: bool = False) -> TaskContext:
+              speaker: str | None = None, portfolio: bool = True, owner: bool = False,
+              queue_id: str | None = None) -> TaskContext:
         """Start a task. Without a grant it is a direct instruction (API): the goal
         text is the person's own words and authorizes every kind of action. session_id is the
         conversation that asked; speaker and portfolio say who that is and what they may see."""
@@ -169,7 +170,7 @@ class TaskManager:
                 self.save_restrictions()
         grant = grant or Grant.full("api", goal)
         context = TaskContext(goal=goal, grant=grant, requested_tools=explicitly_requested_tools(grant.authorized_text),
-                              session_id=session_id, speaker=speaker, portfolio=portfolio, owner=owner)
+                              session_id=session_id, speaker=speaker, portfolio=portfolio, owner=owner, queue_id=queue_id)
         context.metrics.llm_call_limit = self.settings.max_task_llm_calls
         self._sync_permissions(context)
         if self.persistent:

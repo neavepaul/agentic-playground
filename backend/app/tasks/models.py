@@ -27,6 +27,7 @@ class TaskMetrics(BaseModel):
 class TaskContext(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     goal: str
+    queue_id: str | None = None
     status: Literal["running", "completed", "failed", "cancelled"] = "running"
     summary: str = "Starting task."
     cycle_count: int = 0

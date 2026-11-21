@@ -171,6 +171,25 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
 
     @asynccontextmanager
     async def lifespan(app):
+        # Reopen durable queues and deliver journaled outcomes missed before a crash.
+        with store._lock:
+            rows = store._db.execute('SELECT id, profile_id FROM conversations').fetchall()
+        for row in rows:
+            queued = store.get_state(f"queue:{row['id']}")
+            tasks = [t for t in manager.tasks.values() if t.session_id == row['id']]
+            if queued not in (None, '', '[]') or tasks:
+                profile = people.get(row['profile_id'])
+                if profile is None:
+                    continue
+                session = hub.get(row['id'], profile)
+                delivered = {t.get('task_id') for t in store.conversation_turns(row['id'])}
+                for task in tasks:
+                    if task.status in {'completed', 'failed', 'cancelled'} and task.id not in delivered:
+                        if task.status == 'cancelled':
+                            session._add_turn('kip', task.summary, source='narration', task_id=task.id)
+                        else:
+                            session._narrate({'type': f'task_{task.status}',
+                                              'data': {'task': task.public(), 'summary': task.summary}})
         if embedder:
             # Load the embedding model in the background so the first reply doesn't wait,
             # then index any memories saved while meaning search was unavailable.
@@ -370,6 +389,7 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
     async def delete_conversation(conversation_id: str, profile: Profile = Depends(who)):
         own_conversation(conversation_id, profile)
         await hub.drop(conversation_id)
+        store.set_state({f'queue:{conversation_id}': '[]'})
         people.delete_conversation(conversation_id)
         owners.pop(conversation_id, None)
 

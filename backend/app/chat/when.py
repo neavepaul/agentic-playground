@@ -110,7 +110,13 @@ def _duration(text: str) -> tuple[timedelta, tuple[int, int]] | None:
     if not found:
         return None
     seconds = _to_int(found.group("n")) * _UNIT_SECONDS[found.group("u")[0]]
-    return timedelta(seconds=seconds), found.span()
+    end = found.end()
+    for extra in _DURATION.finditer(text, end):
+        if text[end:extra.start()].strip() not in ('', 'and', ','):
+            break
+        seconds += _to_int(extra.group('n')) * _UNIT_SECONDS[extra.group('u')[0]]
+        end = extra.end()
+    return timedelta(seconds=seconds), (found.start(), end)
 
 
 def _strip(text: str, spans: list[tuple[int, int]]) -> str:
@@ -149,7 +155,7 @@ def _clock_of(text: str, spans: list, default_part: str | None) -> tuple[int, in
         return (12, 0, "yes") if found.group("special") != "midnight" else (0, 0, "yes")
     hour = int(found.group("h") or found.group("h2") or found.group("h3"))
     minute = int(found.group("m") or found.group("m2") or found.group("m3") or 0)
-    if hour > 24 or minute > 59:
+    if hour > 23 or minute > 59:
         return None
     meridiem = (found.group("ap") or "").replace(".", "")
     if meridiem:
@@ -204,6 +210,8 @@ def read_schedule(text: str, now: datetime) -> tuple[Schedule | None, str, str]:
 
     schedule is None when no time was given (problem "" ) or when it could not be used (problem set)."""
     low = _normalise(_clean(text))
+    if _CLOCK.search(low) and _clock_of(low, [], None) is None:
+        return None, low, 'That clock time is invalid. What time did you mean?'
     spans: list[tuple[int, int]] = []
     problem = ""
 
@@ -392,6 +400,8 @@ def read_request(text: str, now: datetime) -> Request | None:
     """What the message asks of reminders and timers, or None when it is not about them at all."""
     low = _clean(text)
     low = _LEAD.sub("", low, count=1)
+    if re.search(r"\b(?:don't|do not|never)\s+(?:remind|ping|alert|notify|nudge|wake|cancel|delete|remove|clear|stop|set|start)\b", low):
+        return Request('noop')
     noun = _NOUN.search(low)
 
     # cancelling: "cancel the stretch reminder", "stop reminding me about water", "clear all timers"

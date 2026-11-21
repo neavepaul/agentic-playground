@@ -42,6 +42,8 @@ class Reminders:
             request = self._complete(pending, text, now)
         if request is None:
             return None
+        if request.action == 'noop':
+            return "Okay. I haven't changed your reminders."
         if request.action == "list":
             return self._list(now)
         if request.action == "cancel":
@@ -89,6 +91,11 @@ class Reminders:
     # ── setting ─────────────────────────────────────────────────────────────
     def _set(self, request: Request, now: datetime) -> str:
         schedule, kind, what = request.schedule, request.kind, request.what
+        if schedule.repeat.startswith('every:'):
+            floor = 60 if kind == 'lookup' else 10
+            if int(schedule.repeat.split(':')[1]) < floor:
+                self._pending = _Pending(kind, what)
+                return f"Choose an interval of at least {floor} minutes. When?"
         if kind == "lookup" and _ACCOUNTS.search(what):
             return "I won't schedule checks on your accounts. Ask me when you want them."
         text = f"{LOOKUP_PREFIX}{what}" if kind == "lookup" else what

@@ -41,9 +41,9 @@ class OwnTasks:
     def active(self) -> dict | None:
         return self._manager.active() if self.owns(self._manager.active_id) else None
 
-    def start(self, goal: str, grant=None, plan=None):
+    def start(self, goal: str, grant=None, plan=None, queue_id=None):
         return self._manager.start(goal, grant, plan=plan, session_id=self.session_id,
-                                   speaker=self.speaker, portfolio=self.portfolio, owner=self.owner)
+                                   speaker=self.speaker, portfolio=self.portfolio, owner=self.owner, queue_id=queue_id)
 
 
 class ConversationHub:
@@ -66,7 +66,8 @@ class ConversationHub:
         return self._open.get(conversation_id)
 
     async def trim(self) -> None:
-        idle = [key for key, session in self._open.items() if not session.busy and not session.pending_goals]
+        idle = [key for key, session in self._open.items() if not session.busy and not session.pending_goals
+                and session.manager.active() is None]
         while len(self._open) > self._limit and idle:
             await self.drop(idle.pop(0))
 

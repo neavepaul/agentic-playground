@@ -7,6 +7,7 @@ The chat model only *proposes* errands and memories. Code decides what may start
 never runs a half-written or invalid action.
 """
 import asyncio
+import json
 import logging
 import re
 import time
@@ -114,6 +115,7 @@ class ChatSession:
         self._remembered: list[str] = []
         self._queued_grants: dict[tuple[str, ...], Grant] = {}
         self._queued_plans: dict[tuple[str, ...], GoalPlan] = {}
+        self._durable_queue = json.loads(store.get_state(f'queue:{self.session_id}') or '[]') if store else []
         self._declined: set[tuple[str, ...]] = set()  # offers refused in this conversation: not offered again
         self._intents: dict[str, Intent] = {}         # user turn id -> what that message does
         self._work_epoch = 0
@@ -159,6 +161,22 @@ class ChatSession:
 
     def attach(self) -> None:
         self.bus.add_listener(self._narrate)
+        for item in list(self._durable_queue):
+            if any(t.queue_id == item['id'] for t in self.manager.tasks.values()):
+                self._durable_queue.remove(item)
+                continue
+            goal = item['goal']
+            self.pending_goals.append(goal)
+            self._queued_grants[task_identity(goal)] = Grant.model_validate(item['grant'])
+            if item.get('plan'):
+                self._queued_plans[task_identity(goal)] = LookupPlan.model_validate(item['plan'])
+        self._save_queue()
+        if self.pending_goals:
+            self._spawn(self._start_next_when_free(self.generation))
+
+    def _save_queue(self) -> None:
+        if self.store:
+            self.store.set_state({f'queue:{self.session_id}': json.dumps(self._durable_queue)})
 
     # ── public API ──────────────────────────────────────────────────────────
     @property
@@ -240,6 +258,8 @@ class ChatSession:
     async def reset_pending(self) -> None:
         """Discard replies, offers and queued work from before, then accept chat again."""
         await self.close()
+        self._durable_queue.clear()
+        self._save_queue()
         self.generation += 1
         self._announced.clear()
         self._offer_seen.clear()
@@ -1100,6 +1120,8 @@ class ChatSession:
     def _cancel_work(self) -> None:
         """"Stop that": the current errand is cancelled and nothing queued or offered runs."""
         self._work_epoch += 1
+        self._durable_queue.clear()
+        self._save_queue()
         self._expire_offer("declined" if self.offer and self._offer_valid() else "expired")
         self.pending_goals.clear()
         self._queued_grants.clear()
@@ -1288,10 +1310,18 @@ class ChatSession:
         if self._already_planned(goal):
             _log.info("Ignoring a repeated errand request: %s", goal)
             return
+        queued = next((item for item in self._durable_queue if item['goal'] == goal), None)
+        if queued is None:
+            queued = {'id': str(uuid4()), 'goal': goal, 'grant': grant.model_dump(),
+                      'plan': plan.model_dump() if plan else None}
+            self._durable_queue.append(queued)
+            self._save_queue()
         try:
             # Kip's own reply already acknowledged this errand; skip "Start now".
             self._announced.add(task_identity(goal))
-            self.manager.start(goal, grant, plan=plan)
+            self.manager.start(goal, grant, plan=plan, queue_id=queued['id'])
+            self._durable_queue.remove(queued)
+            self._save_queue()
         except TaskBusy:
             # It will start later, when a "Start now" is genuinely news again. It keeps the
             # grant it was given; restrictions are re-checked when its tools run.
@@ -1371,7 +1401,7 @@ class ChatSession:
                 notes.append("Not done: " + "; ".join(task["blocked"]) + ".")
             text = " ".join([text, *notes])
             self._add_turn("kip", text, source="narration", sources=answer.get("sources", []), outcome=outcome,
-                           private=private)
+                           private=private, task_id=task.get('id'))
             if self.pending_goals:
                 self._spawn(self._start_next_when_free(self.generation))
         elif kind == "task_needs_permission":
