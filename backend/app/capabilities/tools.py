@@ -228,6 +228,8 @@ class CapabilityTools:
             # runs" from a page that says 7 wickets: try again.
             raise ValueError("Answer does not match the cited pages: " + "; ".join(wrong)
                              + ". Use the time and result the pages give for the match that was asked about.")
+        from .verification import check_answer
+        answer, verification = check_answer(args.answer, evidence + attached, context.goal)
         sources = []
         for item in evidence + [a for a in attached if a["tool"] == "read_webpage"]:
             obs = item["observation"]
@@ -236,5 +238,5 @@ class CapabilityTools:
             for source in candidates:
                 if not any(s["url"] == source["url"] for s in sources):
                     sources.append({"title": source.get("title", source["url"]), "url": source["url"]})
-        return {"answer": args.answer, "sources": sources,
+        return {"answer": answer, "sources": sources, "verification": verification,
                 "evidence_ids": args.evidence_ids + [a["evidence_id"] for a in attached]}

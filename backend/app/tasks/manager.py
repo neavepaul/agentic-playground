@@ -28,6 +28,8 @@ _CLAIMS_A_RUN = re.compile(r"\b(ran|run|executed|computed|calculated)\b[^.]{0,40
 def answer_notes(context: TaskContext) -> list[str]:
     """Footnotes the final answer must carry to stay true to the evidence."""
     notes = []
+    if (context.answer or {}).get('verification') == 'evidence_linked':
+        notes.append('This answer cites tool evidence; its interpretation has not been independently verified.')
     answer = (context.answer or {}).get("answer", "")
     ran_python = any(e["tool"] == "run_python" and e["success"] for e in context.action_history)
     if answer and not ran_python and _CLAIMS_A_RUN.search(answer.casefold()):
@@ -75,7 +77,7 @@ def _clipped(value):
 
 
 def verified_complete(context: TaskContext) -> bool:
-    """Every required outcome is satisfied by tool evidence."""
+    """An answer was accepted and the required tool executions are present."""
     outcomes = check_conditions(context)
     return bool(outcomes) and all(c["satisfied"] for c in outcomes)
 
@@ -544,7 +546,7 @@ class TaskManager:
             self.bus.emit("task_updated", task=context.public())
             if verified_complete(context):
                 # Every outcome is proven by tool evidence: done.
-                self.finish(context, "completed", "All requested outcomes are verified by tool evidence.")
+                self.finish(context, "completed", "Answer prepared from tool evidence.")
                 return
             evidence_count = sum(1 for e in context.action_history if e["success"])
             stagnant_cycles = stagnant_cycles + 1 if evidence_count == last_evidence else 0
@@ -623,7 +625,7 @@ class TaskManager:
                     if result.get("success"):
                         rejections = 0
                         if not unmet(context):
-                            self.finish(context, "completed", "Answer ready. All requested outcomes completed.")
+                            self.finish(context, "completed", "Answer prepared from tool evidence.")
                             return
                     # Let cancellation, sockets and other API requests run between tools.
                     await asyncio.sleep(0)

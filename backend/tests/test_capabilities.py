@@ -282,7 +282,7 @@ async def test_failed_program_can_be_corrected_from_observed_error():
     task = manager.start('Calculate 6 * 7 with Python.')
     await manager.runner
     assert task.status == 'completed', task.summary
-    assert task.answer['answer'] == '42'
+    assert task.answer['answer'] == 'Ran the numbers: 42.'
     assert any(not a['success'] for a in task.action_history)
 
 
