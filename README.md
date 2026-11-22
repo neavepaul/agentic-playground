@@ -328,3 +328,19 @@ own profile and tap **Enable phone alerts**. To try it, set a 30-second timer an
 background the app. Alerts go to the conversation owner's enrolled devices if
 that conversation is not actively being viewed. Signing out revokes that
 device's enrollment. Alerts contain no chat text.
+
+### Benchmark memory recall
+
+From the Pi's backend directory, run:
+
+```bash
+.venv/bin/python -m app.bench_recall --sizes 50 2000 --repeats 2
+```
+
+The benchmark creates temporary SQLite databases with synthetic facts and asks
+the same questions against both sizes. It warms the model and search separately
+for each database, then reports time to the first visible words, recall latency,
+estimated prompt tokens, and whether the expected fact reached the model and
+its answer. It uses Ollama by default. Add `--hosted` to measure the configured
+Groq chat path or `--keyword-only` to compare with meaning search disabled.
+Embedding the larger database can take a while and is excluded from reply timing.
