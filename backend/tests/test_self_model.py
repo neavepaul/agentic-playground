@@ -115,15 +115,16 @@ async def test_self_model_injected_into_compact_when_persistent_wired():
     persistent = PersistentMemory()
     persistent.self_model.tool_failure_counts["read_webpage"] = 3
     persistent.recent_tasks.append(_record("failed"))
+    persistent.recent_tasks.append(_record("completed").model_copy(update={"speaker": "neave"}))
 
     manager = TaskManager(WaitingLLM(), EventBus(), Settings(), persistent)
-    task = manager.start("Look up the AQI")
+    task = manager.start("Look up the AQI", speaker="neave")
     payload = task.compact()
 
     assert "self_model" in payload
     sm = payload["self_model"]
     assert sm["task_summary"]["failed"] == 1
     assert sm["tool_failures"] == {"read_webpage": 3}
-    assert payload["long_term_memory"]["recent_tasks"] == [{"goal": "x", "outcome": "failed", "summary": "failed"}]
+    assert payload["long_term_memory"]["recent_tasks"] == [{"goal": "x", "outcome": "completed", "summary": "completed"}]
 
     await manager.close()

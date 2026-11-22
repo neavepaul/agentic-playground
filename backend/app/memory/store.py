@@ -30,6 +30,7 @@ class TaskRecord(BaseModel):
     outcome: str
     timestamp: str
     summary: str
+    speaker: str | None = None
 
 
 class PersistentMemory(BaseModel):
@@ -100,10 +101,11 @@ class PersistentMemory(BaseModel):
                     self.self_model.tool_failure_counts.get(entry["tool"], 0) + 1)
         self.recent_tasks.append(TaskRecord(
             task_id=context.id,
-            goal=context.goal,
+            goal="" if context.private else context.goal,
             outcome=context.status,
             timestamp=datetime.now(timezone.utc).isoformat(),
-            summary=context.summary,
+            summary="" if context.private else context.summary,
+            speaker=context.speaker,
         ))
         self.recent_tasks[:] = self.recent_tasks[-20:]
         self.tasks_recorded += 1
@@ -128,10 +130,12 @@ class PersistentMemory(BaseModel):
             ),
         }
 
-    def prompt(self) -> dict:
-        """Compact payload for the LLM. Advisory only."""
+    def prompt(self, speaker: str | None = None) -> dict:
+        """Keep old records with unknown ownership out of model context."""
+        recent = [task for task in self.recent_tasks
+                  if speaker and task.speaker == speaker and task.goal]
         return {
             "note": "Recent errands and how they went.",
             "recent_tasks": [{"goal": t.goal, "outcome": t.outcome, "summary": t.summary}
-                             for t in self.recent_tasks[-5:]],
+                             for t in recent[-5:]],
         }

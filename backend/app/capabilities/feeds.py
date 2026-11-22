@@ -11,6 +11,7 @@ import logging
 import re
 import struct
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass
 from urllib.parse import quote, urlencode
 from xml.etree import ElementTree  # feeds with a DOCTYPE are refused before parsing  # nosec B405
@@ -91,9 +92,20 @@ async def fetch(url: str, headers: dict | None = None) -> dict | str:
         return text
 
 
+_REFRESH = ContextVar("refresh_feed", default=False)
+
+
 async def answer(question: dict, now: datetime, get=None, cricket_key: str = "",
                  football_key: str = "", groww: tuple[str, str] = ("", "")) -> FeedAnswer | None:
     """question: the router's reading (domain, entities, focus, time, place) and their words (said)."""
+    token = _REFRESH.set(bool(question.get("refresh")))
+    try:
+        return await _answer(question, now, get, cricket_key, football_key, groww)
+    finally:
+        _REFRESH.reset(token)
+
+
+async def _answer(question, now, get, cricket_key, football_key, groww):
     get = get or fetch
     if question.get("domain") == "f1":
         return await _f1(question, now, get)
@@ -299,7 +311,7 @@ async def _cricket(q: dict, now: datetime, get, key: str) -> FeedAnswer | None:
 async def _cached(url: str, get, seconds: float = 60, headers: dict | None = None) -> dict:
     """One request a minute at most: a follow-up question costs none of a free plan's quota."""
     hit = _CACHE.get(url)
-    if hit and time.monotonic() - hit[0] < seconds:
+    if hit and not _REFRESH.get() and time.monotonic() - hit[0] < seconds:
         return hit[1]
     data = await (get(url, headers) if headers else get(url))
     _CACHE[url] = (time.monotonic(), data)

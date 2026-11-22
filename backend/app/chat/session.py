@@ -418,10 +418,8 @@ class ChatSession:
             who = {"viewer": self._speaker, "legacy": self.owner} if self.person else {}
             core = await asyncio.to_thread(lambda: self.store.core_facts(speaker, 4, **who))
             pinned = {m["id"] for m in core}
-            memories = [m for m in await self.store.recall(text, kinds=["fact", "preference", "episode", "skill"], k=4,
-                                                           **who)
-                        if m["id"] not in pinned]
-            chats = await self.store.recall(text, kinds=["conversation"], k=2, **who)
+            matches, chats = await self.store.recall_for_chat(text, **who)
+            memories = [m for m in matches if m["id"] not in pinned]
             return core + memories + [{**m, "text": _OWN_OLD_LINE.sub("", m["text"])} for m in chats]
         except Exception:
             _log.exception("Memory recall failed; continuing conversation without recalled memories")
@@ -445,7 +443,9 @@ class ChatSession:
                                                      {"chat_model_calls": 0, "intent_router": route.intent})
                         self._intents.pop(user_turn["id"], None)
                         return
-                    if route.known and route.followup and not (intent.cancel or intent.changes_state_only):
+                    refresh = self._requires_fresh_lookup(user_turn, route)
+                    if route.known and route.followup and not refresh and self._evidence_fresh() and not (
+                            intent.cancel or intent.changes_state_only):
                         # "Who is playing?" when the last lookup already named both sides.
                         finished = self._finish_turn(user_turn, reply_id, route.known, None,
                                                      {"chat_model_calls": 0, "intent_router": "known"})
@@ -950,7 +950,8 @@ class ChatSession:
         if route.correction:
             goal = f"{LOOKUP_PREFIX}{route.earlier} (they corrected: {said}; they mean: {route.meaning})"
         elif route.followup:
-            answered = f"; Kip answered: {_clip(self._frame_answer, 200)}" if self._frame_answer else ""
+            answered = (f"; Kip answered: {_clip(self._frame_answer, 200)}"
+                        if self._frame_answer and not self._requires_fresh_lookup(user_turn, route) else "")
             goal = f"{LOOKUP_PREFIX}{said} (following up on: {route.earlier}{answered}; they mean: {route.meaning})"
         else:
             goal = f"{LOOKUP_PREFIX}{said} (they mean: {route.meaning})"
@@ -1002,6 +1003,11 @@ class ChatSession:
     def _evidence_fresh(self) -> bool:
         return bool(self._frame_evidence) and time.monotonic() - self._frame_evidence_at < EVIDENCE_SECONDS
 
+    @staticmethod
+    def _requires_fresh_lookup(user_turn: dict, route: Route) -> bool:
+        return bool(_NEWER.search(user_turn["text"].casefold()) or
+                    (route.live and route.domain in {"weather", "finance", "news"}))
+
     def _from_last_lookup(self, user_turn: dict, route: Route) -> bool:
         """"India lost?" right after the lookup that found the result: answered from that
         evidence, not searched again. Asking for something newer ("now", "latest") searches."""
@@ -1011,11 +1017,12 @@ class ChatSession:
         # after the score). "Which channel?" after the start time is something new: it searches.
         same_aspect = route.focus == prior or (route.focus in _HOW_IT_WENT and prior in _HOW_IT_WENT)
         return (self._evidence_fresh() and getattr(route, "same_subject", False) and not route.correction
-                and same_aspect and len(said.split()) <= 7 and not _NEWER.search(said))
+                and same_aspect and len(said.split()) <= 7 and not self._requires_fresh_lookup(user_turn, route))
 
     def _disputes(self, route: Route | None, turn_id: str) -> bool:
         turn = next((t for t in reversed(self.turns) if t["id"] == turn_id), None)
-        if turn is None or not self._evidence_fresh():
+        if (turn is None or not self._evidence_fresh() or
+                (route is not None and self._requires_fresh_lookup(turn, route))):
             return False
         said = turn["text"].casefold()
         statement = not (route and route.asks) and not said.rstrip().endswith("?")
@@ -1212,7 +1219,7 @@ class ChatSession:
                 self._drop_checkpoint()  # the old note may repeat what was just corrected; it is rewritten
                 try:
                     who = {"viewer": self._speaker, "legacy": self.owner} if self.person else {}
-                    retired = await self.store.supersede(wrong, by=added[0] if added else None,
+                    retired = await self.store.supersede(wrong, by=added[0] if len(added) == 1 else None,
                                                          exclude=set(added), about=self._mentioned(wrong), **who)
                     if retired:
                         _log.info("Memory %s superseded by a correction", retired["id"])
@@ -1436,7 +1443,8 @@ def _feed_question(route: Route, words: str, holder: str | None = None) -> dict:
     leans = bool(route.followup or route.correction)
     earlier = route.earlier if leans else ""
     question = {"domain": route.domain, "entities": list(route.entities), "focus": route.focus, "time": route.time,
-                "place": route.place, "said": words, "followup": leans, "earlier": earlier}
+                "place": route.place, "said": words, "followup": leans, "earlier": earlier,
+                "refresh": ChatSession._requires_fresh_lookup({"text": words}, route)}
     if holder and route.domain == "finance":
         from app.capabilities.feeds import as_asked_by_holder
         question.update(said=as_asked_by_holder(words, holder), earlier=as_asked_by_holder(earlier, holder),

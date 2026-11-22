@@ -231,8 +231,9 @@ async def test_on_the_router_sends_a_live_question_straight_to_a_lookup_of_what_
     assert "following up on: where did russell end up?" in second.goal
     assert second.action_history[0]["arguments"]["query"].startswith("Max Verstappen finishing position")
     # Each lookup names the feed it tries first (offline in tests), then answers.
-    assert kip_lines(session, "narration") == ["Let me check Jolpica for that.", "P6. Not his best day.",
-                                               "Let me check Jolpica for that.", "Max P2."]
+    caveat = " This answer cites tool evidence; its interpretation has not been independently verified."
+    assert kip_lines(session, "narration") == ["Let me check Jolpica for that.", "P6. Not his best day." + caveat,
+                                               "Let me check Jolpica for that.", "Max P2." + caveat]
     await done(session, manager)
 
 
@@ -449,6 +450,9 @@ async def test_asking_for_something_newer_still_searches(ran):
     await settle(session, manager)
     await manager.runner
     assert len(manager.tasks) == 2
+    latest = list(manager.tasks.values())[-1]
+    assert "India 191 for 8." in latest.answer["answer"]
+    assert "145 for 5" not in latest.goal
     await done(session, manager)
 
 

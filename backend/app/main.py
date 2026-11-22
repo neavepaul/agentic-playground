@@ -497,7 +497,7 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
             raise HTTPException(403, "Only the owner can start errands directly.")
         async with mutation_lock:
             try:
-                return manager.start(request.goal).public()
+                return manager.start(request.goal, speaker=profile.speaker, owner=True).public()
             except TaskBusy as exc:
                 raise HTTPException(409, str(exc)) from None
 

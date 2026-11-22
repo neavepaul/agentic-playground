@@ -245,6 +245,10 @@ async def test_cricketdata_answers_results_fixtures_and_live_scores():
     assert live.answer == ("Afghanistan v Zimbabwe is under way: Afghanistan 159/6 (48), Zimbabwe 339/10 (114.5). "
                            "Day 2: Stumps - Afghanistan trail by 180 runs.")
     assert asked == [CRICAPI]  # three questions inside a minute: one of the day's 100 requests
+    await feeds.answer({**india, "refresh": True}, NOW, get, cricket_key=KEY)
+    assert asked == [CRICAPI, CRICAPI]
+    await feeds.answer(india, NOW, get, cricket_key=KEY)
+    assert asked == [CRICAPI, CRICAPI]  # refresh is scoped to that request
 
 
 @pytest.mark.asyncio

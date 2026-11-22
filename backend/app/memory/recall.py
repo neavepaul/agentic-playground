@@ -207,6 +207,9 @@ class MemoryStore:
             # 0 = retracted without a replacement; otherwise the id of the correction.
             db.execute("ALTER TABLE memories ADD COLUMN superseded_by INTEGER")
             db.commit()
+        # Older versions filed tool answers alongside durable personal facts.
+        with db:
+            db.execute("UPDATE memories SET kind = 'observation' WHERE kind = 'fact' AND source = 'task'")
         if self.embedder is None:
             return
         try:
@@ -257,6 +260,7 @@ class MemoryStore:
                     # dinner" are different facts. Merge only rewordings of the same words.
                     if (nearest["kind"] == kind and nearest["context"] == context and nearest["speaker"] == speaker
                             and 1 - nearest["distance"] >= DUPLICATE_SIMILARITY
+                            and _negated(nearest["text"]) == _negated(text)
                             and _overlap(nearest["text"], text) >= DUPLICATE_OVERLAP):
                         duplicate = nearest
                         break
@@ -295,11 +299,26 @@ class MemoryStore:
         return await asyncio.to_thread(self._recall, query, about, kinds, k, touch, vector, include_superseded,
                                        viewer, legacy)
 
+    async def recall_for_chat(self, query: str, viewer: str | None = None,
+                              legacy: bool = False) -> tuple[list[dict], list[dict]]:
+        """Reuse the query embedding across durable memory and conversation history."""
+        vector = await self._embed(query) if query.strip() else None
+
+        def select():
+            scope = {"viewer": viewer, "legacy": legacy}
+            facts = self._recall(query, None, ["fact", "preference", "episode", "skill"], 4, True, vector, **scope)
+            chats = self._recall(query, None, ["conversation"], 2, True, vector, fallback=False, **scope)
+            return facts, chats
+
+        return await asyncio.to_thread(select)
+
     def _recall(self, query, about, kinds, k, touch, vector, include_superseded=False,
-                viewer=None, legacy=False) -> list[dict]:
+                viewer=None, legacy=False, fallback=True) -> list[dict]:
         with self._lock:
             db = self._db
             kind_sql = f" AND m.kind IN ({','.join('?' * len(kinds))})" if kinds else ""
+            if not kinds:
+                kind_sql += " AND m.kind != 'observation'"
             if not include_superseded:
                 kind_sql += " AND m.superseded_by IS NULL"
             kind_args = list(kinds or [])
@@ -332,7 +351,7 @@ class MemoryStore:
                     limit *= 4
                 semantic = {row["id"]: max(0.0, 1 - row["distance"]) for row in rows[:CANDIDATES]}
             ids = set(keyword) | set(semantic)
-            if not ids:
+            if not ids and fallback:
                 # Nothing matched: offer the most important recent memories of these kinds.
                 rows = db.execute(f"SELECT m.id FROM memories m WHERE 1=1{kind_sql} "  # constants and ? only  # nosec B608
                                   "ORDER BY m.importance DESC, m.id DESC LIMIT ?", [*kind_args, CANDIDATES]).fetchall()
@@ -638,7 +657,7 @@ def task_memories(context, feeling: str | None = None) -> list[dict]:
     memories = [{"kind": "episode", "text": episode, "about": [], "importance": importance}]
     if context.status == "completed" and context.answer:
         sources = [s.get("url") for s in context.answer.get("sources", [])][:3]
-        memories.append({"kind": "fact", "importance": 0.5, "about": [],
+        memories.append({"kind": "observation", "importance": 0.5, "about": [],
                          "text": f"Q: {context.goal} → A: {context.answer.get('answer', '')[:300]}",
                          "meta": {"sources": sources}})
     return memories

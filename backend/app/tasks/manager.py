@@ -176,7 +176,7 @@ class TaskManager:
         context.metrics.llm_call_limit = self.settings.max_task_llm_calls
         self._sync_permissions(context)
         if self.persistent:
-            context.long_term_memory = self.persistent.prompt()
+            context.long_term_memory = self.persistent.prompt(context.speaker)
             context.self_model = self.persistent.self_model_prompt()
         # Keep recent tasks in memory only. Active task is never evicted.
         if len(self.tasks) >= 50:

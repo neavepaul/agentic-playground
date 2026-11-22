@@ -115,11 +115,11 @@ def test_finished_lookup_forms_episode_and_answer_memories():
     context.record("finish_answer", {}, {"success": True, "evidence_id": "a1", "observation": {
         "answer": "The AQI is 150.", "sources": [{"url": "https://aqi.example/mumbai"}]}})
     memories = {m["kind"]: m for m in task_memories(context, "cheerful")}
-    assert set(memories) == {"episode", "fact"}
+    assert set(memories) == {"episode", "observation"}
     assert memories["episode"]["text"] == "Finished: Look up the AQI in Mumbai. Answered. I felt cheerful."
-    assert memories["fact"]["text"] == "Q: Look up the AQI in Mumbai → A: The AQI is 150."
-    assert memories["fact"]["meta"] == {"sources": ["https://aqi.example/mumbai"]}
-    assert memories["episode"]["about"] == memories["fact"]["about"] == []
+    assert memories["observation"]["text"] == "Q: Look up the AQI in Mumbai → A: The AQI is 150."
+    assert memories["observation"]["meta"] == {"sources": ["https://aqi.example/mumbai"]}
+    assert memories["episode"]["about"] == memories["observation"]["about"] == []
 
 
 def test_a_failed_task_forms_only_an_episode():
@@ -127,6 +127,39 @@ def test_a_failed_task_forms_only_an_episode():
     [memory] = task_memories(context)
     assert memory["kind"] == "episode" and memory["text"] == "Could not finish: Look up the AQI. No source."
     assert memory["importance"] == 0.7
+
+
+@pytest.mark.asyncio
+async def test_old_tool_answers_are_archived_as_observations(tmp_path):
+    path = tmp_path / "observations.db"
+    original = MemoryStore(path)
+    await original.add("fact", "The score was 145.", source="task")
+    await original.add("fact", "Neave likes tea.", source="conversation")
+    original.close()
+    reopened = MemoryStore(path)
+    try:
+        assert [m["text"] for m in await reopened.recall("score")] == ["Neave likes tea."]
+        assert [m["text"] for m in await reopened.recall("score", kinds=["observation"])] == ["The score was 145."]
+    finally:
+        reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_correction_replaces_preference_after_reopen(tmp_path):
+    path = tmp_path / "correction.db"
+    store = MemoryStore(path)
+    old = await store.add("preference", "Neave prefers coffee.", meta={"speaker": "neave"})
+    new = await store.add("preference", "Neave prefers tea.", meta={"speaker": "neave"})
+    await store.add("preference", "Neave prefers coffee.", meta={"speaker": "moira"})
+    retired = await store.supersede("Neave prefers coffee.", by=new, viewer="neave")
+    assert retired["id"] == old
+    store.close()
+    reopened = MemoryStore(path)
+    try:
+        assert [m["id"] for m in await reopened.recall("prefers", viewer="neave")] == [new]
+        assert [m["text"] for m in await reopened.recall("prefers", viewer="moira")] == ["Neave prefers coffee."]
+    finally:
+        reopened.close()
 
 
 @pytest.mark.asyncio
