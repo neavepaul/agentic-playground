@@ -22,6 +22,7 @@ from app.memory.recall import Embedder, MemoryStore
 from app.memory.store import PersistentMemory
 from app.people import COOKIE, SESSION_SECONDS, People, Profile, SignInError
 from app.persona import Persona
+from app.phone_push import PhonePush, Subscription
 from app.scheduler import Scheduler
 from app.tasks.manager import TaskBusy, TaskManager
 
@@ -105,6 +106,7 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
     # Profiles, signed-in devices and each person's conversations. The chat from before profiles
     # (config.chat_session_id) becomes the first profile's, the owner's.
     people = People(store, legacy_session=config.chat_session_id)
+    phone_push = PhonePush(store)
     router = None
     if config.intent_router != "off":
         # Reviewed corrections join the shipped examples; the embedding model joins once loaded.
@@ -216,6 +218,7 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
             await asyncio.gather(memory_ready, return_exceptions=True)
         await hub.close()
         await manager.close()
+        await phone_push.close()
         save_persona()  # including what changed since the last save
         if client is None:
             await llm.close()  # the hosted chat wrapper owns nothing of its own
@@ -269,6 +272,16 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
             owners[conversation_id] = people.conversation_owner(conversation_id)
         return owners[conversation_id]
 
+    def notify_phone(event):
+        if event["type"] != "chat_message" or not phone_push.public_key:
+            return
+        turn = event["data"]["turn"]
+        if turn["role"] == "kip" and (turn.get("source") != "narration" or turn.get("task_id")):
+            cid = turn["session_id"]
+            phone_push.notify(owner_of(cid), cid)
+
+    bus.add_listener(notify_phone)
+
     def task_owner(task_id: str | None, task: dict | None = None) -> tuple[bool, str | None]:
         """(is a task event, the profile id it belongs to). API tasks belong to the owner (None)."""
         context = manager.tasks.get(task_id) if task_id else None
@@ -301,6 +314,7 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
         return {"sequence": bus.sequence, "task": latest.public() if latest else None}
 
     def signed_in_response(response: Response, request: Request, profile: Profile) -> dict:
+        phone_push.revoke_session(request.cookies.get(COOKIE))
         token = people.sign_in(profile)
         response.set_cookie(COOKIE, token, max_age=SESSION_SECONDS, httponly=True, samesite="strict",
                             secure=request.url.scheme == "https", path="/")
@@ -340,8 +354,33 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
 
     @app.post("/api/signout", status_code=204)
     async def sign_out(request: Request, response: Response):
+        phone_push.revoke_session(request.cookies.get(COOKIE))
         people.sign_out(request.cookies.get(COOKIE))
         response.delete_cookie(COOKIE, path="/")
+
+    @app.get("/api/phone-push")
+    async def push_settings(profile: Profile = Depends(who)):
+        return {"public_key": phone_push.public_key}
+
+    @app.post("/api/phone-push", status_code=204)
+    async def push_subscribe(body: Subscription, request: Request, profile: Profile = Depends(who)):
+        token = request.cookies.get(COOKIE)
+        if not phone_push.public_key or not token or not body.valid():
+            raise HTTPException(400, "Phone notifications are unavailable for this subscription.")
+        phone_push.subscribe(profile.id, token, body)
+
+    @app.delete("/api/phone-push", status_code=204)
+    async def push_disable(request: Request, profile: Profile = Depends(who)):
+        phone_push.revoke_session(request.cookies.get(COOKIE))
+
+    @app.post("/api/chat-view/{tab}", status_code=204)
+    async def chat_view(tab: str, request: Request, conversation: str = "", profile: Profile = Depends(who)):
+        token = request.cookies.get(COOKIE)
+        if not phone_push.public_key or not token:
+            return
+        if conversation:
+            own_conversation(conversation, profile)
+        phone_push.view(token, tab[:64], profile.id, conversation)
 
     @app.get("/api/me")
     async def me(profile: Profile = Depends(who)):

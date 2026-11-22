@@ -303,3 +303,28 @@ cd frontend && npm test && npm run build
 - **Kip won't start on the Pi:** `journalctl -u kip -n 50` shows why; `sudo systemctl restart kip`
   after fixing it.
 - **Forget everything:** stop the backend and delete `backend/memory/kip.db`.
+
+### Phone notifications
+
+Serve the built app over HTTPS using a certificate trusted by the phone. Use the
+same HTTPS address when opening Kip on the phone and allow that hostname and
+origin in Kip's settings if required. The Pi needs outbound HTTPS to browser
+push services.
+
+Create a persistent P-256 VAPID key outside the repository (readable by the
+account that runs Kip), then set these variables in the service environment:
+
+```sh
+openssl ecparam -name prime256v1 -genkey -noout -out kip-vapid.pem
+chmod 600 kip-vapid.pem
+```
+
+- `KIP_PUSH_KEY` is the absolute path to the PEM file.
+- `KIP_PUSH_SUBJECT` is an operator contact such as `mailto:you@example.com`.
+
+Install the updated backend requirements, build the frontend, and restart Kip.
+On iPhone, add Kip to the Home Screen and open it from there. Sign in with your
+own profile and tap **Enable phone alerts**. To try it, set a 30-second timer and
+background the app. Alerts go to the conversation owner's enrolled devices if
+that conversation is not actively being viewed. Signing out revokes that
+device's enrollment. Alerts contain no chat text.

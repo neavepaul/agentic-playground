@@ -8,6 +8,7 @@ import { addEvent, clearActivity, initActivity } from './activity.js';
 import { initMemories, loadMemories } from './memories.js';
 import { renderPersona } from './persona.js';
 import { signIn } from './signin.js';
+import { initPhonePush } from './phone-push.js';
 import { initPanel, initTabs, setConnection, setModel, setMood } from './ui.js';
 
 const memoriesPanel = document.getElementById('memories-panel');
@@ -106,6 +107,9 @@ async function start() {
   onStarted(started);
   onMissing(() => select(null));
   initConversations(me, (id) => { setConversation(id); });
+  initPhonePush().catch((error) => {
+    document.getElementById('phone-push-status').textContent = error.message;
+  });
   loadMemories(memoriesPanel);
 
   connectEvents({

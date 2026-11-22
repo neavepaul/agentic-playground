@@ -39,6 +39,7 @@ export function onMissing(callback) { missingHook = callback; }
 export function setConversation(id) {
   if (id === conversation && id !== null) return reloadChat();
   conversation = id;
+  globalThis.window?.dispatchEvent(new Event('kip:conversation'));
   return reloadChat();
 }
 
@@ -356,6 +357,7 @@ async function send(text) {
   const sentTo = conversation;
   try {
     renderTurn(await api('/chat', { message, conversation_id: sentTo }));
+    globalThis.window?.dispatchEvent(new Event('kip:conversation'));
     if (fresh) startedHook(sentTo);
     showNote('');
     scrollToEnd(true);

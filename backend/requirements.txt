@@ -14,3 +14,4 @@ tzdata>=2024.1  # time-zone data for zoneinfo (Windows has none): converting "Ne
 # Patched minimums for packages the ones above pull in (pip-audit, 15 November 2026).
 opentelemetry-api>=1.45.2  # via fastapi: CVE-2026-126360
 soupsieve>=4.0.0  # via beautifulsoup4: CVE-2026-126190
+pywebpush>=2,<3
