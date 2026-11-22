@@ -145,6 +145,22 @@ class ChatSession:
         self._routed = 0
         self._routes: dict[str, Route] = {}            # user turn id -> how the router read it
         self._correction_goals: dict[tuple[str, ...], int] = {}  # corrected lookup -> correction record
+        self._memory_cutoff = self.store.memory_cutoff(self._speaker) if self.store and self.person else ""
+
+    def _sync_memory_boundary(self) -> str:
+        cutoff = self.store.memory_cutoff(self._speaker) if self.store and self.person else ""
+        if cutoff != self._memory_cutoff:
+            self._memory_cutoff = cutoff
+            self._drop_checkpoint()
+            self._remembered.clear()
+            self._frame = self._frame_route = None
+            self._frame_answer = self._frame_evidence = ""
+        return cutoff
+
+    @staticmethod
+    def _context_turns(turns, cutoff):
+        return [turn for turn in turns if not cutoff or (turn.get("at", "") > cutoff
+                and turn.get("context_at", turn.get("at", "")) > cutoff)]
 
     @property
     def _hosted_chat(self) -> bool:
@@ -431,10 +447,17 @@ class ChatSession:
         queued_at = time.monotonic()
         try:
             async with self._lock:  # FIFO: one reply at a time, in order
+                cutoff = self._sync_memory_boundary()
+                earlier = self._context_turns(earlier, cutoff)
                 queue_seconds = time.monotonic() - queued_at
                 said = user_turn["text"]
                 intent = self._intents.get(user_turn["id"]) or read_intent(said)
                 route = await self._route(user_turn, intent, earlier)
+                if self._sync_memory_boundary() != cutoff:
+                    cutoff = self._memory_cutoff
+                    earlier = self._context_turns(earlier, cutoff)
+                    self._routes.pop(user_turn["id"], None)
+                    route = None
                 if route is not None and self.settings.intent_router == "on":
                     question = self._router_clarifies(user_turn, intent, route)
                     if question:
@@ -492,6 +515,12 @@ class ChatSession:
                               reply_id=reply_id, waiting_on_errand=waiting)
                 recall_started = time.monotonic()
                 memories = await self._recall(user_turn["text"], user_turn.get("speaker"))
+                current_cutoff = self._sync_memory_boundary()
+                if current_cutoff != cutoff:
+                    memories = []
+                    earlier = self._context_turns(earlier, current_cutoff)
+                    self._routes.pop(user_turn["id"], None)
+                    cutoff = current_cutoff
                 recall_seconds = time.monotonic() - recall_started
                 voice = (self.persona.voice_view(speaker=user_turn.get("speaker"), message=user_turn["text"])
                          if self.persona else None)
@@ -512,7 +541,7 @@ class ChatSession:
                 note = self.checkpoint
                 status = self._status(user_turn.get("speaker"))
                 recalled = prompt_memories(memories)
-                since = checkpoints.after(earlier, note)
+                since = checkpoints.after(self._context_turns(earlier, cutoff), note)
 
                 def prompt(context_tokens: int, history_tokens: int) -> list[dict]:
                     return build_messages(self.name, voice, recalled, status, since, user_turn["text"],
@@ -654,12 +683,15 @@ class ChatSession:
 
     def _finish_turn(self, user_turn, reply_id, text, action, metrics, **extra) -> dict:
         return self._add_turn("kip", text, reply_id=reply_id, in_reply_to=user_turn["id"],
+                              context_at=user_turn["at"],
                               to=user_turn.get("speaker"),
                               action=action.model_dump() if action else None, metrics=metrics,
                               **{k: v for k, v in extra.items() if v})
 
     # ── acting on a reply ───────────────────────────────────────────────────
     async def _act(self, action: ChatAction | None, user_turn: dict, reply_turn: dict, written: str = "") -> None:
+        if user_turn["at"] <= self._sync_memory_boundary():
+            return
         said, reply = user_turn["text"], reply_turn["text"]
         intent = self._intents.get(user_turn["id"]) or read_intent(said)
         marker = self._work_marker()
@@ -684,6 +716,9 @@ class ChatSession:
 
     async def _extract(self, user_turn: dict, reply: str) -> None:
         """Read one exchange for lasting facts and corrections, and file them like any other memory."""
+        cutoff = self._sync_memory_boundary()
+        if user_turn["at"] <= cutoff:
+            return
         said, speaker = user_turn["text"], user_turn.get("speaker")
         known = [m for m in await self._recall(said, speaker) if m.get("kind") in ("fact", "preference")]
         who = self._speaker_name(speaker) if speaker else ""
@@ -696,10 +731,13 @@ class ChatSession:
             return
         await self._remember(ChatAction(remember=found.remember, forget=found.forget), user_turn, reply,
                              record=False)
+        if self._sync_memory_boundary() != cutoff:
+            return
         try:  # the conversation's episode now includes what was just learned
             await self.store.set_keyed(f"chat-session:{self.session_id}", "episode", self._session_summary(),
                                        about=sorted({t for turn in self.turns for t in self._mentioned(turn["text"])}),
-                                       importance=0.5, source="conversation", speaker=speaker)
+                                       importance=0.5, source="conversation", speaker=speaker,
+                                       expected_cutoff=cutoff if self.person else None)
         except Exception:
             _log.exception("Could not update the conversation summary")
 
@@ -708,7 +746,8 @@ class ChatSession:
         they gave earlier in the chat, rather than trust a sum done in the model's head."""
         if not self.settings.digital_tools_enabled or self.manager.restrictions.forbids_tool("run_python"):
             return
-        earlier = [t["text"] for t in self.turns if t["role"] == "user" and t["id"] != user_turn["id"]
+        earlier = [t["text"] for t in self._context_turns(self.turns, self._sync_memory_boundary())
+                   if t["role"] == "user" and t["id"] != user_turn["id"]
                    and not t.get("private")][-6:]
         goal = (f"Calculate with Python and answer plainly: {user_turn['text']} Numbers and facts from earlier in "
                 f"this chat: " + " | ".join(_clip(text, 220) for text in earlier))
@@ -1187,6 +1226,10 @@ class ChatSession:
                        source="correction", claims=[f"promised: {clause}"])
 
     async def _remember(self, action: ChatAction | None, user_turn: dict, reply: str, record: bool = True) -> None:
+        cutoff = self._sync_memory_boundary()
+        if user_turn["at"] <= cutoff:
+            return
+        expected = cutoff if self.person else None
         said, speaker = user_turn["text"], user_turn.get("speaker")
         about = self._mentioned(said + " " + reply)
         added = []
@@ -1204,23 +1247,29 @@ class ChatSession:
                 tags.append(speaker)
             meta = {"context": context, "speaker": speaker or "unknown", "said_in": user_turn["id"]}
             try:
-                added.append(await self.store.add("preference" if re.search(r"\b(prefer|like|love|favou?rite|"
+                memory_id = await self.store.add("preference" if re.search(r"\b(prefer|like|love|favou?rite|"
                                                                             r"enjoy|hate|dislike)", text, re.I)
                                                   else "fact", text, about=tags or about,
                                                   # Who they are outranks what they had for lunch.
                                                   importance=0.9 if _CORE_FACT.search(text) else 0.7,
-                                                  source="conversation", meta=meta))
+                                                  source="conversation", meta=meta, expected_cutoff=expected)
+                if not memory_id or self._sync_memory_boundary() != cutoff:
+                    return
+                added.append(memory_id)
                 self._remembered.append(text if context == "actual" else f"{text} ({context})")
             except Exception:
                 _log.exception("Could not save a conversational fact")
         # Corrections retire the wrong memory (kept as history), never the fix itself.
         for wrong in (action.forget if action else []):
+            if self._sync_memory_boundary() != cutoff:
+                return
             if wrong.strip():
                 self._drop_checkpoint()  # the old note may repeat what was just corrected; it is rewritten
                 try:
                     who = {"viewer": self._speaker, "legacy": self.owner} if self.person else {}
                     retired = await self.store.supersede(wrong, by=added[0] if len(added) == 1 else None,
-                                                         exclude=set(added), about=self._mentioned(wrong), **who)
+                                                         exclude=set(added), about=self._mentioned(wrong),
+                                                         expected_cutoff=expected, **who)
                     if retired:
                         _log.info("Memory %s superseded by a correction", retired["id"])
                 except Exception:
@@ -1229,10 +1278,13 @@ class ChatSession:
             return
         try:
             await self.store.add("conversation", f"They said: {said} | I replied: {reply}", about=about,
-                                 importance=0.3, source="conversation", meta={"speaker": speaker or "unknown"})
+                                 importance=0.3, source="conversation", meta={"speaker": speaker or "unknown"},
+                                 expected_cutoff=expected)
+            if self._sync_memory_boundary() != cutoff:
+                return
             await self.store.set_keyed(f"chat-session:{self.session_id}", "episode", self._session_summary(),
                                        about=sorted({t for turn in self.turns for t in self._mentioned(turn["text"])}),
-                                       importance=0.5, source="conversation", speaker=speaker)
+                                       importance=0.5, source="conversation", speaker=speaker, expected_cutoff=expected)
         except Exception:
             _log.exception("Could not save conversation")
 
@@ -1253,11 +1305,12 @@ class ChatSession:
         if (self._user_turns < self._compact_after or self.replying or self._closed
                 or (self.shares_task_model and self.manager.active_id is not None)):
             return  # a busy local model is left to the reply or errand that needs it; tried again later
+        cutoff = self._sync_memory_boundary()
         epoch, previous = self._checkpoint_epoch, self.checkpoint
-        status, found = await checkpoints.compact(self.client, list(self.turns), previous,
+        status, found = await checkpoints.compact(self.client, self._context_turns(self.turns, cutoff), previous,
                                                   self._history_budget,
                                                   self.settings.chat_checkpoint_tokens)
-        if epoch != self._checkpoint_epoch or self._closed:
+        if self._sync_memory_boundary() != cutoff or epoch != self._checkpoint_epoch or self._closed:
             return  # the note was dropped (a correction) or the chat reset while this was being written
         self.compaction = status
         if status == "failed":
@@ -1270,7 +1323,7 @@ class ChatSession:
 
     def _session_summary(self) -> str:
         """A deterministic episode of this conversation, so it can be recalled after a restart."""
-        turns = list(self.turns)
+        turns = self._context_turns(self.turns, self._sync_memory_boundary())
         start = turns[0]["at"][:16].replace("T", " ") if turns else ""
         topics = [_clip(t["text"], 60) for t in turns if t["role"] == "user"][-6:]
         # A private answer (their own accounts) is never summarised: this episode is recalled into prompts.

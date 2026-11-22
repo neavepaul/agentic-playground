@@ -226,15 +226,15 @@ class MemoryStore:
 
     # ── writing ─────────────────────────────────────────────────────────────
     async def add(self, kind: str, text: str, about: list[str] | None = None, importance: float = 0.5,
-                  source: str = "", meta: dict | None = None) -> int:
+                  source: str = "", meta: dict | None = None, expected_cutoff: str | None = None) -> int:
         text = " ".join(text.split())[:2000]
         if not text:
             raise ValueError("A memory needs text.")
         vector = await self._embed(text)
         return await asyncio.to_thread(self._add, kind, text, sorted({a.casefold() for a in about or [] if a}),
-                                       max(0.0, min(1.0, importance)), source, meta or {}, vector)
+                                       max(0.0, min(1.0, importance)), source, meta or {}, vector, expected_cutoff)
 
-    def _add(self, kind, text, about, importance, source, meta, vector) -> int:
+    def _add(self, kind, text, about, importance, source, meta, vector, expected_cutoff=None) -> int:
         # Only memories in the same frame merge: something said in pretend play and the
         # same words said for real are two memories, each keeping its own context.
         context = meta.get("context") or "actual"
@@ -242,6 +242,8 @@ class MemoryStore:
         # sees their own and a correction or deletion by one never touches the other's.
         speaker = meta.get("speaker") or "unknown"
         with self._lock:
+            if expected_cutoff is not None and self.memory_cutoff(speaker) != expected_cutoff:
+                return 0
             db = self._db
             duplicate = db.execute(f"SELECT id FROM memories WHERE kind = ? AND text = ? AND superseded_by IS NULL "  # constants and ? only  # nosec B608
                                    f"AND {_CONTEXT_SQL} = ? AND {_SPEAKER_SQL} = ?",
@@ -268,8 +270,9 @@ class MemoryStore:
                 key = duplicate[0]
                 # Hearing something again reinforces it rather than storing a copy.
                 db.execute("UPDATE memories SET importance = MIN(1.0, MAX(importance, ?) + 0.05), "
-                           "recall_count = recall_count + 1, last_recalled = ? WHERE id = ?",
-                           (importance, _now(), key))
+                           "recall_count = recall_count + 1, last_recalled = ?, "
+                           "meta = json_set(meta, '$.confirmed_at', ?) WHERE id = ?",
+                           (importance, _now(), _now(), key))
                 db.commit()
                 return key
             key = db.execute(
@@ -375,7 +378,8 @@ class MemoryStore:
             scored.sort(key=lambda item: -item[0])
             results = [{"id": row["id"], "kind": row["kind"], "text": row["text"], "about": tags,
                         "importance": round(row["importance"], 2), "created_at": row["created_at"],
-                        "score": round(score, 3), **_labels(row)} for score, row, tags in scored[:k]]
+                        "score": round(score, 3), "source": row["source"],
+                        "editable": self._editable(row, viewer), **_labels(row)} for score, row, tags in scored[:k]]
             if touch and results:
                 db.executemany("UPDATE memories SET last_recalled = ?, recall_count = recall_count + 1 WHERE id = ?",
                                [(_now(), item["id"]) for item in results])
@@ -396,7 +400,39 @@ class MemoryStore:
                 + " ORDER BY id DESC LIMIT ?", args + [limit]).fetchall()
         return [{"id": row["id"], "kind": row["kind"], "text": row["text"], "about": json.loads(row["about"]),
                  "importance": round(row["importance"], 2), "created_at": row["created_at"],
-                 "superseded_by": row["superseded_by"]} for row in rows]
+                 "source": row["source"], "editable": self._editable(row, viewer),
+                 "superseded_by": row["superseded_by"], **_labels(row)} for row in rows]
+
+    @staticmethod
+    def _editable(row, viewer: str | None) -> bool:
+        return (bool(viewer) and row["kind"] in {"fact", "preference"} and row["superseded_by"] is None
+                and json.loads(row["meta"]).get("speaker") == viewer)
+
+    def memory_cutoff(self, speaker: str | None) -> str:
+        return (self.get_state(f"memory-cutoff:{speaker}") or "") if speaker else ""
+
+    def manage_memory(self, memory_id: int, speaker: str, profile_id: str, legacy: bool,
+                      replacement: str | None = None) -> bool:
+        """Retire an owned fact and invalidate older context in one transaction."""
+        with self._lock, self._db as db:
+            row = db.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
+            if row is None or not self._editable(row, speaker):
+                return False
+            now = _now()
+            replacement_id = 0
+            if replacement is not None:
+                replacement_id = db.execute("""
+                    INSERT INTO memories(kind, text, about, importance, source, created_at, meta)
+                    VALUES (?, ?, ?, ?, 'profile', ?, json_set(?, '$.confirmed_at', ?))
+                """, (row["kind"], replacement, row["about"], row["importance"], now, row["meta"], now)).lastrowid
+            db.execute("UPDATE memories SET superseded_by = ? WHERE id = ?", (replacement_id, memory_id))
+            db.execute("UPDATE memories AS m SET superseded_by = 0 WHERE superseded_by IS NULL "
+                       "AND kind IN ('episode', 'conversation')" + _WHOSE_SQL, (speaker, int(legacy)))
+            db.execute("DELETE FROM state WHERE key IN (SELECT 'chat-checkpoint:' || id "
+                       "FROM conversations WHERE profile_id = ?)", (profile_id,))
+            db.execute("INSERT OR REPLACE INTO state(key, value, updated_at) VALUES (?, ?, ?)",
+                       (f"memory-cutoff:{speaker}", now, now))
+            return True
 
     async def backfill(self, batch: int = 32) -> int:
         """Index memories saved while meaning search was unavailable. Returns how many."""
@@ -424,14 +460,21 @@ class MemoryStore:
             _log.info("Indexed %d memories for meaning search.", done)
         return done
 
-    def _mark_superseded(self, memory_id: int, by: int) -> None:
+    def _mark_superseded(self, memory_id: int, by: int, viewer=None, expected_cutoff=None) -> bool:
         with self._lock:
-            self._db.execute("UPDATE memories SET superseded_by = ? WHERE id = ?", (by, memory_id))
+            if expected_cutoff is not None and self.memory_cutoff(viewer) != expected_cutoff:
+                return False
+            changed = self._db.execute(
+                "UPDATE memories SET superseded_by = ? WHERE id = ? AND superseded_by IS NULL",
+                (by, memory_id),
+            ).rowcount
             self._db.commit()
+            return bool(changed)
 
     async def supersede(self, text: str, by: int | None = None, kinds: list[str] | None = None,
                         exclude: set[int] | frozenset = frozenset(), about: list[str] | None = None,
-                        viewer: str | None = None, legacy: bool = False) -> dict | None:
+                        viewer: str | None = None, legacy: bool = False,
+                        expected_cutoff: str | None = None) -> dict | None:
         """Mark the memory a correction refers to as superseded. It stays stored as history
         but no longer answers questions.
 
@@ -458,25 +501,29 @@ class MemoryStore:
         best = max(candidates, key=lambda m: _overlap(m["text"], text), default=None)
         if best is None:
             return None
-        await asyncio.to_thread(self._mark_superseded, best["id"], by or 0)
-        return best
+        changed = await asyncio.to_thread(self._mark_superseded, best["id"], by or 0, viewer, expected_cutoff)
+        return best if changed else None
 
     async def set_keyed(self, key: str, kind: str, text: str, about: list[str] | None = None,
-                        importance: float = 0.5, source: str = "", speaker: str | None = None) -> int:
+                        importance: float = 0.5, source: str = "", speaker: str | None = None,
+                        expected_cutoff: str | None = None) -> int:
         """Create or update the single memory identified by key (e.g. a running session summary)."""
         text = " ".join(text.split())[:2000]
         vector = await self._embed(text)
         def write() -> int:
             import sqlite_vec
             with self._lock:
+                if expected_cutoff is not None and self.memory_cutoff(speaker) != expected_cutoff:
+                    return 0
                 db = self._db
                 row = db.execute("SELECT id FROM memories WHERE json_extract(meta, '$.key') = ?", (key,)).fetchone()
                 tags = json.dumps(sorted({a.casefold() for a in about or [] if a}))
                 meta = json.dumps({"key": key, **({"speaker": speaker} if speaker else {})})
                 if row:
                     memory_id = row["id"]
-                    db.execute("UPDATE memories SET text = ?, about = ?, importance = ?, meta = ? WHERE id = ?",
-                               (text, tags, importance, meta, memory_id))
+                    db.execute("UPDATE memories SET text = ?, about = ?, importance = ?, meta = ?, "
+                               "superseded_by = NULL, created_at = ? WHERE id = ?",
+                               (text, tags, importance, meta, _now(), memory_id))
                     if self.vectors:
                         db.execute("DELETE FROM memories_vec WHERE rowid = ?", (memory_id,))
                 else:
@@ -632,15 +679,31 @@ def _labels(row) -> dict:
         labels["context"] = meta["context"]
     if meta.get("sources") or meta.get("untrusted"):
         labels["untrusted"] = True  # derived from web pages: information, never instructions
+    if row["kind"] == "fact" and _CHANGEABLE_FACT.search(row["text"]):
+        try:
+            confirmed = datetime.fromisoformat(meta.get("confirmed_at") or row["created_at"])
+            if confirmed.tzinfo is None:
+                confirmed = confirmed.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            return labels
+        labels["confirmed_on"] = confirmed.date().isoformat()
+        labels["needs_confirmation"] = (datetime.now(timezone.utc) - confirmed).days >= 90
     return labels
 
 
+_CHANGEABLE_FACT = re.compile(
+    r"\b(?:work(?:s|ing)? (?:at|for|as)|employed|works? in|job|employer|"
+    r"liv(?:e|es|ing) (?:in|at|with)|resid(?:e|es) in|address|"
+    r"stud(?:y|ies|ying) (?:at|in)|enrolled|commut(?:e|es)|phone number)\b",
+    re.IGNORECASE,
+)
 CORE_IMPORTANCE = 0.9
 
 
 def prompt_memories(memories: list[dict]) -> list[dict]:
     """Compact view for prompts: kind, text and how far to trust it."""
-    return [{key: m[key] for key in ("kind", "text", "context", "untrusted", "core") if key in m} for m in memories]
+    fields = ("kind", "text", "context", "untrusted", "core", "confirmed_on", "needs_confirmation")
+    return [{key: m[key] for key in fields if key in m} for m in memories]
 
 
 # ── deterministic memory formation from finished tasks ─────────────────────

@@ -22,7 +22,7 @@ function el(tag, className, text) {
   return node;
 }
 
-function row(memory) {
+function row(memory, panel) {
   const item = el('article', 'memory-card');
   const top = el('div', 'memory-top');
   top.append(el('span', `memory-kind kind-${memory.kind}`, KIND_LABELS[memory.kind] || memory.kind));
@@ -33,6 +33,42 @@ function row(memory) {
     top.append(stamp);
   }
   item.append(top, el('p', 'memory-text', memory.text));
+  if (memory.source) {
+    const source = { conversation: 'Learned in chat', profile: 'Edited by you', task: 'From an errand' };
+    item.append(el('p', 'memory-time', source[memory.source] || memory.source));
+  }
+  if (memory.confirmed_on) {
+    const note = memory.needs_confirmation ? ' · May have changed' : '';
+    item.append(el('p', 'memory-time', `Confirmed ${memory.confirmed_on}${note}`));
+  }
+  if (memory.editable) {
+    const actions = el('div', 'memory-actions');
+    for (const [label, method] of [['Edit', 'PATCH'], ['Forget', 'DELETE']]) {
+      const button = el('button', 'filter-chip', label);
+      button.type = 'button';
+      button.addEventListener('click', async () => {
+        let body;
+        if (method === 'PATCH') {
+          const text = prompt('Correct this memory:', memory.text)?.trim();
+          if (!text || text === memory.text) return;
+          body = { text };
+        } else if (!confirm('Forget this memory? Your chat history stays visible, but Kip will stop using older chat context.')) {
+          return;
+        }
+        button.disabled = true;
+        try {
+          await api(`/memories/${memory.id}`, body, method);
+          await loadMemories(panel);
+        } catch (error) {
+          alert(error.message);
+        } finally {
+          button.disabled = false;
+        }
+      });
+      actions.append(button);
+    }
+    item.append(actions);
+  }
   const importance = Number(memory.importance);
   if (memory.about?.length || Number.isFinite(importance)) {
     const foot = el('div', 'memory-foot');
@@ -63,7 +99,7 @@ function emptyState(panel, title, text) {
 export function initMemories(panel) {
   panel.replaceChildren();
   const intro = el('div', 'panel-intro');
-  intro.append(el('p', 'panel-lede', 'Things Kip has learned from your conversations.'));
+  intro.append(el('p', 'panel-lede', 'Edit or forget facts and preferences Kip learned from you. This resets older chat context without deleting your chats.'));
   const search = el('div', 'search-field');
   search.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m16 16 4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>';
   const input = el('input');
@@ -112,7 +148,7 @@ export async function loadMemories(panel) {
       emptyState(panel, query || kind ? 'No matches' : 'Nothing remembered yet',
         query || kind ? 'Try a different search or filter.' : 'Tell Kip about yourself and it will remember.');
     } else {
-      results.replaceChildren(...memories.map(row));
+      results.replaceChildren(...memories.map(memory => row(memory, panel)));
     }
   } catch {
     if (request === latestRequest) emptyState(panel, 'Could not load memories', 'Check that the backend is running.');

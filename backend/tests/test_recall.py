@@ -258,3 +258,26 @@ async def test_a_task_recalls_only_its_own_persons_memories(store):
     await asyncio.sleep(0.05)
     assert "In the office" in mine.long_term_memory["relevant_memories"]["items"][0]["text"]
     await manager.cancel(mine.id)
+
+@pytest.mark.asyncio
+async def test_changeable_facts_age_without_aging_preferences(store):
+    from app.chat.prompt import build_messages
+    from app.memory.recall import prompt_memories
+
+    work = await store.add("fact", "Neave works at Acme.", source="conversation")
+    tea = await store.add("preference", "Neave prefers tea.", source="conversation")
+    with store._lock, store._db:
+        store._db.execute("UPDATE memories SET created_at = ?", ("2020-01-01T00:00:00+00:00",))
+    memories = {m["id"]: m for m in store.recent()}
+    assert memories[work]["confirmed_on"] == "2020-01-01"
+    assert memories[work]["needs_confirmation"]
+    assert "needs_confirmation" not in memories[tea]
+    prompt = build_messages("Kip", None, prompt_memories(list(memories.values())), {}, [], "Where do I work?")
+    assert "may have changed" in prompt[-1]["content"]
+    assert "ask whether it is still true" in prompt[-1]["content"]
+
+    # Recalling the fact does not confirm it. Hearing it again does.
+    await store.recall("Neave works at Acme")
+    assert next(m for m in store.recent() if m["id"] == work)["needs_confirmation"]
+    assert await store.add("fact", "Neave works at Acme.", source="conversation") == work
+    assert not next(m for m in store.recent() if m["id"] == work)["needs_confirmation"]

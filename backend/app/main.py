@@ -469,7 +469,27 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
         whose = {"viewer": profile.speaker, "legacy": profile.owner}
         if q.strip():
             return await store.recall(q, kinds=kinds, k=limit, touch=False, **whose)
-        return await asyncio.to_thread(lambda: store.recent(limit, kind or None, **whose))
+        return await asyncio.to_thread(lambda: store.recent(limit, kind or None, include_superseded=False, **whose))
+
+    class MemoryEdit(BaseModel):
+        text: str = Field(max_length=1200)
+
+    async def change_memory(memory_id: int, profile: Profile, replacement: str | None):
+        changed = await asyncio.to_thread(store.manage_memory, memory_id, profile.speaker,
+                                          profile.id, profile.owner, replacement)
+        if not changed:
+            raise HTTPException(404, "Editable memory not found.")
+
+    @app.patch("/api/memories/{memory_id}", status_code=204)
+    async def edit_memory(memory_id: int, body: MemoryEdit, profile: Profile = Depends(who)):
+        replacement = body.text.strip()
+        if not replacement:
+            raise HTTPException(422, "Enter the corrected memory.")
+        await change_memory(memory_id, profile, replacement)
+
+    @app.delete("/api/memories/{memory_id}", status_code=204)
+    async def forget_memory(memory_id: int, profile: Profile = Depends(who)):
+        await change_memory(memory_id, profile, None)
 
     @app.get("/api/persona")
     async def get_persona(profile: Profile = Depends(who)):

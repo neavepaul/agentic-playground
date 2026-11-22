@@ -119,7 +119,12 @@ def build_messages(name: str, voice: dict | None, memories: list[dict], status: 
     if kept:
         context.append("Memories:\n" + "\n".join(
             f"- [{m['kind']}{', ' + m['context'] if m.get('context') else ''}"
-            f"{', from the web' if m.get('untrusted') else ''}] {m['text']}" for m in kept))
+            f"{', from the web' if m.get('untrusted') else ''}"
+            f"{', confirmed ' + m['confirmed_on'] if m.get('confirmed_on') else ''}"
+            f"{', may have changed' if m.get('needs_confirmation') else ''}] {m['text']}" for m in kept))
+        if any(m.get("needs_confirmation") for m in kept):
+            context.append("If the answer depends on a memory marked 'may have changed', ask whether it is still true. "
+                           "Do not assume it is current or ask about it when it is irrelevant.")
     brief = {k: status[k] for k in STATUS_KEYS if status.get(k)}
     if brief.get("recent_errands"):
         brief["recent_errands"] = brief["recent_errands"][-1:]  # the last one: what a follow-up leans on
