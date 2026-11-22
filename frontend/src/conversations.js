@@ -11,6 +11,7 @@ const $ = (id) => document.getElementById(id);
 const NARROW = '(max-width: 1023px)';
 let open = () => {};
 let current = null;
+let loadVersion = 0;
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -70,8 +71,14 @@ async function remove(conversation) {
 }
 
 export async function load() {
+  const version = ++loadVersion;
+  const query = $('chat-search').value.trim();
   let conversations = [];
-  try { ({ conversations } = await api('/conversations')); } catch { return; }
+  try {
+    ({ conversations } = await api(query ? '/conversations?q=' + encodeURIComponent(query) : '/conversations'));
+  } catch { return; }
+  if (version !== loadVersion || query !== $('chat-search').value.trim()) return;
+  $('chat-list-empty').textContent = query ? 'No chats match your search.' : 'Your chats will show here.';
   $('chat-list-empty').hidden = conversations.length > 0;
   $('chat-list').replaceChildren(...conversations.map((conversation) => {
     const item = el('li', 'chat-item');
@@ -165,6 +172,11 @@ export function initConversations(me, onOpen) {
   $('settings-open').hidden = !(me.owner || me.pin_change);
   $('settings-open').addEventListener('click', settings);
   initPinChange();
+  let searchTimer;
+  $('chat-search').addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(load, 200);
+  });
   $('new-chat').addEventListener('click', () => { select(null); $('chat-input').focus(); });
   $('sign-out').addEventListener('click', async () => {
     try { await api('/signout', {}); } finally { location.hash = ''; location.reload(); }

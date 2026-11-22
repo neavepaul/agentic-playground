@@ -311,6 +311,18 @@ class People:
                                       (profile.id, limit)).fetchall()
         return [dict(row) for row in rows]
 
+    def search_conversations(self, profile: Profile, query: str) -> list[dict]:
+        with self._store._lock:
+            rows = self._db().execute("""
+                SELECT id, title, created_at, updated_at FROM conversations AS c
+                WHERE profile_id = ? AND (instr(lower(title), lower(?)) > 0 OR EXISTS (
+                    SELECT 1 FROM conversation_turns AS t WHERE t.session_id = c.id
+                    AND instr(lower(json_extract(t.payload, '$.text')), lower(?)) > 0
+                ))
+                ORDER BY updated_at DESC LIMIT 100
+            """, (profile.id, query, query)).fetchall()
+        return [dict(row) for row in rows]
+
     def conversation_owner(self, conversation_id: str | None) -> str | None:
         if not conversation_id:
             return None

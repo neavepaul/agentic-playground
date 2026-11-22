@@ -421,8 +421,10 @@ def create_app(client=None, settings: Settings | None = None, memory_store: Memo
         return conversation_id
 
     @app.get("/api/conversations")
-    async def conversations(profile: Profile = Depends(who)):
-        return {"conversations": people.conversations(profile)}
+    async def conversations(profile: Profile = Depends(who), q: str = ""):
+        query = q.strip()[:200]
+        matches = await asyncio.to_thread(people.search_conversations, profile, query) if query else people.conversations(profile)
+        return {"conversations": matches}
 
     @app.delete("/api/conversations/{conversation_id}", status_code=204)
     async def delete_conversation(conversation_id: str, profile: Profile = Depends(who)):
